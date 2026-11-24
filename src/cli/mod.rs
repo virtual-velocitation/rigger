@@ -3083,6 +3083,7 @@ pub(crate) fn cmd_replay(args: &[String]) -> Res {
             driver: &driver,
             gates: &ReplayRunner,
             repo: String::new(),
+            run_branch: None,
             grounder: None,
             graph: None,
             criteria,

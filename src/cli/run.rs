@@ -1158,11 +1158,15 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     // The grounding reads compare with the operator checkout the run lands its merges on, named
     // as every reader names its worktree; a unit's read compares with the unit's own worktree.
     let read_graph = ReadGraph::held(&graph, &site)?;
+    // Both starts above leave the checkout on the run branch: the anchor checks it out, and an
+    // adoption is refused anywhere else.
+    let run_branch = (!repo.is_empty()).then(|| RUN_BRANCH.to_string());
     let deps = Deps {
         store: &store,
         driver: &held,
         gates: &ExecRunner,
         repo,
+        run_branch,
         grounder: Some(grounder.as_ref()),
         graph: Some(&graph),
         criteria,

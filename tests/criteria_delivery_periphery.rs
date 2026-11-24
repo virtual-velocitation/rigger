@@ -124,6 +124,7 @@ fn baseline_unit_started_carries_the_full_multiline_criterion_including_its_owns
         store: &store,
         driver: &driver,
         gates: &rigger::gate::ExecRunner,
+        run_branch: None,
         repo: String::new(),
         grounder: None,
         graph: None,

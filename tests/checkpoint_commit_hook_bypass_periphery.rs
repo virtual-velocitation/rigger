@@ -64,6 +64,7 @@ fn a_pre_gate_attempt_commit_bypasses_an_installed_refusing_hook() {
         store: &store,
         driver: &driver,
         gates: &rigger::gate::ExecRunner,
+        run_branch: common::fixtures::branch_of(&repo_path),
         repo: repo_path.clone(),
         grounder: None,
         graph: None,

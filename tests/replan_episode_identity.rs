@@ -130,6 +130,7 @@ fn run_over(
         store,
         driver,
         gates: &ExecRunner,
+        run_branch: None,
         repo: String::new(),
         grounder: None,
         graph: None,

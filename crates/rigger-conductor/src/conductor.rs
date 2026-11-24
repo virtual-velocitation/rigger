@@ -3349,6 +3349,11 @@ pub struct Deps<'a> {
     /// A git repo to isolate each agent in via a throwaway worktree; empty
     /// disables isolation (the agent runs in the current directory).
     pub repo: String,
+    /// The branch the run integrates onto, named by the command that anchored the run and
+    /// checked it out at [`Deps::repo`]; None for a run with no repo. Every move of the run
+    /// branch first checks the checkout still holds it ([`RunCtx::moving_the_run_branch`]), so a
+    /// run over a repo that names none moves nothing.
+    pub run_branch: Option<String>,
     /// Grounds each agent before it runs; None grounds nothing.
     pub grounder: Option<&'a dyn Grounder>,
     /// The record graph the run folds its events into; None folds nothing.
@@ -3725,7 +3730,6 @@ fn drive(
         run_id,
         gate_tracker: Mutex::new(HashMap::new()),
         integrate_mu: Mutex::new(()),
-        run_branch: checkout_branch(&deps.repo)?,
         spawns: AtomicU32::new(base_spawns),
         base_spawns,
         recorded_spawn_ids,
@@ -4224,11 +4228,6 @@ struct RunCtx<'a> {
     run_id: String,
     gate_tracker: Mutex<HashMap<String, Gate>>,
     integrate_mu: Mutex<()>,
-    /// The branch the checkout held when this context was built ([`checkout_branch`]), which
-    /// every move of the run branch first checks it still holds
-    /// ([`RunCtx::moving_the_run_branch`]), so a landing never moves a branch the operator
-    /// switched to mid-run.
-    run_branch: Option<String>,
     /// The CUMULATIVE spawn count for the budget circuit-breaker (§4.4, §8), across
     /// every conductor process the run spans: `base_spawns` (the distinct spawn requests
     /// already recorded in the log when this process started) plus the NEW spawns this
@@ -4490,7 +4489,6 @@ impl<'a> RunCtx<'a> {
             run_id: String::new(),
             gate_tracker: Mutex::new(HashMap::new()),
             integrate_mu: Mutex::new(()),
-            run_branch: checkout_branch(&deps.repo).unwrap_or_default(),
             spawns: AtomicU32::new(base_spawns),
             base_spawns,
             recorded_spawn_ids,
@@ -4590,25 +4588,23 @@ impl RunCtx<'_> {
     /// drift to a relaunch, while an edit from outside the run still is. Called with
     /// `integrate_mu` held, so no other move lands between the two hashes. A crash between the
     /// move and the re-pin leaves the move unpinned, and that relaunch halts on drift as before.
-    /// The move is a git step ([`git_step`]), classed as that step is. A checkout that no longer
-    /// holds [`RunCtx::run_branch`] refuses the move before it runs, as a git step's halt.
+    /// The move is a git step ([`git_step`]), classed as that step is. Over a repo, a checkout
+    /// that does not hold [`Deps::run_branch`], a detached HEAD or a run naming no branch
+    /// included, refuses the move before it runs, as a git step's halt.
     fn moving_the_run_branch<T, E: Into<worktree::StepError>>(
         &self,
         move_branch: impl FnOnce() -> Result<T, E>,
     ) -> Result<T, Error> {
-        let on = checkout_branch(&self.deps.repo)?;
-        if on != self.run_branch {
-            let named = |branch: &Option<String>| {
-                branch
-                    .as_ref()
-                    .map_or("a detached HEAD".to_string(), |b| format!("branch {b}"))
-            };
+        let repo = &self.deps.repo;
+        let run = self.deps.run_branch.as_deref();
+        let on = checkout_branch(repo)?;
+        if !repo.is_empty() && (on.is_none() || on.as_deref() != run) {
+            let on = on.map_or("a detached HEAD".to_string(), |b| format!("branch {b}"));
+            let not_run = run.map_or("and the run names no branch of its own".to_string(), |b| {
+                format!("not the run's branch {b}")
+            });
             return git_step(Err::<T, _>(worktree::Error(format!(
-                "refusing to move the run branch: the checkout at {} holds {}, and this run began \
-                 on {}",
-                self.deps.repo,
-                named(&on),
-                named(&self.run_branch)
+                "refusing to move the run branch: the checkout at {repo} holds {on}, {not_run}"
             ))));
         }
         let before = self.checkout_definition();
@@ -17419,6 +17415,7 @@ mod tests {
     use crate::test_support::agent;
     use crate::test_support::agent_with_its_own_alias;
     use crate::test_support::agent_with_prompt;
+    use crate::test_support::branch_of;
     use crate::test_support::build_declaring;
     use crate::test_support::commit_at_fixed_date;
     use crate::test_support::conductor_fault_hold;
@@ -17487,6 +17484,7 @@ mod tests {
                 driver,
                 gates: &ExecRunner,
                 repo: String::new(),
+                run_branch: None,
                 grounder: None,
                 graph: None,
                 criteria,
@@ -18447,6 +18445,7 @@ mod tests {
         let runner = ExecRunner;
         let deps = Deps {
             gates: &runner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -18523,6 +18522,7 @@ mod tests {
         let runner = ExecRunner;
         let deps = Deps {
             gates: &runner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -18616,6 +18616,7 @@ mod tests {
         let runner = ExecRunner;
         let deps = Deps {
             gates: &runner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -18801,6 +18802,7 @@ mod tests {
         let runner = ExecRunner;
         let deps = Deps {
             gates: &runner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -18917,6 +18919,7 @@ mod tests {
         );
         let driver = Stub::new();
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -18972,6 +18975,7 @@ mod tests {
         // non-empty criteria is never adopted, so `run()` mints a FRESH RunStarted, and the
         // (unrelated) coverage-gap check is bypassed.
         let deps = Deps {
+            run_branch: branch_of(repo),
             repo: repo.to_string(),
             ..stub_deps(store, &driver, Vec::new())
         };
@@ -20087,6 +20091,7 @@ mod tests {
             store: &st,
             driver: &driver,
             gates: &ExecRunner,
+            run_branch: None,
             repo: String::new(),
             grounder: None,
             graph: None,
@@ -20431,6 +20436,7 @@ mod tests {
             seed_events_in_run(&st, &SWEEP_CRITERIA, seed);
         }
         let deps = Deps {
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(
                 &st,
@@ -20692,6 +20698,7 @@ mod tests {
             store: &st,
             driver: &driver,
             gates: &ExecRunner,
+            run_branch: None,
             repo: String::new(),
             grounder: Some(&grep),
             graph: Some(&graph),
@@ -22236,6 +22243,7 @@ mod tests {
                     ..Stub::new()
                 };
                 let deps = Deps {
+                    run_branch: branch_of(&repo_path),
                     repo: repo_path.clone(),
                     ..stub_deps(&st, &driver, criteria.clone())
                 };
@@ -24026,6 +24034,7 @@ mod tests {
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path,
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -24080,6 +24089,7 @@ mod tests {
             store: &st,
             driver: &driver,
             gates: &ExecRunner,
+            run_branch: None,
             repo: String::new(),
             grounder: Some(&grep),
             graph: Some(&graph),
@@ -24151,6 +24161,7 @@ mod tests {
             store: &st,
             driver: &driver,
             gates: &ExecRunner,
+            run_branch: None,
             repo: String::new(),
             grounder: Some(&grep),
             graph: Some(&graph),
@@ -24294,6 +24305,7 @@ mod tests {
             store: &st,
             driver: &driver,
             gates: &ExecRunner,
+            run_branch: None,
             repo: String::new(),
             grounder: Some(&grep),
             graph: Some(&graph),
@@ -24381,6 +24393,7 @@ mod tests {
             store: &st,
             driver: &driver,
             gates: &ExecRunner,
+            run_branch: None,
             repo: String::new(),
             grounder: Some(&grep),
             graph: Some(&graph),
@@ -24979,6 +24992,7 @@ mod tests {
             store: &st,
             driver: &driver,
             gates: &ExecRunner,
+            run_branch: None,
             repo: String::new(),
             grounder: Some(&grep),
             graph: Some(&graph),
@@ -25163,6 +25177,7 @@ mod tests {
             store: &st,
             driver: &driver,
             gates: &ExecRunner,
+            run_branch: None,
             repo: String::new(),
             grounder: None,
             graph: Some(&graph),
@@ -25344,6 +25359,7 @@ mod tests {
             store: &st_store,
             driver: &driver,
             gates: &ExecRunner,
+            run_branch: None,
             repo: String::new(),
             grounder: Some(&grounder),
             graph: Some(&graph),
@@ -25427,6 +25443,7 @@ mod tests {
         };
         let st = Store::open(":memory:").unwrap();
         let deps = Deps {
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -25514,6 +25531,7 @@ mod tests {
             };
             let st = Store::open(":memory:").unwrap();
             let deps = Deps {
+                run_branch: branch_of(repo.path().to_str().unwrap()),
                 repo: repo.path().to_str().unwrap().to_string(),
                 ..stub_deps(&st, &driver, Vec::new())
             };
@@ -25631,6 +25649,7 @@ mod tests {
         }];
         let driver = Stub::new();
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -25911,6 +25930,7 @@ mod tests {
             store: &st_store,
             driver: &driver,
             gates: &ExecRunner,
+            run_branch: None,
             repo: String::new(),
             grounder: Some(&grounder),
             graph: Some(&graph),
@@ -26647,6 +26667,7 @@ mod tests {
         seed_prior_window_s(&repo_path, &st, after);
         let deps = Deps {
             gates,
+            run_branch: branch_of(&repo_path),
             repo: repo_path,
             ..stub_deps(&st, driver, Vec::new())
         };
@@ -26847,6 +26868,7 @@ mod tests {
     fn resume_in(st: &Store, repo: &str) -> RunState {
         let driver = Stub::new();
         let deps = Deps {
+            run_branch: branch_of(repo),
             repo: repo.to_string(),
             ..stub_deps(st, &driver, Vec::new())
         };
@@ -26861,6 +26883,7 @@ mod tests {
         let cfg = Config::default();
         let driver = Stub::new();
         let deps = Deps {
+            run_branch: branch_of(repo),
             repo: repo.to_string(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -26990,6 +27013,7 @@ mod tests {
         let cfg = Config::default();
         let driver = Stub::new();
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -27120,6 +27144,7 @@ mod tests {
         let cfg = Config::default();
         let driver = Stub::new();
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -27443,6 +27468,7 @@ mod tests {
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -27495,6 +27521,7 @@ mod tests {
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -27546,6 +27573,7 @@ mod tests {
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -27911,6 +27939,7 @@ mod tests {
                 store,
                 driver: &driver,
                 gates: &ExecRunner,
+                run_branch: None,
                 repo: String::new(),
                 grounder: None,
                 graph: None,
@@ -27972,6 +28001,7 @@ mod tests {
                 store,
                 driver: &driver,
                 gates: &ExecRunner,
+                run_branch: None,
                 repo: String::new(),
                 grounder: None,
                 graph: None,
@@ -28126,6 +28156,7 @@ Recover by re-driving the reviewer and recording a SUBSTANTIVE result for one of
             let step = run_isolated(
                 &cfg,
                 &Deps {
+                    run_branch: branch_of(&repo_path),
                     repo: repo_path.clone(),
                     ..stub_deps(&store, &driver, Vec::new())
                 },
@@ -28456,7 +28487,6 @@ stage "implement" adjudicator "adj" failed
             run_id: String::new(),
             gate_tracker: Mutex::new(HashMap::new()),
             integrate_mu: Mutex::new(()),
-            run_branch: None,
             spawns: AtomicU32::new(0),
             base_spawns: 0,
             recorded_spawn_ids: HashSet::new(),
@@ -28791,6 +28821,7 @@ stage "implement" adjudicator "adj" failed
             ..approving_panel_stub(&["lens"])
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path,
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -29044,6 +29075,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path,
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -29080,6 +29112,7 @@ stage "implement" adjudicator "adj" failed
             store: &st,
             driver: &driver,
             gates: &ExecRunner,
+            run_branch: None,
             repo: String::new(),
             grounder: None,
             graph: Some(&graph),
@@ -29584,6 +29617,7 @@ stage "implement" adjudicator "adj" failed
             store: &st,
             driver: &driver,
             gates: &ExecRunner,
+            run_branch: None,
             repo: String::new(),
             grounder: Some(&grep),
             graph: None,
@@ -29862,6 +29896,7 @@ stage "implement" adjudicator "adj" failed
             store: &st,
             driver: &driver,
             gates: &ExecRunner,
+            run_branch: None,
             repo: String::new(),
             grounder: Some(&grep),
             graph: None,
@@ -29978,6 +30013,7 @@ stage "implement" adjudicator "adj" failed
         let st = Store::open(":memory:").unwrap();
         let driver = Stub::answering(r#"{"verdict":"approve"}"#);
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -30061,6 +30097,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -30152,6 +30189,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -30184,6 +30222,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -30225,6 +30264,7 @@ stage "implement" adjudicator "adj" failed
         let store = Store::open(":memory:").unwrap();
         let driver = crate::driver::replay::ReplayDriver::new(&store);
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -30265,6 +30305,7 @@ stage "implement" adjudicator "adj" failed
                 store,
                 driver: &driver,
                 gates: &ExecRunner,
+                run_branch: branch_of(&repo_path),
                 repo: repo_path.clone(),
                 grounder: None,
                 graph: None,
@@ -30424,6 +30465,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -30533,6 +30575,7 @@ stage "implement" adjudicator "adj" failed
             store: &store,
             driver: &driver,
             gates: &ExecRunner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path,
             grounder: Some(&grep),
             graph: None,
@@ -30621,6 +30664,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -30667,6 +30711,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -30733,6 +30778,7 @@ stage "implement" adjudicator "adj" failed
         };
         lose_lane_0(&mut driver);
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -30840,6 +30886,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -30890,6 +30937,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -30954,6 +31002,7 @@ stage "implement" adjudicator "adj" failed
                 refuse(&mut driver, lane);
             }
             let deps = Deps {
+                run_branch: branch_of(&repo_path),
                 repo: repo_path.clone(),
                 ..stub_deps(&store, &driver, Vec::new())
             };
@@ -31044,6 +31093,7 @@ stage "implement" adjudicator "adj" failed
             let mut driver = approving_speculation_stub();
             refuse(&mut driver, 0);
             let deps = Deps {
+                run_branch: branch_of(&repo_path),
                 repo: repo_path.clone(),
                 ..stub_deps(&store, &driver, Vec::new())
             };
@@ -31081,6 +31131,7 @@ stage "implement" adjudicator "adj" failed
                 store,
                 driver: &driver,
                 gates: &ExecRunner,
+                run_branch: branch_of(&repo_path),
                 repo: repo_path.clone(),
                 grounder: None,
                 graph: None,
@@ -31209,6 +31260,7 @@ stage "implement" adjudicator "adj" failed
             let lines = Mutex::new(Vec::<String>::new());
             let log = |line: &str| lines.lock().unwrap().push(line.to_string());
             let deps = Deps {
+                run_branch: branch_of(&repo_path),
                 repo: repo_path.clone(),
                 log: &log,
                 ..stub_deps(&store, &driver, Vec::new())
@@ -31317,6 +31369,7 @@ stage "implement" adjudicator "adj" failed
                 ..Stub::new()
             };
             let deps = Deps {
+                run_branch: branch_of(&repo_path),
                 repo: repo_path.clone(),
                 ..stub_deps(&store, &driver, Vec::new())
             };
@@ -31404,6 +31457,7 @@ stage "implement" adjudicator "adj" failed
                 asked: Mutex::new(Vec::new()),
             };
             let deps = Deps {
+                run_branch: branch_of(repo.path().to_str().unwrap()),
                 repo: repo.path().to_str().unwrap().to_string(),
                 ..stub_deps(&store, &driver, Vec::new())
             };
@@ -31454,6 +31508,7 @@ stage "implement" adjudicator "adj" failed
             asked: Mutex::new(Vec::new()),
         };
         let deps = Deps {
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -31504,6 +31559,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path,
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -31553,6 +31609,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -31624,6 +31681,7 @@ stage "implement" adjudicator "adj" failed
                 store,
                 driver: &driver,
                 gates: &ExecRunner,
+                run_branch: branch_of(&repo_path),
                 repo: repo_path.clone(),
                 grounder: None,
                 graph: None,
@@ -31866,6 +31924,7 @@ stage "implement" adjudicator "adj" failed
             repo: repo_path.clone(),
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -32031,6 +32090,7 @@ stage "implement" adjudicator "adj" failed
 
         let driver = approving_speculation_stub();
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path,
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -32096,6 +32156,7 @@ stage "implement" adjudicator "adj" failed
 
         let driver = approving_speculation_stub();
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path,
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -32243,6 +32304,7 @@ stage "implement" adjudicator "adj" failed
         let told = seed(&store, &repo_path);
         let driver = approving_speculation_stub();
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path,
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -32350,6 +32412,7 @@ stage "implement" adjudicator "adj" failed
         let mut losing = approving_speculation_stub();
         let told = lose(&mut cfg, &mut losing);
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &losing, Vec::new())
         };
@@ -32377,6 +32440,7 @@ stage "implement" adjudicator "adj" failed
         grant_resume(&store, "s", 1);
         let driver = approving_speculation_stub();
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path,
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -32577,6 +32641,7 @@ stage "implement" adjudicator "adj" failed
             let mut driver = approving_speculation_stub();
             outage(&mut driver);
             let deps = Deps {
+                run_branch: branch_of(&repo_path),
                 repo: repo_path,
                 ..stub_deps(&store, &driver, Vec::new())
             };
@@ -32641,6 +32706,7 @@ stage "implement" adjudicator "adj" failed
         let st = Store::open(":memory:").unwrap();
         let driver = Stub::new();
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -33106,6 +33172,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -33165,6 +33232,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -33264,6 +33332,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -33344,6 +33413,7 @@ stage "implement" adjudicator "adj" failed
         // branch (from the prior window) is what conflicts.
         let driver = Stub::new();
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -33406,6 +33476,7 @@ stage "implement" adjudicator "adj" failed
         let cfg = Config::default();
         let driver = Stub::new();
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -33521,6 +33592,7 @@ stage "implement" adjudicator "adj" failed
         let cfg = Config::default();
         let driver = Stub::new();
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -33589,6 +33661,7 @@ stage "implement" adjudicator "adj" failed
         let cfg = Config::default();
         let driver = Stub::new();
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -33699,6 +33772,7 @@ stage "implement" adjudicator "adj" failed
             store: &store,
             driver: &driver,
             gates: &ExecRunner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             grounder: None,
             graph: None,
@@ -33768,6 +33842,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -33877,6 +33952,7 @@ stage "implement" adjudicator "adj" failed
         };
         let st = Store::open(":memory:").unwrap();
         let deps = Deps {
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -33972,6 +34048,7 @@ stage "implement" adjudicator "adj" failed
         let driver = session_stub(verdicts);
         let st = Store::open(":memory:").unwrap();
         let deps = Deps {
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -34004,6 +34081,7 @@ stage "implement" adjudicator "adj" failed
         run_isolated(
             &session_cfg(),
             &Deps {
+                run_branch: branch_of(&repo_path),
                 repo: repo_path.clone(),
                 ..stub_deps(&st, &first, Vec::new())
             },
@@ -34024,6 +34102,7 @@ stage "implement" adjudicator "adj" failed
         let rs = run_isolated(
             &session_cfg(),
             &Deps {
+                run_branch: branch_of(&repo_path),
                 repo: repo_path,
                 ..stub_deps(&st, &relaunched, Vec::new())
             },
@@ -34072,6 +34151,7 @@ stage "implement" adjudicator "adj" failed
         run_isolated(
             &session_cfg(),
             &Deps {
+                run_branch: branch_of(&repo_path),
                 repo: repo_path.clone(),
                 ..stub_deps(&st, &first, Vec::new())
             },
@@ -34080,6 +34160,7 @@ stage "implement" adjudicator "adj" failed
         run_isolated(
             &session_cfg(),
             &Deps {
+                run_branch: branch_of(&repo_path),
                 repo: repo_path,
                 ..stub_deps(&st, relaunched, Vec::new())
             },
@@ -34239,6 +34320,7 @@ stage "implement" adjudicator "adj" failed
             run_isolated(
                 &session_cfg(),
                 &Deps {
+                    run_branch: branch_of(&repo_path),
                     repo: repo_path.clone(),
                     ..stub_deps(&st, driver, Vec::new())
                 },
@@ -34684,6 +34766,7 @@ stage "implement" adjudicator "adj" failed
         let st = Store::open(":memory:").unwrap();
         let deps = Deps {
             gates: &flaky,
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -34726,6 +34809,7 @@ stage "implement" adjudicator "adj" failed
         };
         let st = Store::open(":memory:").unwrap();
         let deps = Deps {
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -34800,6 +34884,7 @@ stage "implement" adjudicator "adj" failed
             let lines = Mutex::new(Vec::<String>::new());
             let log = |line: &str| lines.lock().unwrap().push(line.to_string());
             let deps = Deps {
+                run_branch: branch_of(repo.path().to_str().unwrap()),
                 repo: repo.path().to_str().unwrap().to_string(),
                 log: &log,
                 ..stub_deps(&st, &driver, Vec::new())
@@ -35399,6 +35484,7 @@ stage "implement" adjudicator "adj" failed
         let outcome = run_isolated(
             &cfg,
             &Deps {
+                run_branch: branch_of(&repo_path),
                 repo: repo_path.clone(),
                 ..stub_deps(&st, &driver, Vec::new())
             },
@@ -36215,6 +36301,7 @@ stage "implement" adjudicator "adj" failed
             run_isolated(
                 &cfg,
                 &Deps {
+                    run_branch: branch_of(&repo_path),
                     repo: repo_path.clone(),
                     ..stub_deps(&st, stub, Vec::new())
                 },
@@ -36879,6 +36966,7 @@ stage "implement" adjudicator "adj" failed
         let st = Store::open(":memory:").unwrap();
         let driver = Stub::new();
         let deps = Deps {
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -37100,6 +37188,7 @@ stage "implement" adjudicator "adj" failed
             store: &store,
             driver: &driver,
             gates: &ExecRunner,
+            run_branch: None,
             repo: String::new(),
             grounder: Some(&grounder),
             graph: None,
@@ -37417,7 +37506,6 @@ stage "implement" adjudicator "adj" failed
             run_id: String::new(),
             gate_tracker: Mutex::new(HashMap::new()),
             integrate_mu: Mutex::new(()),
-            run_branch: None,
             spawns: AtomicU32::new(0),
             base_spawns: 0,
             recorded_spawn_ids: HashSet::new(),
@@ -37481,6 +37569,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path,
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -37555,6 +37644,7 @@ stage "implement" adjudicator "adj" failed
         let runner = RecordingRunner::new(&[]);
         let deps = Deps {
             gates: &runner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -37686,6 +37776,7 @@ stage "implement" adjudicator "adj" failed
         let store = Store::open(":memory:").unwrap();
         let driver = UnitDistinctWriter;
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path,
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -37757,6 +37848,7 @@ stage "implement" adjudicator "adj" failed
             let runner = RecordingRunner::new(&[]);
             let deps = Deps {
                 gates: &runner,
+                run_branch: branch_of(&repo_path),
                 repo: repo_path.clone(),
                 ..stub_deps(&store, &driver, Vec::new())
             };
@@ -38094,6 +38186,7 @@ stage "implement" adjudicator "adj" failed
         let runner = RecordingRunner::with_side_effect(GateSideEffect::MaterializeCache);
         let deps = Deps {
             gates: &runner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -38154,6 +38247,7 @@ stage "implement" adjudicator "adj" failed
         let runner = RecordingRunner::with_side_effect(GateSideEffect::MaterializeCache);
         let deps = Deps {
             gates: &runner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -38224,6 +38318,7 @@ stage "implement" adjudicator "adj" failed
                 fail: HashSet::from(["ok".to_string()]),
                 ..RecordingRunner::with_side_effect(GateSideEffect::MaterializeCache)
             },
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             grounder: None,
             graph: None,
@@ -38358,6 +38453,7 @@ stage "implement" adjudicator "adj" failed
         let runner = RecordingRunner::with_side_effect(GateSideEffect::MaterializeCache);
         let deps = Deps {
             gates: &runner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -38410,6 +38506,7 @@ stage "implement" adjudicator "adj" failed
         let runner = RecordingRunner::with_side_effect(GateSideEffect::DeleteWorktree);
         let deps = Deps {
             gates: &runner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -38456,6 +38553,7 @@ stage "implement" adjudicator "adj" failed
         let runner = RecordingRunner::new(&[]);
         let deps = Deps {
             gates: &runner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -38537,6 +38635,7 @@ stage "implement" adjudicator "adj" failed
         let runner = RecordingRunner::with_side_effect(GateSideEffect::DeleteWorktree);
         let deps = Deps {
             gates: &runner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -38638,6 +38737,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -38715,6 +38815,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -38791,6 +38892,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -38884,6 +38986,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         });
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -39032,6 +39135,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -39135,6 +39239,7 @@ stage "implement" adjudicator "adj" failed
         let store = Store::open(":memory:").unwrap();
         let window = |driver: &Stub| {
             let deps = Deps {
+                run_branch: branch_of(repo),
                 repo: repo.to_string(),
                 ..stub_deps(&store, driver, Vec::new())
             };
@@ -39491,6 +39596,7 @@ stage "implement" adjudicator "adj" failed
 
         let driver = Stub::new();
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -39592,6 +39698,7 @@ stage "implement" adjudicator "adj" failed
             evidence: "error: No space left on device (os error 28)".into(),
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             gates: &outage,
             ..stub_deps(&st, &driver, Vec::new())
@@ -39732,6 +39839,7 @@ stage "implement" adjudicator "adj" failed
         // its whole lifecycle; this window spawns none of it (the premise just after).
         let driver = approving_panel_stub(&["lens"]);
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -39861,6 +39969,7 @@ stage "implement" adjudicator "adj" failed
 
         let driver = Stub::new();
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -39972,6 +40081,7 @@ stage "implement" adjudicator "adj" failed
             cfg.workflow.gates.insert("ok".into(), gate_def(gate));
             let driver = Stub::new();
             let deps = Deps {
+                run_branch: branch_of(&repo_path),
                 repo: repo_path.clone(),
                 ..stub_deps(&store, &driver, Vec::new())
             };
@@ -40167,6 +40277,7 @@ stage "implement" adjudicator "adj" failed
 
         let driver = Stub::new();
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -40239,6 +40350,7 @@ stage "implement" adjudicator "adj" failed
         let store = Store::open(":memory:").unwrap();
         let driver = Stub::new();
         let deps = Deps {
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -40279,6 +40391,7 @@ stage "implement" adjudicator "adj" failed
         let runner = RecordingRunner::faulting_at(&[], 0);
         let deps = Deps {
             gates: &runner,
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -40349,6 +40462,7 @@ stage "implement" adjudicator "adj" failed
         let runner = RecordingRunner::with_side_effect(GateSideEffect::DeleteWorktree);
         let deps = Deps {
             gates: &runner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -40427,6 +40541,7 @@ stage "implement" adjudicator "adj" failed
         let runner = RecordingRunner::with_side_effect(GateSideEffect::DeleteWorktree);
         let deps = Deps {
             gates: &runner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -40559,6 +40674,7 @@ stage "implement" adjudicator "adj" failed
             store: &store,
             driver: &driver,
             gates: &ExecRunner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             grounder: None,
             graph: None,
@@ -40650,6 +40766,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -40738,6 +40855,7 @@ stage "implement" adjudicator "adj" failed
             store: &store,
             driver: &driver,
             gates: &runner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path,
             grounder: None,
             graph: None,
@@ -41159,6 +41277,7 @@ stage "implement" adjudicator "adj" failed
         let store = ReadCountingStore::new(&inner);
         let driver = crate::driver::replay::ReplayDriver::new(&store);
         let deps = Deps {
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -41270,6 +41389,7 @@ stage "implement" adjudicator "adj" failed
             store: &st,
             driver: &driver,
             gates: &ExecRunner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path,
             grounder: None,
             graph: Some(&graph),
@@ -41391,6 +41511,7 @@ stage "implement" adjudicator "adj" failed
         let runner = RecordingRunner::new(&[]);
         let deps = Deps {
             gates: &runner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -41511,6 +41632,7 @@ stage "implement" adjudicator "adj" failed
         );
         let store = Store::open(":memory:").unwrap();
         let deps = Deps {
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&store, driver, Vec::new())
         };
@@ -41916,6 +42038,7 @@ stage "implement" adjudicator "adj" failed
             store: &store,
             driver: &driver,
             gates: &ExecRunner,
+            run_branch: None,
             repo: String::new(),
             grounder: Some(&grep),
             graph: None,
@@ -42040,6 +42163,7 @@ stage "implement" adjudicator "adj" failed
             store: &st,
             driver: &driver,
             gates: &ExecRunner,
+            run_branch: None,
             repo: String::new(),
             grounder: Some(&grep),
             graph: Some(&graph),
@@ -42143,6 +42267,7 @@ stage "implement" adjudicator "adj" failed
             store: &st,
             driver: &driver,
             gates: &ExecRunner,
+            run_branch: None,
             repo: String::new(),
             grounder: Some(&grep),
             graph: Some(&graph),
@@ -42177,6 +42302,7 @@ stage "implement" adjudicator "adj" failed
         }
         let st = Store::open(":memory:").unwrap();
         let deps = Deps {
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -42210,6 +42336,7 @@ stage "implement" adjudicator "adj" failed
         };
         let st = Store::open(":memory:").unwrap();
         let deps = Deps {
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -42589,6 +42716,7 @@ stage "implement" adjudicator "adj" failed
             cfg.workflow.build = build_declaring(declared, 3);
             let st = Store::open(":memory:").unwrap();
             let deps = Deps {
+                run_branch: branch_of(&repo_path),
                 repo: repo_path.clone(),
                 ..stub_deps(&st, &driver, Vec::new())
             };
@@ -42961,6 +43089,7 @@ stage "implement" adjudicator "adj" failed
             store: &st,
             driver: &driver,
             gates: &flaky,
+            run_branch: None,
             repo: String::new(),
             grounder: None,
             graph: None,
@@ -43195,6 +43324,7 @@ stage "implement" adjudicator "adj" failed
             store: &st,
             driver: &driver,
             gates: &always_fail,
+            run_branch: None,
             repo: String::new(),
             grounder: None,
             graph: None,
@@ -43279,6 +43409,7 @@ stage "implement" adjudicator "adj" failed
                 store: &st,
                 driver: &driver,
                 gates: &always_fail,
+                run_branch: None,
                 repo: String::new(),
                 grounder: None,
                 graph: None,
@@ -43540,6 +43671,7 @@ stage "implement" adjudicator "adj" failed
         // the Gap-18 respawn loop).
         let driver = Stub::answering("reviewed the diff");
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -44058,6 +44190,7 @@ stage "implement" adjudicator "adj" failed
         };
         let deps = Deps {
             gates: runner,
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -44644,6 +44777,7 @@ stage "implement" adjudicator "adj" failed
             let driver = JoiningDriver { store: &store, row };
             let deps = Deps {
                 gates: &runner,
+                run_branch: branch_of(repo.path().to_str().unwrap()),
                 repo: repo.path().to_str().unwrap().to_string(),
                 ..stub_deps(&store, &driver, Vec::new())
             };
@@ -44767,6 +44901,7 @@ stage "implement" adjudicator "adj" failed
         };
         let deps = Deps {
             gates: &runner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path,
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -45053,6 +45188,7 @@ stage "implement" adjudicator "adj" failed
             let runner = TreeChangingRunner { change };
             let deps = Deps {
                 gates: &runner,
+                run_branch: branch_of(&dir),
                 repo: dir.clone(),
                 ..stub_deps(&store, &driver, Vec::new())
             };
@@ -45198,6 +45334,7 @@ stage "implement" adjudicator "adj" failed
             store: &store,
             driver: &driver,
             gates: &runner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path,
             grounder: Some(&grep),
             graph: None,
@@ -45284,6 +45421,7 @@ stage "implement" adjudicator "adj" failed
         });
         let deps = Deps {
             gates: &runner,
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -45326,6 +45464,7 @@ stage "implement" adjudicator "adj" failed
             store: &store,
             driver: &driver,
             gates: &runner,
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             grounder: None,
             graph: None,
@@ -45538,6 +45677,7 @@ stage "implement" adjudicator "adj" failed
         let runner = RecordingRunner::new(&[]);
         let deps = Deps {
             gates: &runner,
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             grounder: Some(&grounder),
             ..stub_deps(&store, &driver, Vec::new())
@@ -45630,6 +45770,7 @@ stage "implement" adjudicator "adj" failed
             store: &store,
             driver: &driver,
             gates: &runner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path,
             grounder: Some(&grounder),
             graph: None,
@@ -45861,6 +46002,7 @@ stage "implement" adjudicator "adj" failed
         };
         let store = Store::open(":memory:").unwrap();
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             gates: &ExecRunner,
             grounder: Some(&grounder),
@@ -45928,6 +46070,7 @@ stage "implement" adjudicator "adj" failed
             store: &store,
             driver: &driver,
             gates: &runner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path,
             grounder: Some(&grounder),
             graph: None,
@@ -45979,6 +46122,7 @@ stage "implement" adjudicator "adj" failed
             store: &store,
             driver: &driver,
             gates: &runner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path,
             grounder: Some(&grounder),
             graph: None,
@@ -46278,6 +46422,7 @@ stage "implement" adjudicator "adj" failed
             store: &store,
             driver: &driver,
             gates: &ExecRunner,
+            run_branch: None,
             repo: String::new(),
             grounder: Some(&grep),
             graph: None,
@@ -46302,6 +46447,7 @@ stage "implement" adjudicator "adj" failed
             store: &store,
             driver: &driver,
             gates: &ExecRunner,
+            run_branch: None,
             repo: String::new(),
             grounder: Some(&grep),
             graph: Some(&graph),
@@ -46750,6 +46896,7 @@ stage "implement" adjudicator "adj" failed
             store: &store,
             driver: &driver,
             gates: &ExecRunner,
+            run_branch: None,
             repo: String::new(),
             grounder: Some(&symbols),
             graph: None,
@@ -46848,6 +46995,7 @@ stage "implement" adjudicator "adj" failed
             store: &store,
             driver: &driver,
             gates: &ExecRunner,
+            run_branch: None,
             repo: String::new(),
             grounder: Some(&SeedOverGround),
             graph: None,
@@ -47636,6 +47784,7 @@ stage "implement" adjudicator "adj" failed
             store: &store,
             driver: &driver,
             gates: &runner,
+            run_branch: None,
             repo: String::new(),
             grounder: Some(&structural),
             graph: None,
@@ -47674,6 +47823,7 @@ stage "implement" adjudicator "adj" failed
             store: &store,
             driver: &driver,
             gates: &runner,
+            run_branch: None,
             repo: String::new(),
             grounder: Some(&plain),
             graph: None,
@@ -47808,6 +47958,7 @@ stage "implement" adjudicator "adj" failed
             store: &store,
             driver: &driver,
             gates: &runner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path,
             grounder: Some(&grounder),
             graph: None,
@@ -47970,6 +48121,7 @@ stage "implement" adjudicator "adj" failed
             store: &store,
             driver: &driver,
             gates: &runner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path,
             grounder: Some(&grounder),
             graph: None,
@@ -48179,6 +48331,7 @@ stage "implement" adjudicator "adj" failed
         let runner = RecordingRunner::new(&[]);
         let deps = Deps {
             gates: &runner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -48637,6 +48790,7 @@ stage "implement" adjudicator "adj" failed
             store: &store,
             driver,
             gates: &runner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             grounder: None,
             graph: None,
@@ -48903,6 +49057,7 @@ stage "implement" adjudicator "adj" failed
         let runner = RecordingRunner::new(&[]);
         let deps = Deps {
             gates: &runner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -49015,6 +49170,7 @@ stage "implement" adjudicator "adj" failed
             repo: repo_path.clone(),
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -49327,6 +49483,7 @@ stage "implement" adjudicator "adj" failed
             repo: repo_path.clone(),
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -49342,15 +49499,35 @@ stage "implement" adjudicator "adj" failed
         assert_eq!(std::fs::read_to_string(file("notes.txt")).unwrap(), edit);
     }
 
-    /// A move of the run branch runs only while the checkout holds the branch it held when the
-    /// run began: one the operator switched off it, to another branch or a detached HEAD, halts
-    /// the move as a git step before git runs it.
+    /// A move of the run branch runs only while the checkout holds the branch the run names
+    /// ([`Deps::run_branch`]): a checkout on another branch or a detached HEAD, or a run over a
+    /// repo that names no branch, halts the move as a git step before git runs it, naming what
+    /// the checkout holds and the run's own branch.
     #[test]
-    fn a_move_refuses_when_the_checkout_left_the_run_branch() {
-        for (left, switch) in [
-            ("stays", &[][..]),
-            ("another branch", &["checkout", "-q", "-b", "elsewhere"][..]),
-            ("a detached HEAD", &["checkout", "-q", "--detach"][..]),
+    fn a_move_refuses_unless_the_checkout_holds_the_branch_the_run_names() {
+        let named = |repo: &str| Some(git_out(repo, &["symbolic-ref", "--short", "HEAD"]));
+        let unnamed = |_: &str| None;
+        type Names = fn(&str) -> Option<String>;
+        for (left, names, switch, refusal) in [
+            ("stays", named as Names, &[][..], None),
+            (
+                "another branch",
+                named,
+                &["checkout", "-q", "-b", "elsewhere"][..],
+                Some("holds branch elsewhere, not the run's branch "),
+            ),
+            (
+                "a detached HEAD",
+                named,
+                &["checkout", "-q", "--detach"][..],
+                Some("holds a detached HEAD, not the run's branch "),
+            ),
+            (
+                "a run naming no branch",
+                unnamed as Names,
+                &[][..],
+                Some("and the run names no branch of its own"),
+            ),
         ] {
             let repo = temp_git_project_with_commit();
             let repo_path = repo.path().to_str().unwrap().to_string();
@@ -49358,6 +49535,7 @@ stage "implement" adjudicator "adj" failed
             let driver = Stub::new();
             let deps = Deps {
                 repo: repo_path.clone(),
+                run_branch: names(&repo_path),
                 ..stub_deps(&store, &driver, Vec::new())
             };
             let cfg = Config::default();
@@ -49370,13 +49548,78 @@ stage "implement" adjudicator "adj" failed
                 ran.set(true);
                 Ok::<_, worktree::Error>(())
             });
-            assert_eq!(ran.get(), switch.is_empty(), "{left}");
-            if let Err(e) = moved {
-                assert!(
-                    !switch.is_empty() && e.0.contains(GIT_STEP_MARKER),
-                    "{left}: {e}"
-                );
+            assert_eq!(ran.get(), refusal.is_none(), "{left}");
+            match (refusal, moved) {
+                (None, Ok(())) => {}
+                (Some(refusal), Err(e)) => {
+                    assert!(e.0.contains(GIT_STEP_MARKER), "{left}: {e}");
+                    let wanted = match &deps.run_branch {
+                        Some(branch) => format!("{refusal}{branch}"),
+                        None => refusal.to_string(),
+                    };
+                    assert!(e.0.contains(&wanted), "{left}: {e}");
+                }
+                (refusal, moved) => panic!("{left}: wanted {refusal:?}, got {moved:?}"),
             }
+        }
+    }
+
+    /// A drive that holds before it lands, followed by a switch of the checkout to another
+    /// branch and the next drive over the same deps (the `rigger run` hold loop's re-drive),
+    /// refuses the landing, naming the run's own branch, and moves neither branch.
+    #[test]
+    fn a_checkout_switched_between_drives_refuses_the_next_drives_landing() {
+        /// Parks the implementer's first spawn, then writes its file; reviewers approve.
+        #[derive(Default)]
+        struct ParksOnce(std::sync::atomic::AtomicBool);
+        impl AgentDriver for ParksOnce {
+            fn spawn(
+                &self,
+                _a: &AgentDef,
+                _p: &str,
+                opts: &SpawnOpts,
+                _emit: &dyn Fn(&str, serde_json::Value) -> Result<(), Error>,
+            ) -> Result<AgentResult, Error> {
+                if !opts.id.contains("/implementer#") {
+                    return Ok(crate::test_support::review_or_adjudicate(opts));
+                }
+                if !self.0.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                    return Err(parked_spawn(&opts.id));
+                }
+                std::fs::write(Path::new(&opts.dir).join("work.rs"), "work\n").unwrap();
+                Ok(AgentResult::default())
+            }
+        }
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let branch = git_out(&repo_path, &["symbolic-ref", "--short", "HEAD"]);
+        let mut cfg = crate::test_support::gated_scratch_cfg(&repo_path);
+        cfg.workflow.stages.insert(
+            "unit-a".into(),
+            crate::test_support::mk_stage("unit-a", "g"),
+        );
+        let store = Store::open(":memory:").unwrap();
+        let driver = ParksOnce::default();
+        let deps = Deps {
+            repo: repo_path.clone(),
+            run_branch: Some(branch.clone()),
+            ..stub_deps(&store, &driver, Vec::new())
+        };
+        let first = run(&cfg, &deps).expect("a parked drive is no failure");
+        assert_ne!(first.units["unit-a"].status, ledger::Status::Integrated);
+        let tip = git_out(&repo_path, &["rev-parse", "HEAD"]);
+        run_git(&repo_path, &["checkout", "-q", "-b", "elsewhere"]);
+        let Err(refused) = run(&cfg, &deps) else {
+            panic!("the landing refuses")
+        };
+        assert!(
+            refused.0.contains(&format!(
+                "holds branch elsewhere, not the run's branch {branch}"
+            )),
+            "{refused}"
+        );
+        for moved in [branch.as_str(), "elsewhere"] {
+            assert_eq!(git_out(&repo_path, &["rev-parse", moved]), tip, "{moved}");
         }
     }
 
@@ -49456,6 +49699,7 @@ stage "implement" adjudicator "adj" failed
             repo: repo_path.clone(),
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -49663,6 +49907,7 @@ stage "implement" adjudicator "adj" failed
             repo: repo_path.clone(),
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -49859,6 +50104,7 @@ stage "implement" adjudicator "adj" failed
             planted: std::sync::atomic::AtomicBool::new(false),
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -49919,6 +50165,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(repo),
             repo: repo.to_string(),
             ..stub_deps(store, &driver, Vec::new())
         };
@@ -50048,6 +50295,7 @@ stage "implement" adjudicator "adj" failed
             let driver = LocksItsTree::new(&inner, review_lens_ids::<Vec<_>>(&["lens"]).remove(0));
             let store = Store::open(":memory:").unwrap();
             let deps = Deps {
+                run_branch: branch_of(&repo_path),
                 repo: repo_path.clone(),
                 log,
                 ..stub_deps(&store, &driver, Vec::new())
@@ -50078,6 +50326,7 @@ stage "implement" adjudicator "adj" failed
             let driver = LocksItsTree::new(&inner, spawn_id("plan-critique", ROLE_ADVERSARY, 0));
             let store = Store::open(":memory:").unwrap();
             let deps = Deps {
+                run_branch: branch_of(&repo_path),
                 repo: repo_path.clone(),
                 grounder: Some(&grep),
                 log,
@@ -50127,6 +50376,7 @@ stage "implement" adjudicator "adj" failed
             };
             let store = Store::open(":memory:").unwrap();
             let deps = Deps {
+                run_branch: branch_of(&repo_path),
                 repo: repo_path.clone(),
                 log,
                 ..stub_deps(&store, &driver, Vec::new())
@@ -50753,6 +51003,7 @@ stage "implement" adjudicator "adj" failed
                 ..Stub::new()
             };
             let deps = Deps {
+                run_branch: branch_of(&repo_path),
                 repo: repo_path.clone(),
                 ..stub_deps(&store, &driver, Vec::new())
             };
@@ -50888,6 +51139,7 @@ stage "implement" adjudicator "adj" failed
         let store = Store::open(":memory:").unwrap();
         let driver = Stub::new();
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -50998,6 +51250,7 @@ stage "implement" adjudicator "adj" failed
             let store = Store::open(":memory:").unwrap();
             let driver = Stub::new();
             let deps = Deps {
+                run_branch: branch_of(repo.path().to_str().unwrap()),
                 repo: repo.path().to_str().unwrap().to_string(),
                 ..stub_deps(&store, &driver, Vec::new())
             };
@@ -51093,6 +51346,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -51511,6 +51765,7 @@ stage "implement" adjudicator "adj" failed
                 ..Stub::new()
             };
             let deps = Deps {
+                run_branch: branch_of(&repo_path),
                 repo: repo_path.clone(),
                 ..stub_deps(&store, &driver, Vec::new())
             };
@@ -51808,6 +52063,7 @@ stage "implement" adjudicator "adj" failed
         let unit_dir = unit_worktree_dir(&scratch, "unit-a");
         let (hook, cfg, driver) = refusing_every_attempt(repo.path());
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -51972,6 +52228,7 @@ stage "implement" adjudicator "adj" failed
         let store = Store::open(":memory:").unwrap();
         let (_hook, cfg, driver) = refusing_every_attempt(repo.path());
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -51987,6 +52244,7 @@ stage "implement" adjudicator "adj" failed
             fail_containing: "\"cause\":\"git-refused\"",
         };
         let faulty = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&failing, &driver, Vec::new())
         };
@@ -52058,6 +52316,7 @@ stage "implement" adjudicator "adj" failed
         let store = Store::open(":memory:").unwrap();
         let (hook, cfg, driver) = refusing_every_attempt(repo.path());
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -52231,6 +52490,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -52308,6 +52568,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -52502,6 +52763,7 @@ stage "implement" adjudicator "adj" failed
         cfg: &Config,
     ) -> Result<RunState, Error> {
         let deps = Deps {
+            run_branch: branch_of(repo_path),
             repo: repo_path.to_string(),
             ..stub_deps(store, driver, Vec::new())
         };
@@ -52984,6 +53246,7 @@ stage "implement" adjudicator "adj" failed
         cfg.workflow.stages.insert("unit-b".into(), mk("unit-b"));
 
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -53166,6 +53429,7 @@ stage "implement" adjudicator "adj" failed
         );
 
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -53706,6 +53970,7 @@ stage "implement" adjudicator "adj" failed
                 store: &st,
                 driver: &driver,
                 gates: &runner,
+                run_branch: None,
                 repo: String::new(),
                 grounder: None,
                 graph: None,
@@ -53758,6 +54023,7 @@ stage "implement" adjudicator "adj" failed
                 store: &st,
                 driver: &driver,
                 gates: &runner,
+                run_branch: None,
                 repo: String::new(),
                 grounder: None,
                 graph: None,
@@ -53793,6 +54059,7 @@ stage "implement" adjudicator "adj" failed
                 store: &st,
                 driver: &driver,
                 gates: &runner,
+                run_branch: None,
                 repo: String::new(),
                 grounder: None,
                 graph: None,
@@ -53869,6 +54136,7 @@ stage "implement" adjudicator "adj" failed
             store: &st,
             driver: &driver,
             gates: &runner,
+            run_branch: None,
             repo: String::new(),
             grounder: None,
             graph: None,
@@ -53984,6 +54252,7 @@ stage "implement" adjudicator "adj" failed
             store: &st,
             driver: &driver,
             gates: &runner,
+            run_branch: None,
             repo: String::new(),
             grounder: None,
             graph: None,
@@ -54125,6 +54394,7 @@ stage "implement" adjudicator "adj" failed
                 store: &st,
                 driver: &driver,
                 gates: &runner,
+                run_branch: None,
                 repo: String::new(),
                 grounder: None,
                 graph: None,
@@ -54166,6 +54436,7 @@ stage "implement" adjudicator "adj" failed
                 store: &st,
                 driver: &driver,
                 gates: &runner,
+                run_branch: None,
                 repo: String::new(),
                 grounder: None,
                 graph: None,
@@ -54241,6 +54512,7 @@ stage "implement" adjudicator "adj" failed
                 store: &st,
                 driver: &driver,
                 gates: &runner,
+                run_branch: None,
                 repo: String::new(),
                 grounder: None,
                 graph: None,
@@ -54320,6 +54592,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -54435,6 +54708,7 @@ stage "implement" adjudicator "adj" failed
             store: &st,
             driver: &driver,
             gates: &runner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path,
             grounder: None,
             graph: None,
@@ -54508,6 +54782,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -54611,6 +54886,7 @@ stage "implement" adjudicator "adj" failed
         };
         let st = Store::open(":memory:").unwrap();
         let deps = Deps {
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -54760,6 +55036,7 @@ stage "implement" adjudicator "adj" failed
             st.append(STREAM, ExpectedRevision::Any, &[round_start("u", 0, base)])
                 .unwrap();
             let deps = Deps {
+                run_branch: branch_of(&repo_path),
                 repo: repo_path.clone(),
                 ..stub_deps(&st, &driver, Vec::new())
             };
@@ -54826,6 +55103,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -54916,6 +55194,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -54995,6 +55274,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -55104,6 +55384,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -55184,6 +55465,7 @@ stage "implement" adjudicator "adj" failed
         let repo = temp_git_project_with_commit();
         let st = Store::open(":memory:").unwrap();
         let deps = Deps {
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&st, driver, Vec::new())
         };
@@ -55422,6 +55704,7 @@ stage "implement" adjudicator "adj" failed
         let repo = temp_git_project_with_commit();
         let st = Store::open(":memory:").unwrap();
         let deps = Deps {
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -55633,6 +55916,7 @@ stage "implement" adjudicator "adj" failed
         )
         .unwrap();
         let deps = Deps {
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -55722,6 +56006,7 @@ stage "implement" adjudicator "adj" failed
             .unwrap();
         }
         let deps = Deps {
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -56060,6 +56345,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -57303,6 +57589,7 @@ stage "implement" adjudicator "adj" failed
             store: &st,
             driver: &d1,
             gates: &ExecRunner,
+            run_branch: None,
             repo: String::new(),
             grounder: Some(&grep),
             graph: None,
@@ -57329,6 +57616,7 @@ stage "implement" adjudicator "adj" failed
             store: &st,
             driver: &d2,
             gates: &ExecRunner,
+            run_branch: None,
             repo: String::new(),
             grounder: Some(&grep),
             graph: None,
@@ -57858,6 +58146,7 @@ stage "implement" adjudicator "adj" failed
         );
         let st = Store::open(":memory:").unwrap();
         let deps = Deps {
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -57967,6 +58256,7 @@ stage "implement" adjudicator "adj" failed
         );
         let st = Store::open(":memory:").unwrap();
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -58064,6 +58354,7 @@ stage "implement" adjudicator "adj" failed
         };
         let st = Store::open(":memory:").unwrap();
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -58174,6 +58465,7 @@ stage "implement" adjudicator "adj" failed
             &refused_decision(),
         );
         let deps = Deps {
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -59221,6 +59513,7 @@ stage "implement" adjudicator "adj" failed
             store: &st,
             driver: &driver,
             gates: &ExecRunner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             grounder: Some(&grep),
             graph: None,
@@ -59269,6 +59562,7 @@ stage "implement" adjudicator "adj" failed
         let store = Store::open(":memory:").unwrap();
         let driver = Stub::new();
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
