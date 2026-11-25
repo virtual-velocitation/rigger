@@ -291,6 +291,28 @@ pub fn files_view(
     rigger::code_view::FactsView::new(view_stamp("files", extract.fingerprint(), 1), facts)
 }
 
+/// An extractor with no doc rule of its own, so it keeps [`Extract::doc_text`]'s default.
+///
+/// [`Extract::doc_text`]: rigger::code_view::Extract::doc_text
+pub struct NoDocRule;
+
+impl rigger::code_view::Extract for NoDocRule {
+    fn fingerprint(&self) -> u64 {
+        0
+    }
+
+    fn extract(
+        &self,
+        entry: &rigger::code_view::Entry,
+        _bytes: &[u8],
+    ) -> rigger::code_facts::FileFacts {
+        rigger::code_facts::FileFacts {
+            path: entry.path.clone(),
+            ..Default::default()
+        }
+    }
+}
+
 /// The subgraph `depth` hops around `seeds` that `records` composed with the code view of a tree
 /// holding exactly `files` ([`files_view`], read by `extract`) serves: the extractor and
 /// composition an end-to-end test drives.
