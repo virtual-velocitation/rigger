@@ -5026,6 +5026,209 @@ impl Local for Vec<u8> {
         }
     }
 
+    /// Spec 117, RUST STAGES FUNCTION VALUES: a function passed by name is a call at its site,
+    /// qualified as a call is - a scoped path with a lowercase leaf outside a call
+    /// (`.map(Store::open)`), and a bare identifier passed as a call's argument
+    /// (`.map(entity_block)`) that starts lowercase, that no exclusion holds and that no binding
+    /// in scope binds. A parameter, a `let` after its own value, an `if let`, a `while let`, a let
+    /// chain, a match arm (in its guard too, the guard's own names binding nothing), a `for` and a
+    /// closure parameter bind, through every pattern a binding writes; a call's head stages once,
+    /// and in a token tree the scope is the invocation's.
+    #[test]
+    fn rust_stages_function_values() {
+        let cases = [
+            (
+                "a function passed by name is a call at its site",
+                "fn a(v: u8) {\n    v.map(entity_block);\n}\n",
+                "\
+1 def Function a to 3
+2 ref call entity_block a
+2 ref call map a",
+            ),
+            (
+                "a scoped path with a lowercase leaf outside a call is a call, qualified by its path",
+                "fn b(v: u8) {\n    v.map(Store::open);\n}\n",
+                "\
+1 def Function b to 3
+2 ref call map b
+2 ref call open b q Store::
+2 ref type Store b",
+            ),
+            (
+                "a parameter passed by name is no call",
+                "fn c(x: u8, v: u8) {\n    v.map(x);\n}\n",
+                "\
+1 def Function c to 3
+2 ref call map c",
+            ),
+            (
+                "a match arm's binding passed by name is no call, the variant's own call staging",
+                "\
+fn d(r: u8) -> u8 {
+    match r {
+        Err(e) => Err(e),
+        _ => r,
+    }
+}
+",
+                "\
+1 def Function d to 6
+3 ref call Err d",
+            ),
+            (
+                "a let binds the names after it, never in its own value",
+                "fn e(v: u8) {\n    let f = v.map(f);\n    v.map(f);\n}\n",
+                "\
+1 def Function e to 4
+2 ref call f e
+2 ref call map e
+3 ref call map e",
+            ),
+            (
+                "a closure's parameters bind in its body, typed or not",
+                "fn g(v: u8) {\n    v.map(|f, h: u8| w(f, h));\n}\n",
+                "\
+1 def Function g to 3
+2 ref call map g
+2 ref call w g",
+            ),
+            (
+                "a for pattern binds in its body",
+                "fn h(v: u8) {\n    for f in v {\n        w(f);\n    }\n}\n",
+                "\
+1 def Function h to 5
+3 ref call w h",
+            ),
+            (
+                "an if let binds in its body",
+                "fn i(v: u8) {\n    if let Some(f) = v {\n        w(f);\n    }\n}\n",
+                "\
+1 def Function i to 5
+3 ref call w i",
+            ),
+            (
+                "a while let binds in its body",
+                "fn j(v: u8) {\n    while let Some(f) = v {\n        w(f);\n    }\n}\n",
+                "\
+1 def Function j to 5
+3 ref call w j",
+            ),
+            (
+                "each let of a let chain binds in its body",
+                "\
+fn k(v: u8) {
+    if v && let Some(f) = v && let Some(g) = f {
+        w(f, g);
+    }
+}
+",
+                "\
+1 def Function k to 5
+3 ref call w k",
+            ),
+            (
+                "a match arm's pattern binds in its guard, the guard's own names binding nothing",
+                "\
+fn l(r: u8) {
+    match r {
+        Some(f) if ok(f) => w(f),
+        _ if g => w(g),
+    }
+}
+",
+                "\
+1 def Function l to 6
+3 ref call ok l
+3 ref call w l
+4 ref call g l
+4 ref call w l",
+            ),
+            (
+                "every pattern a binding writes binds its names",
+                "\
+fn m(v: u8) {
+    let (S { a, b: ref c }, [d], &e, g @ Some(mut h), Ok(i) | Err(i)) = v;
+    w(a, c, d, e, g, h, i);
+}
+",
+                "\
+1 def Function m to 4
+2 ref type S m
+3 ref call w m",
+            ),
+            (
+                "a standard-library import, a prelude path and a primitive path stage no call",
+                "\
+use std::mem::take;
+fn n(v: u8) {
+    v.map(take);
+    v.map(String::from);
+    v.map(u32::from);
+}
+",
+                "\
+2 def Function n to 6
+3 ref call map n
+4 ref call map n
+5 ref call map n",
+            ),
+            (
+                "an uppercase name or leaf is no function value",
+                "fn o(v: u8) {\n    v.map(Some);\n    v.map(Kind::Unit);\n}\n",
+                "\
+1 def Function o to 4
+2 ref call map o
+3 ref call map o
+3 ref type Kind o",
+            ),
+            (
+                "a call's head is no function value: the call stages once",
+                "fn p(x: u8) {\n    Store::open(x);\n    helper(x);\n}\n",
+                "\
+1 def Function p to 4
+2 ref call open p q Store::
+2 ref type Store p
+3 ref call helper p",
+            ),
+            (
+                "a lowercase-rooted or crate path stages unqualified, as its call does",
+                "fn r(v: u8) {\n    v.map(paths::module_dir);\n    v.map(crate::helper);\n}\n",
+                "\
+1 def Function r to 4
+2 ref call map r
+2 ref call module_dir r
+3 ref call helper r
+3 ref call map r",
+            ),
+            (
+                "a bare name read outside a call's arguments is no function value",
+                "fn s() {\n    let y = helper;\n}\n",
+                "1 def Function s to 3",
+            ),
+            (
+                "in a token tree the scope is the invocation's, a nested invocation's included",
+                "\
+fn t(x: u8) {
+    let a = 1;
+    vec![a, x, entity_block, Store::open];
+    vec![vec![a]];
+}
+",
+                "\
+1 def Function t to 5
+3 ref call entity_block t
+3 ref call open t q Store::
+3 ref call vec t
+3 ref type Store t
+4 ref call vec t
+4 ref call vec t",
+            ),
+        ];
+        for (why, src, expected) in cases {
+            assert_eq!(read_lines(src), expected, "{why}");
+        }
+    }
+
     #[test]
     fn malformed_tags_query_surfaces_as_err_not_panic() {
         let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
