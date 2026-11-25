@@ -5,8 +5,8 @@
 # but WINDS DOWN ON ITS OWN the moment the host closes its input (the exact "a session
 # that notices its input closed and exits gracefully" case THE STOP's grace period
 # exists for): the blocking `read` below returns non-zero on EOF, ending the loop and
-# this script, well within a short test grace, so the host never needs to escalate to
-# reap::end_child's SIGKILL.
+# this script, well within a short test grace, so the host never needs to go on to the
+# end of the session's tree.
 self=$(readlink "$0") || self=$0
 . "$(dirname "$self")/launch-args.sh"
 sid=$(launched_session 33333333-3333-4333-8333-333333333333 "$@")

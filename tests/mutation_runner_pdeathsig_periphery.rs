@@ -18,8 +18,10 @@
 //! because its parent thread group exited, which is the exact mechanism a real `cargo test`
 //! parent dying (killed by cargo-mutants, or simply finishing) exercises in production.
 
+#[cfg(unix)]
 use crate::common;
 
+#[cfg(unix)]
 use common::is_running;
 
 use std::path::{Path, PathBuf};
@@ -69,6 +71,8 @@ fn read_pid(path: &Path) -> u32 {
         .unwrap_or_else(|_| panic!("pidfile {} must contain a decimal pid", path.display()))
 }
 
+// Unix only: it reads or signals a process through the unix signal helpers.
+#[cfg(unix)]
 #[test]
 fn a_launcher_that_merely_exits_ends_the_runner_and_its_wrapped_process_with_it() {
     let dir = tempfile::tempdir().expect("tempdir");

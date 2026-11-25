@@ -32,6 +32,10 @@ pub struct Driver {
     /// resolves to `"rigger"` on `$PATH`, the same rule the headless host's own
     /// `rigger_bin` follows.
     pub rigger_bin: String,
+    /// How each agent's process tree is held ([`crate::child_tree::Containment`]): the agent is
+    /// spawned through [`crate::child_tree::TreeCommand`] contained so. Its composition root hands
+    /// the containment the running binary gives; the default chooses none and watches.
+    pub containment: crate::child_tree::Containment,
 }
 
 impl Default for Driver {
@@ -39,6 +43,7 @@ impl Default for Driver {
         Driver {
             host: SessionHost::default(),
             rigger_bin: "rigger".to_string(),
+            containment: crate::child_tree::Containment::Watch(crate::child_tree::Why::NotChosen),
         }
     }
 }
@@ -68,7 +73,12 @@ impl Driver {
         session: &LaunchSession,
     ) -> Result<Output, Error> {
         let persona = system_prompt_file(&opts.system_prompt, blocking_spawn_scratch_dir(opts))?;
-        let mut cmd = self.host.command_in(&opts.dir);
+        let spawn_error = |e| Error(format!("cli driver: spawn agent {:?}: {e}", agent.id));
+        let mut tree = self
+            .host
+            .tree_in(&opts.dir, &self.containment)
+            .map_err(spawn_error)?;
+        let cmd = tree.command_mut();
         cmd.args(build_args(
             agent,
             &persona,
@@ -91,10 +101,8 @@ impl Driver {
         cmd.stdin(Stdio::piped());
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| Error(format!("cli driver: spawn agent {:?}: {e}", agent.id)))?;
-        let writer = child.stdin.take().map(|mut stdin| {
+        let mut child = tree.spawn().map_err(spawn_error)?;
+        let writer = child.take_stdin().map(|mut stdin| {
             std::thread::spawn(move || {
                 let _ = stdin.write_all(framed.as_bytes());
             })

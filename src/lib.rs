@@ -57,6 +57,10 @@ pub use rigger_driver::claude_version;
 /// slots bound builds, never agents.
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_process::budget;
+/// The process tree a session is started and ended through, and the one timed line reader over a
+/// child's stream.
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub use rigger_process::child_tree;
 /// The code store as the composition root wires it: one opener for every writer and reader.
 #[cfg(all(feature = "symbols", any(feature = "store", not(feature = "core"))))]
 pub mod code_store;
@@ -105,9 +109,6 @@ pub use rigger_domain::sleep_hold;
 pub use rigger_driver::hooks;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_driver::liveness;
-/// The supervised child guard and the one timed line reader over a child's stream.
-#[cfg(any(feature = "store", not(feature = "core")))]
-pub use rigger_driver::reaped_child;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_driver::sidecar;
 #[cfg(any(feature = "store", not(feature = "core")))]

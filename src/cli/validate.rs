@@ -771,21 +771,21 @@ fn held_refs_unread(error: &str) -> String {
 
 /// The warning-only `rigger validate` advisories (spec 23, unit 2) naming every process still
 /// rooted under the scratch root: a leak the teardown reap missed, or a process left running
-/// while no teardown is active. ONE advisory per process, each naming its pid and command, so
-/// an operator can see and reclaim it - surfaced only, like the residue block, never a hard
-/// failure and never a kill (the teardown reaps, such as `Worktree::remove`'s, are the only
-/// kill). Empty when nothing is rooted there; and because the shared scan authority
+/// while no teardown is active. ONE advisory per process, each naming its pid and executable,
+/// never its arguments, which can hold a secret, so an operator can see and reclaim it -
+/// surfaced only, like the residue block, never a hard failure and never a kill (the teardown
+/// reaps, such as `Worktree::remove`'s, are the only kill). Empty when nothing is rooted there; and because the shared scan authority
 /// ([`rigger::reap::processes_rooted_under`] - the SAME one the teardown reap consumes) returns
 /// empty where the dir is absent or the process interface cannot read the OS, this is a
 /// graceful no-op (empty, never an error) on such an OS too.
 fn leaked_process_advisories(scratch_root: &Path) -> Vec<String> {
     rigger::reap::processes_rooted_under(scratch_root)
         .into_iter()
-        .map(|(pid, command)| {
-            let named = if command.is_empty() {
+        .map(|(pid, program)| {
+            let named = if program.is_empty() {
                 format!("pid {pid}")
             } else {
-                format!("pid {pid} ({command})")
+                format!("pid {pid} ({program})")
             };
             format!(
                 "warning: process rooted under the scratch root (surfaced only - validate \
@@ -1518,7 +1518,8 @@ mod tests {
     #[test]
     fn leaked_process_advisories_name_a_process_rooted_under_the_scratch_root() {
         // spec 23 unit 2: a process whose cwd is under the scratch root is surfaced as a
-        // warning-only advisory naming its pid, so a leaked build/tool is visible even when no
+        // warning-only advisory naming its pid and executable, never its arguments, which can
+        // hold a secret, so a leaked build/tool is visible even when no
         // teardown is running. Consumes the SAME scan authority the teardown reap uses.
         let dir = tempfile::tempdir().unwrap();
         let scratch = dir.path().join("tmp");
@@ -1531,12 +1532,14 @@ mod tests {
             .spawn()
             .expect("spawn probe child");
 
-        // Wait until the kernel reports the child rooted under the scratch root, then capture.
+        // Wait until the kernel reports the child rooted under the scratch root, its exec done
+        // (until then it is still this test's own image), then capture.
         let mut advisories = Vec::new();
         for _ in 0..200 {
             let a = leaked_process_advisories(&scratch);
             if a.iter()
                 .any(|line| line.contains(&format!("pid {}", child.id())))
+                && !rigger::os_process::is_unexeced_fork_of(child.id(), std::process::id())
             {
                 advisories = a;
                 break;
@@ -1544,6 +1547,11 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(25));
         }
 
+        let named = format!(
+            "pid {} ({}) - its cwd",
+            child.id(),
+            rigger::os_process::executable_name(child.id())
+        );
         // Reap the fixture before asserting so a failed assert never leaks the sleeper.
         let _ = child.kill();
         let _ = child.wait();
@@ -1551,9 +1559,9 @@ mod tests {
         assert!(
             advisories.iter().any(|line| line.starts_with("warning:")
                 && line.contains("scratch root")
-                && line.contains(&format!("pid {}", child.id()))),
+                && line.contains(&named)),
             "a process rooted under the scratch root yields a warning-only advisory naming its \
-             pid; got: {advisories:?}"
+             pid and executable, never its arguments ({named:?}); got: {advisories:?}"
         );
     }
 

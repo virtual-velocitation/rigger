@@ -23,6 +23,8 @@ pub mod mcp;
 pub mod product_binary;
 pub mod repo;
 pub mod served;
+#[cfg(unix)]
+pub mod witness;
 pub mod workflow_probe;
 
 #[allow(unused_imports)]
@@ -46,6 +48,15 @@ pub fn shell_outcome(out: &std::process::Output) -> (bool, String) {
         String::from_utf8_lossy(&out.stderr)
     );
     (out.status.success(), text)
+}
+
+/// How a session this suite launches through a host holds its process tree: the containment this
+/// OS gives a tree the built binary keeps, as a composition root hands its host one
+/// (`Containment::of_running_binary`), detected once per suite.
+pub fn session_containment() -> &'static rigger::child_tree::Containment {
+    static CONTAINMENT: std::sync::OnceLock<rigger::child_tree::Containment> =
+        std::sync::OnceLock::new();
+    CONTAINMENT.get_or_init(|| rigger::child_tree::Containment::detect(&rigger_bin()))
 }
 
 /// A `Command` for the compiled `rigger` binary this suite drives, defensively UNFENCED
@@ -353,6 +364,8 @@ fn validated_target_pid(pid: u32, verb: &str) {
 /// SIGKILLs through the `rustix` syscall (never a shell-out, never `libc`, never a
 /// process-group/negative pid) and ignores a delivery that fails because the target already
 /// exited: that is exactly the state a "make sure this is dead" caller wants.
+// Unix only: the signal goes through rustix's unix process calls.
+#[cfg(unix)]
 pub fn terminate_pid(pid: u32) {
     let _ = delivered(pid, "terminate", rustix::process::Signal::KILL);
 }
@@ -373,6 +386,8 @@ pub fn terminate_pid(pid: u32) {
 /// notice a delivery failure - mirroring the success check a prior external-utility invocation
 /// gave the two fixtures this replaces. Both the guard-panic paths and this false-return path
 /// are pinned by dedicated tests in `tests/no_os_kill_test_helper_periphery.rs`.
+// Unix only: the signal goes through rustix's unix process calls.
+#[cfg(unix)]
 pub fn stop_pid(pid: u32) -> bool {
     delivered(pid, "SIGSTOP", rustix::process::Signal::STOP)
 }
@@ -381,6 +396,8 @@ pub fn stop_pid(pid: u32) -> bool {
 /// interrupts a driver in the foreground: std's handle ends a child only by SIGKILL, so the
 /// interrupt goes through this file, beside [`stop_pid`], under the same guard and the same
 /// delivered-or-not answer.
+// Unix only: the signal goes through rustix's unix process calls.
+#[cfg(unix)]
 pub fn interrupt_pid(pid: u32) -> bool {
     delivered(pid, "SIGINT", rustix::process::Signal::INT)
 }
@@ -388,6 +405,8 @@ pub fn interrupt_pid(pid: u32) -> bool {
 /// Whether `signal` reached `pid`, under [`validated_target_pid`]'s guard with `verb` naming the
 /// signal: the one test-side signal call, which [`terminate_pid`], [`stop_pid`] and
 /// [`interrupt_pid`] share.
+// Unix only: the signal goes through rustix's unix process calls.
+#[cfg(unix)]
 fn delivered(pid: u32, verb: &str, signal: rustix::process::Signal) -> bool {
     validated_target_pid(pid, verb);
     let Ok(raw) = i32::try_from(pid) else {
@@ -405,11 +424,15 @@ fn delivered(pid: u32, verb: &str, signal: rustix::process::Signal) -> bool {
 /// start time it was read with ([`rigger::reap::still_started`], the witness check the production
 /// reap runs before it signals). A pid that had already ended when it was read, or that was
 /// recycled onto another process since, is never signalled.
+// Unix only: the signal goes through rustix's unix process calls.
+#[cfg(unix)]
 pub struct OwnedPid {
     pid: u32,
     started: Option<u64>,
 }
 
+// Unix only: the signal goes through rustix's unix process calls.
+#[cfg(unix)]
 impl OwnedPid {
     /// Own `pid`, its start time read now.
     pub fn new(pid: u32) -> Self {
@@ -428,6 +451,8 @@ impl OwnedPid {
     }
 }
 
+// Unix only: the signal goes through rustix's unix process calls.
+#[cfg(unix)]
 impl Drop for OwnedPid {
     fn drop(&mut self) {
         if self
@@ -449,6 +474,8 @@ pub fn is_running(pid: u32) -> bool {
 /// Whether `pid` is currently alive, via the internal `rustix` liveness probe (mirrors
 /// [`terminate_pid`]'s signal call so both go through the identical sanctioned API) - the
 /// test-side replacement for a shelled-out existence-probe command.
+// Unix only: the signal goes through rustix's unix process calls.
+#[cfg(unix)]
 pub fn is_alive(pid: u32) -> bool {
     let Ok(raw) = i32::try_from(pid) else {
         return false;

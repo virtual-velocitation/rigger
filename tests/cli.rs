@@ -5230,6 +5230,46 @@ fn landing_on_the_live_session<'a>(land: impl Fn() + 'a) -> impl FnMut(&Path) + 
     }
 }
 
+/// A `beside` for [`run_on_arms_beside`] standing in for a process outside a session's tree that
+/// holds its output pipes open past its end, which no end of that tree reaches: once the session
+/// writes its pid to `$here/session-pid`, it opens the session's stderr (fd 2) and stream (fd 3)
+/// pipes through `/proc` and marks `$here/holder-attached`; once that process is gone it makes the
+/// write `land` makes, then lets both pipes go, so the host's drain joins end behind that write.
+#[cfg(unix)]
+fn holding_the_pipes_past_the_end<'a>(land: impl Fn() + 'a) -> impl FnMut(&Path) + 'a {
+    let mut pipes: Option<[std::fs::File; 2]> = None;
+    let mut landed = false;
+    move |fake| {
+        let bin = fake.join("bin");
+        let Some(pid) = std::fs::read_to_string(bin.join("session-pid"))
+            .ok()
+            .and_then(|pid| pid.trim().parse::<u32>().ok())
+        else {
+            return;
+        };
+        let open = |fd: u8| {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(format!("/proc/{pid}/fd/{fd}"))
+                .expect("the session's pipe opens from outside its tree")
+        };
+        // Gone once it is, or once it is a zombie its parent has not yet reaped.
+        let gone = || rigger_process::os_process::state(pid).is_none_or(|state| state == 'Z');
+        match pipes {
+            None if !landed => {
+                pipes = Some([open(2), open(3)]);
+                std::fs::write(bin.join("holder-attached"), "").unwrap();
+            }
+            Some(_) if gone() => {
+                land();
+                landed = true;
+                pipes = None;
+            }
+            _ => {}
+        }
+    }
+}
+
 /// The operator hold a test lands with [`holding_the_live_session`], as [`run_holds`] reads it
 /// back.
 fn seeded_operator_hold() -> rigger::run::RunHeld {
@@ -8612,6 +8652,69 @@ fn a_run_that_fails_leaves_with_its_error_and_no_interval_to_wait_out() {
     assert!(took < SUPERVISOR_BEAT_INTERVAL, "returned after {took:?}");
 }
 
+/// A STOP THROUGH THE BUILT BINARY: given a session that starts a process which leaves its tree and
+/// its working directory at once, as daemon(3) does, holding the session's pipes, and whose rigger
+/// MCP server then reports `failed` at init, when `rigger run` drives it with no infra rule, then
+/// the run gives up on the launch fault well within the stop's grace, and nothing the session
+/// started is still running once `rigger run` has exited: the binary serves the containment the
+/// composition root hands the host. Read through the FIFO witness (`common::witness`), so no
+/// signal of the test's own decides it. Linux only: the process that left the session's tree is
+/// the session's to end only where the keeper adopts it, and only Linux has the keeper.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_run_whose_session_is_stopped_leaves_nothing_the_session_started_running() {
+    use common::witness::{Reading, Witness};
+    use rigger::driver::claude_code::STOP_GRACE;
+
+    let mut witness = Witness::new();
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &NO_INFRA_RULE_WORKFLOW);
+    let scratch = tempfile::tempdir().unwrap();
+    let fakebin = tempfile::tempdir().unwrap();
+    let path_env = stub_path(
+        fakebin.path(),
+        "claude",
+        Some(common::repo::FORKS_AT_STOP_AGENT),
+    );
+    let witness_env = witness.env();
+    let mut envs = fake_claude_env(&path_env, scratch.path()).to_vec();
+    envs.extend(
+        witness_env
+            .iter()
+            .map(|(var, val)| (var.as_str(), val.as_str())),
+    );
+    envs.extend([
+        ("RIGGER_FORK_AT", "daemon"),
+        ("RIGGER_TEST_MCP_STATUS", "failed"),
+    ]);
+
+    let started = Instant::now();
+    let (out, err, ok) =
+        common::cli::run_rigger_within(root, &["run"], &envs, POLLS_BESIDE_A_RUN, |_| {})
+            .expect("the run gives up on its launch fault");
+    let took = started.elapsed();
+    let reading = witness.read();
+
+    assert!(!ok, "the run fails; stderr: {err}\nstdout: {out}");
+    assert_eq!(
+        witness.up(),
+        2,
+        "the up bytes of the session's main and of the process it started; stderr: {err}"
+    );
+    assert_eq!(
+        (reading, took < STOP_GRACE),
+        (Reading::Ended, true),
+        "the witness read {reading:?} (Ended: nothing the session started is still running) and \
+         the run took {took:?}; stderr: {err}"
+    );
+    assert_eq!(
+        witness.release(),
+        Reading::Ended,
+        "the test's release ends every process the session started"
+    );
+}
+
 /// The on-disk `body` decodes to the one [`SupervisorBeat`](rigger::progress::SupervisorBeat) a
 /// beat is.
 fn a_beat_body_decodes(body: &str) {
@@ -9251,6 +9354,8 @@ fn a_resume_ending_api_side_or_on_a_held_run_launches_nothing_fresh() {
     const UNREADABLE: &str = "    printf '\\377\\376\\n' >&3\n";
     /// Reads the session's input to its close: the start of a stop, or the reap past a read error.
     const READS_TO_ITS_CLOSE: &str = "    while IFS= read -r _unused; do :; done\n";
+    /// Writes the session's pid where [`holding_the_pipes_past_the_end`] reads it.
+    const WRITES_ITS_PID: &str = "    printf '%s' \"$$\" > \"$here/session-pid\"\n";
 
     /// One launch of the re-attempt, at the ordinal its place says: whether it resumed the first
     /// attempt's session, how it closed, if it did, and the class of that close.
@@ -9272,9 +9377,22 @@ fn a_resume_ending_api_side_or_on_a_held_run_launches_nothing_fresh() {
     let retried = |category| format!("{}{ENDS}", api_retry_lines(&[category], 1));
     let under_a_hold = |shell: String| format!("{SESSION_WAITS_FOR_A_HOLD}{shell}{ENDS}");
     let held_as_its_input_closes = format!("{READS_TO_ITS_CLOSE}{}", under_a_hold(String::new()));
-    // Past a read error the host reaps the child it spawned and drains its output pipes, so a
-    // subshell of that child, holding them, outlives the reap, and the drain ends when it does.
-    let outliving_its_reap = format!("    (\n{held_as_its_input_closes}    )\n{ENDS}");
+    // Past a read error the host ends the session's tree, then drains its output pipes, so only
+    // a process outside that tree holding them keeps the drain joins open: the session waits for
+    // the test to hold them from outside it ([`holding_the_pipes_past_the_end`]), which lands the
+    // hold once the session is gone. Linux only: the holder opens the pipes through `/proc`.
+    let held_past_its_end = format!(
+        "{WRITES_ITS_PID}{}{UNREADABLE}{READS_TO_ITS_CLOSE}{ENDS}",
+        waiting_for!("holder-attached")
+    );
+    let held_in_the_drain_joins = cfg!(target_os = "linux").then(|| Case {
+        name: "a hold landing between a read error and the end of the drain joins",
+        workflow: &TWO_ATTEMPT_RED_UNIT_WORKFLOW,
+        endings: vec![held_past_its_end],
+        launches: vec![(true, None, None), completed],
+        holds: vec![seeded_operator_hold()],
+        fault: None,
+    });
     let cases = [
         Case {
             name: "a wait class",
@@ -9328,14 +9446,6 @@ fn a_resume_ending_api_side_or_on_a_held_run_launches_nothing_fresh() {
             name: "a read error on a held run",
             workflow: &TWO_ATTEMPT_RED_UNIT_WORKFLOW,
             endings: vec![under_a_hold(UNREADABLE.to_string())],
-            launches: vec![(true, None, None), completed],
-            holds: vec![seeded_operator_hold()],
-            fault: None,
-        },
-        Case {
-            name: "a hold landing between a read error and the end of the drain joins",
-            workflow: &TWO_ATTEMPT_RED_UNIT_WORKFLOW,
-            endings: vec![format!("{UNREADABLE}{outliving_its_reap}")],
             launches: vec![(true, None, None), completed],
             holds: vec![seeded_operator_hold()],
             fault: None,
@@ -9397,7 +9507,7 @@ fn a_resume_ending_api_side_or_on_a_held_run_launches_nothing_fresh() {
             fault: None,
         },
     ];
-    for case in cases {
+    for case in cases.into_iter().chain(held_in_the_drain_joins) {
         let name = case.name;
         let dir = temp_git_project_with_commit();
         let root = dir.path();
@@ -9431,6 +9541,12 @@ fn a_resume_ending_api_side_or_on_a_held_run_launches_nothing_fresh() {
         let mut hold = holding_the_live_session(root, || {
             common::fixtures::run_held_event(&seeded_operator_hold())
         });
+        let mut hold_past_the_end = holding_the_pipes_past_the_end(|| {
+            common::cli::seed_on_the_run(
+                root,
+                common::fixtures::run_held_event(&seeded_operator_hold()),
+            )
+        });
         // The host reads the hold once the launch has ended, so the release waits for what follows
         // that read: the launch's close, or the reclaim of its scratch when it closes nothing.
         let mut release = releasing_holds(root, 1, |root| {
@@ -9444,6 +9560,7 @@ fn a_resume_ending_api_side_or_on_a_held_run_launches_nothing_fresh() {
         let (out, err, ok, fake) =
             run_on_arms_beside(root, &["run"], scratch.path(), &arm, |fake| {
                 hold(fake);
+                hold_past_the_end(fake);
                 release(fake);
             });
         assert!(ok, "{name}: the run exits 0; stderr: {err}\nstdout: {out}");
@@ -14421,6 +14538,8 @@ fn assert_refuses_before_output(root: &Path, args: &[&str], path: &str, refusal:
 /// executable elsewhere, when the operator runs `rigger validate`, then the gate's line names
 /// each requirement in its LIST order (not name order) at the PATH directory that holds it -
 /// the symlink at its own path, never its target - joined by `, `.
+// Unix only: the symlink is made by std's unix call.
+#[cfg(unix)]
 #[test]
 fn validate_reports_a_block_list_requirement_set_in_list_order_with_a_symlink_at_its_own_path() {
     let dir = initialized_project();
@@ -15486,12 +15605,12 @@ fn reset_build_cache_reclaims_a_dead_units_gate_scratch_root_and_spares_a_live_u
 
 /// Spec 23 (unit 2), done-when line 60: `rigger validate` reports, as a warning-only advisory
 /// that NEVER fails validation, any process whose cwd is under the scratch root - one line
-/// naming its pid, its command and the scratch root - and reports none once nothing is rooted
-/// there. Driving the real binary proves the config -> residue-scan -> process-interface scan
-/// (`os_process`'s process list, working directory and command line) -> stderr wiring end to
-/// end; `leaked_process_advisories` is unit-tested in `src/cli/validate.rs`. On an OS the process
-/// interface cannot read the scan is a graceful no-op (the shared scanner returns empty), so
-/// this behaves like the no-process case, never an error.
+/// naming its pid, its executable (never its arguments) and the scratch root - and reports none
+/// once nothing is rooted there. Driving the real binary proves the config -> residue-scan ->
+/// process-interface scan (`os_process`'s process list, working directory and executable) ->
+/// stderr wiring end to end; `leaked_process_advisories` is unit-tested in `src/cli/validate.rs`.
+/// On an OS the process interface cannot read the scan is a graceful no-op (the shared scanner
+/// returns empty), so this behaves like the no-process case, never an error.
 #[test]
 fn validate_warns_about_a_process_rooted_under_the_scratch_root() {
     let dir = temp_project();
@@ -15506,21 +15625,20 @@ fn validate_warns_about_a_process_rooted_under_the_scratch_root() {
     let tmp = scratch.to_str().unwrap();
     let mut child = common::fixtures::sleeper_in(&probe);
 
-    // Wait until the scan validate runs names the child rooted under the scratch root with its
-    // whole command. `spawn` returns while the child's exec may still be laying out its
-    // arguments: the OS already reports its working directory but no arguments yet. A scan that
-    // never names the whole command is left to the advisory assertion below, which shows what
-    // validate printed.
-    let whole = (child.id(), "sleep 300".to_string());
+    // Wait until the scan validate runs finds the child rooted under the scratch root, its exec
+    // done. `spawn` returns while the child may still be this test's own image: the OS already
+    // reports its working directory but not yet the executable it runs.
     let mut rooted = Vec::new();
     common::fixtures::wait_until(|| {
         rooted = rigger::reap::processes_rooted_under(&scratch);
-        rooted.contains(&whole)
+        rooted.iter().any(|(pid, _)| *pid == child.id())
+            && !rigger::os_process::is_unexeced_fork_of(child.id(), std::process::id())
     });
     assert!(
         rooted.iter().any(|(pid, _)| *pid == child.id()),
         "precondition: the probe child is rooted under the scratch root; the scan names {rooted:?}"
     );
+    let program = rigger::os_process::executable_name(child.id());
 
     let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("RIGGER_TMPDIR", tmp)]);
 
@@ -15546,15 +15664,15 @@ fn validate_warns_about_a_process_rooted_under_the_scratch_root() {
     }
     let expected = format!(
         "warning: process rooted under the scratch root (surfaced only - validate never reaps \
-         it): pid {} (sleep 300) - its cwd is under {tmp}; it outlives a dir rigger owns until \
+         it): pid {} ({program}) - its cwd is under {tmp}; it outlives a dir rigger owns until \
          the next teardown or run start reaps it.",
         child.id()
     );
     assert_eq!(
-        advisories(&err),
-        vec![expected.as_str()],
-        "validate warns once, naming the rooted process's pid, its command and the scratch root; \
-         stderr:\n{err}"
+        (advisories(&err), program.contains("300")),
+        (vec![expected.as_str()], false),
+        "validate warns once, naming the rooted process's pid, its executable, never its argument \
+         `300`, and the scratch root; stderr:\n{err}"
     );
     assert!(
         ok2,
@@ -24048,6 +24166,8 @@ fn setup_selfhosting_repo_with_fresh_docs(root: &Path) {
 /// render over them. A binary older than the tree that re-renders committed docs to the OLD
 /// text and stages them strips a branch's rendered changes from every later commit. Drives the
 /// REAL `rigger` binary (via a `rigger` shim on PATH, spec 24) and REAL git.
+// Unix only: the hook is made executable by its mode bits.
+#[cfg(unix)]
 #[test]
 fn setup_precommit_hook_refuses_when_the_staged_render_has_drifted() {
     use std::os::unix::fs::PermissionsExt;
@@ -28853,6 +28973,8 @@ fn pid_reaches_stopped_state(pid: u32) -> bool {
 /// exemption is scoped to that one file). The stop is confirmed landed before anything races
 /// the held port; dropping the holder reaps it (SIGKILL terminates a stopped process
 /// unconditionally).
+// Unix only: it reads or signals a process through the unix signal helpers.
+#[cfg(unix)]
 fn stopped_dash_holder(root: &Path) -> WatchedDash {
     let holder = WatchedDash::launch(&[], None, |cmd| cmd.current_dir(root));
     assert!(
@@ -28899,6 +29021,8 @@ fn assert_the_stopped_holder_diagnosis(err: &str, holder_pid: u32, port: u16) {
 /// stopped with `SIGSTOP` through `common::stop_pid`, the test side's one signal call; a second
 /// `rigger dash` against the SAME port must fail naming the first one's pid, its STOPPED state,
 /// and the resume-or-kill remedy - never a bare `Address already in use`.
+// Unix only: it reads or signals a process through the unix signal helpers.
+#[cfg(unix)]
 #[test]
 fn cmd_dash_gives_the_stopped_listener_diagnosis_naming_resume_or_kill() {
     if !Path::new("/proc").is_dir() {
@@ -30025,6 +30149,8 @@ fn guard_write_denies_a_dot_dot_escape_from_inside_the_root() {
 
 /// A symlink planted INSIDE the root but pointing OUTSIDE it must not smuggle a write past
 /// the guard - the target's REAL location decides, not the raw text of the path.
+// Unix only: the symlink is made by std's unix call.
+#[cfg(unix)]
 #[test]
 fn guard_write_denies_a_symlink_escape() {
     let outside = tempfile::tempdir().unwrap();

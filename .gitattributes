@@ -1,3 +1,6 @@
 # The driver test fixture is a POSIX shell script executed verbatim by the
 # spawn path; keep LF endings so it is never CRLF-normalized on checkout.
 tests/fixtures/fake-agent.sh text eol=lf
+# A test parses the lock file as text with LF line endings (the keep-awake adapter's
+# dependency pin); keep them on every checkout.
+Cargo.lock text eol=lf

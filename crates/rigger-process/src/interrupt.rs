@@ -35,8 +35,9 @@ std::cfg_select! {
         /// The unix trigger: a `SIGINT` handler that truncates the armed descriptor and ends the
         /// process with status 130, calling only the async-signal-safe `ftruncate` and `_exit`.
         /// A process started ignoring `SIGINT` (a background start by a shell without job
-        /// control) is never ended by one, so it is left ignoring it and nothing is armed.
-        mod native {
+        /// control) is never ended by one, so it is left ignoring it and nothing is armed. Its
+        /// disposition query is the one a keeper reads its own signals' dispositions through.
+        pub(crate) mod native {
             use std::fs::File;
             use std::os::fd::AsRawFd;
             use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
@@ -59,15 +60,20 @@ std::cfg_select! {
                 }
             }
 
-            /// The current disposition of `SIGINT`, read without changing it.
-            pub(super) fn current() -> libc::sighandler_t {
+            /// The current disposition of `signal`, read without changing it.
+            pub(crate) fn disposition(signal: libc::c_int) -> libc::sighandler_t {
                 // SAFETY: a query: a null new action changes nothing, and `old` is a valid
                 // out-pointer.
                 unsafe {
                     let mut old: libc::sigaction = std::mem::zeroed();
-                    libc::sigaction(libc::SIGINT, std::ptr::null(), &mut old);
+                    libc::sigaction(signal, std::ptr::null(), &mut old);
                     old.sa_sigaction
                 }
+            }
+
+            /// The current disposition of `SIGINT`.
+            pub(super) fn current() -> libc::sighandler_t {
+                disposition(libc::SIGINT)
             }
 
             pub(super) fn arm(file: &File) {

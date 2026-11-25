@@ -3,30 +3,33 @@
 //! the run base; this test walks EVERY `.rs` file under `src/`, `crates/` and `tests/` in the checked-out
 //! tree and fails, naming file and line, on any of the gate's forbidden shapes found outside
 //! the two sanctioned lifecycle helpers (`crates/rigger-process/src/reap.rs`, `tests/common/mod.rs`) - or on a
-//! shell-out / `--` argv separator / negative-pid `format!` found INSIDE those two files (and
-//! on the Windows process-termination call inside the test helper),
+//! process-group signal call, shell-out, `--` argv separator or negative-pid `format!` found
+//! INSIDE those two files (and on any reaper-only shape inside the test helper),
 //! where calling the internal signal API directly is exactly the point and must NOT be
 //! flagged. It runs under plain `cargo test`, so unlike the shell gate it also covers CI
 //! (`.github/workflows/rust.yml`), which runs `cargo test` but not the rigger-loop gate.
 //!
-//! The ten forbidden shapes mirror `.rigger/gates/content.sh`'s `no-os-kill` check exactly - see
+//! The thirteen forbidden shapes mirror `.rigger/gates/content.sh`'s `no-os-kill` check exactly - see
 //! that file (out of the gate's own scope, so it may name the literal pattern text) for the
-//! precise regex. In prose: a `Command::new` shell-out to any of five OS process-termination
-//! utility names, the Windows one among them, the name in any case; the bare shell form of two
-//! of those names, invoked with a leading-hyphen signal argument; one of the five also appearing
-//! as a standalone shell token on its own; the libc process-group signal call name; a direct call
-//! through `libc` or a `signal` module; the sanctioned rustix call itself (forbidden only
-//! OUTSIDE the two sanctioned files - see below); the `--` argv separator passed to
-//! `.arg(...)`; a `format!` call shaped to build a leading-hyphen (negative-pid-style)
-//! argument; and an opened call of the Windows process-termination function, forbidden in
-//! every file but `reap.rs`. Inside the two sanctioned files the Command::new shell-out, the
-//! `--` separator and the negative-pid `format!` remain banned (the gate's own narrower second
-//! check), and so does the Windows call inside the test helper - the direct unix signal call is
-//! exactly what those two files exist to make, and the reaper's `send_signal` is the one
-//! Windows termination site.
+//! precise regex. In prose: a process-group signal call, by any of the rustix and libc names for
+//! one; a `Command::new` shell-out to any of five OS process-termination utility names, the
+//! Windows one among them, the name in any case; the bare shell form of two of those names,
+//! invoked with a leading-hyphen signal argument; one of the five also appearing as a standalone
+//! shell token on its own; a direct call through `libc` or a `signal` module; the sanctioned
+//! rustix call itself (forbidden only OUTSIDE the two sanctioned files - see below); the `--`
+//! argv separator passed to `.arg(...)`; a `format!` call shaped to build a leading-hyphen
+//! (negative-pid-style) argument; an opened call of either Windows termination function (the
+//! process one and the job-object one); and the three confined signal calls: the thread, queued
+//! and descriptor signal call names. The process-group signal call is forbidden in every file,
+//! the two sanctioned ones included: a group can hold processes rigger never started. The last
+//! five are the reaper-only shapes, forbidden in every file but `reap.rs`. Inside the two
+//! sanctioned files the Command::new shell-out, the `--` separator and the negative-pid
+//! `format!` remain banned (the gate's own narrower second check), and so do the reaper-only
+//! shapes inside the test helper - the direct unix signal call is exactly what those two files
+//! exist to make, and the reaper's `send_signal` and `end_job` are the Windows termination sites.
 //!
 //! The test module also runs the shipped script itself, by path, over one fixture unit branch
-//! per row, so the script's own patterns for the two Windows shapes are pinned by its exit and
+//! per row, so the script's own patterns for the reaper-only shapes are pinned by its exit and
 //! its whole output, not only mirrored by this file's needles.
 //!
 //! SOURCE HYGIENE (load-bearing - read this before touching a needle or a fixture below).
@@ -92,6 +95,32 @@ fn module_kill_open(module: &str) -> String {
 /// An opened call of the Windows process-termination function (Terminate-Process).
 fn windows_termination_open() -> String {
     join("Terminate", "Process(")
+}
+/// An opened call of the Windows job-termination function (Terminate-JobObject), whose one site
+/// is the reaper's `end_job`, ending a job object the process created.
+fn job_termination_open() -> String {
+    join("TerminateJob", "Object(")
+}
+/// The process-group signal call names the gate bans in every file, as its own pattern names
+/// them: rustix's (kill-process-group, kill-current-process-group) and libc's (kill-pg).
+fn group_signal_words() -> [String; 3] {
+    [
+        join(&kill_word(), "_process_group"),
+        join(&kill_word(), "_current_process_group"),
+        suffixed_kill("pg"),
+    ]
+}
+/// The thread signal call name (t-g-kill).
+fn thread_signal_word() -> String {
+    prefixed_kill("tg")
+}
+/// The queued signal call name (sig-queue).
+fn queued_signal_word() -> String {
+    join("sig", "queue")
+}
+/// The descriptor signal call name (pidfd-send-signal).
+fn descriptor_signal_word() -> String {
+    join("pidfd_send", "_signal")
 }
 
 /// The exact set of words the Command::new shell-out shape and the bare shell
@@ -188,14 +217,13 @@ fn shape_pkill(line: &str) -> bool {
     false
 }
 
-/// The four bare-substring shapes (see `.rigger/gates/content.sh` for each literal pattern),
-/// banned anywhere on a line with no delimiter required, each with its finding label: the libc
-/// process-group signal call name; a direct call through `libc`; a direct call through a
-/// `signal` module; and the sanctioned rustix signal call itself - forbidden everywhere OTHER
-/// than the two sanctioned files (checked by the caller, not here).
-fn substring_shapes() -> [(String, &'static str); 4] {
+/// The three bare-substring shapes (see `.rigger/gates/content.sh` for each literal pattern),
+/// banned anywhere on a line with no delimiter required, each with its finding label: a direct
+/// call through `libc`; a direct call through a `signal` module; and the sanctioned rustix
+/// signal call itself - forbidden everywhere OTHER than the two sanctioned files (checked by the
+/// caller, not here).
+fn substring_shapes() -> [(String, &'static str); 3] {
     [
-        (suffixed_kill("pg"), "libc process-group signal call"),
         (module_kill_open("libc::"), "direct libc signal call"),
         (module_kill_open("signal::"), "direct signal-module call"),
         (
@@ -243,14 +271,37 @@ fn has_marker_shape(line: &str, (marker, tail): MarkerShape) -> bool {
 /// path, independent of `.rigger/gates/content.sh`'s copy.
 const SANCTIONED_FILES: [&str; 2] = [REAPER, "tests/common/mod.rs"];
 
-/// The reaper, whose `send_signal` is the one site of the Windows process-termination call:
-/// the one file [`scan_tree`] never flags for it (the test helper is sanctioned for the unix
-/// signal call only).
+/// The reaper, whose `send_signal` and `end_job` are the sites of the two Windows termination
+/// calls: the one file [`scan_tree`] never flags for a [`reaper_only_shapes`] entry (the test
+/// helper is sanctioned for the unix signal call only).
 const REAPER: &str = "crates/rigger-process/src/reap.rs";
 
+/// The shapes only [`REAPER`] may carry, each with its finding label: both Windows termination
+/// calls, then the three confined signal calls (the thread, queued and descriptor signal call
+/// names, bare), as the gate's own pattern names them.
+fn reaper_only_shapes() -> [(String, &'static str); 5] {
+    [
+        (
+            windows_termination_open(),
+            "Windows process-termination call outside reap.rs",
+        ),
+        (
+            job_termination_open(),
+            "Windows job-termination call outside reap.rs",
+        ),
+        (thread_signal_word(), "thread signal call outside reap.rs"),
+        (queued_signal_word(), "queued signal call outside reap.rs"),
+        (
+            descriptor_signal_word(),
+            "descriptor signal call outside reap.rs",
+        ),
+    ]
+}
+
 /// Every forbidden shape found in one line of a file that is NOT one of the two sanctioned
-/// lifecycle helpers - the gate's ban on every shape but the Windows process-termination call,
-/// which [`scan_tree`] checks in every file but [`REAPER`].
+/// lifecycle helpers - the gate's ban on every shape but the process-group signal calls, which
+/// [`scan_tree`] checks in every file, and the reaper-only ones, which it checks in every file
+/// but [`REAPER`].
 fn general_hits(line: &str) -> Vec<&'static str> {
     let mut hits = Vec::new();
     if shape_command_new_signal(line) {
@@ -295,23 +346,33 @@ fn sanctioned_hits(line: &str) -> Vec<&'static str> {
 }
 
 /// Scan every `.rs` file under `root/src`, `root/crates` and `root/tests`, deterministically ordered by
-/// (file, line), applying [`general_hits`] outside [`SANCTIONED_FILES`] and
-/// [`sanctioned_hits`] inside them, and flagging the Windows process-termination call in every
-/// file but [`REAPER`] - the whole-tree twin of the diff-scoped `no-os-kill` gate (spec 78, THE
-/// AUDIT TEST).
+/// (file, line), flagging a [`group_signal_words`] call in every file, applying
+/// [`general_hits`] outside [`SANCTIONED_FILES`] and [`sanctioned_hits`] inside them, and
+/// flagging every [`reaper_only_shapes`] entry in every file but [`REAPER`] - the whole-tree twin
+/// of the diff-scoped `no-os-kill` gate (spec 78, THE AUDIT TEST).
 fn scan_tree(root: &Path) -> Vec<Finding> {
-    let windows_termination = windows_termination_open();
+    let group_signal = group_signal_words();
+    let reaper_only = reaper_only_shapes();
     let mut findings = Vec::new();
     for (rel, content) in common::repo::rs_sources_under(root, &["src", "crates", "tests"]) {
         let sanctioned = SANCTIONED_FILES.contains(&rel.as_str());
         for (i, line) in content.lines().enumerate() {
-            let mut hits = if sanctioned {
+            let mut hits = Vec::new();
+            if group_signal.iter().any(|word| line.contains(word.as_str())) {
+                hits.push("process-group signal call");
+            }
+            hits.extend(if sanctioned {
                 sanctioned_hits(line)
             } else {
                 general_hits(line)
-            };
-            if rel != REAPER && line.contains(&windows_termination) {
-                hits.push("Windows process-termination call outside reap.rs");
+            });
+            if rel != REAPER {
+                hits.extend(
+                    reaper_only
+                        .iter()
+                        .filter(|(needle, _)| line.contains(needle.as_str()))
+                        .map(|(_, label)| *label),
+                );
             }
             for shape in hits {
                 findings.push(Finding {
@@ -393,6 +454,77 @@ mod tests {
         format!("unsafe {{ {}handle, 1) }};\n", windows_termination_open())
     }
 
+    /// A line opening a call of the Windows job-termination function.
+    fn job_termination_call() -> String {
+        format!("unsafe {{ {}job, 1) }};\n", job_termination_open())
+    }
+
+    /// The three confined signal calls, each opened.
+    fn confined_signal_calls() -> [String; 3] {
+        [
+            join(&thread_signal_word(), "("),
+            join(&queued_signal_word(), "("),
+            join(&descriptor_signal_word(), "("),
+        ]
+    }
+
+    /// The process-group signal calls, each opened.
+    fn group_signal_calls() -> Vec<String> {
+        group_signal_words()
+            .iter()
+            .map(|word| join(word, "("))
+            .collect()
+    }
+
+    /// A line making the opened signal `call`.
+    fn signal_call_line(call: &str) -> String {
+        format!("let _ = rustix::process::{call}target, sig);\n")
+    }
+
+    /// Each of `calls` made on a line of its own.
+    fn each_on_a_line(calls: &[String]) -> String {
+        calls.iter().map(|call| signal_call_line(call)).collect()
+    }
+
+    /// Every confined signal call, one line each.
+    fn every_confined_signal_call() -> String {
+        each_on_a_line(&confined_signal_calls())
+    }
+
+    /// The `(file, line, shape)` of each finding a fixture holding `content` at `rel` yields.
+    fn shapes_in(rel: &str, content: &str) -> Vec<(String, usize, &'static str)> {
+        scan_fixture(&[(rel, content)])
+            .into_iter()
+            .map(|finding| (finding.file, finding.line_no, finding.shape))
+            .collect()
+    }
+
+    /// A fixture holding every confined signal call at `rel` yields one finding per line, each
+    /// under its own shape.
+    fn each_confined_signal_call_is_caught_in(rel: &str) {
+        assert_eq!(
+            shapes_in(rel, &every_confined_signal_call()),
+            vec![
+                (rel.to_string(), 1, "thread signal call outside reap.rs"),
+                (rel.to_string(), 2, "queued signal call outside reap.rs"),
+                (rel.to_string(), 3, "descriptor signal call outside reap.rs"),
+            ]
+        );
+    }
+
+    /// A fixture holding every process-group signal call at `rel` yields one finding per line,
+    /// each a process-group signal call, whichever file `rel` is: the reaper and the test helper
+    /// included.
+    fn each_group_signal_call_is_caught_in(rel: &str) {
+        let calls = group_signal_calls();
+        assert_eq!(
+            shapes_in(rel, &each_on_a_line(&calls)),
+            (1..=calls.len())
+                .map(|line_no| (rel.to_string(), line_no, "process-group signal call"))
+                .collect::<Vec<_>>()
+        );
+    }
+
     /// A line shelling out to `program`.
     fn shell_out_to(program: &str) -> String {
         format!("let _ = std::process::Command::new(\"{program}\");\n")
@@ -422,11 +554,6 @@ mod tests {
             "tests/somewhere_test.rs",
             &format!("let cmd = \"{}\";\n", prefixed_kill("p")),
             "p-kill",
-        );
-        pg_signal_call_name_is_caught: caught_as(
-            "src/somewhere.rs",
-            &format!("unsafe {{ libc2::{}(pgid, 9); }}\n", suffixed_kill("pg")),
-            "process-group",
         );
         libc_kill_call_is_caught_outside_the_sanctioned_files: caught_as(
             "src/somewhere.rs",
@@ -461,6 +588,11 @@ mod tests {
             &windows_termination_call(),
             "Windows process-termination call",
         );
+        job_termination_call_is_caught_outside_reap_rs: caught_as(
+            "crates/somewhere/src/lib.rs",
+            &job_termination_call(),
+            "Windows job-termination call",
+        );
         taskkill_shell_out_is_caught_outside_the_sanctioned_files: caught_as(
             "src/somewhere.rs",
             &shell_out_to(&task_kill()),
@@ -476,6 +608,24 @@ mod tests {
             &shell_out_to(&join("KI", "LLALL")),
             "Command::new",
         );
+        the_confined_signal_calls_are_caught_in_a_crate:
+            each_confined_signal_call_is_caught_in("crates/somewhere/src/lib.rs");
+        the_confined_signal_calls_are_caught_in_the_bin:
+            each_confined_signal_call_is_caught_in("src/somewhere.rs");
+        the_confined_signal_calls_are_caught_in_a_test_suite:
+            each_confined_signal_call_is_caught_in("tests/somewhere_test.rs");
+        the_group_signal_calls_are_caught_in_a_crate:
+            each_group_signal_call_is_caught_in("crates/somewhere/src/lib.rs");
+        the_group_signal_calls_are_caught_in_the_bin:
+            each_group_signal_call_is_caught_in("src/somewhere.rs");
+        the_group_signal_calls_are_caught_in_a_test_suite:
+            each_group_signal_call_is_caught_in("tests/somewhere_test.rs");
+        /// The test helper's sanction for the unix signal call never covers a group.
+        the_group_signal_calls_are_caught_in_the_test_helper:
+            each_group_signal_call_is_caught_in("tests/common/mod.rs");
+        /// Nor does the reaper's.
+        the_group_signal_calls_are_caught_in_the_reaper:
+            each_group_signal_call_is_caught_in(REAPER);
     }
 
     #[test]
@@ -546,6 +696,25 @@ mod tests {
             &windows_termination_call(),
             "Windows process-termination call",
         );
+        /// The reaper's end_job is the one Windows job-termination site.
+        a_job_termination_call_in_reap_rs_is_never_flagged: never_flagged(
+            &[("crates/rigger-process/src/reap.rs", &job_termination_call())],
+            "reap.rs's own Windows job-termination call must never be flagged",
+        );
+        /// The test helper may not end a job either.
+        a_job_termination_call_in_the_test_helper_is_caught: caught_as(
+            "tests/common/mod.rs",
+            &job_termination_call(),
+            "Windows job-termination call",
+        );
+        /// The reaper is the one file that may make a confined signal call.
+        the_confined_signal_calls_in_reap_rs_are_never_flagged: never_flagged(
+            &[(REAPER, &every_confined_signal_call())],
+            "reap.rs's own confined signal calls must never be flagged",
+        );
+        /// The test helper is sanctioned for the unix signal call only, never a confined one.
+        the_confined_signal_calls_in_the_test_helper_are_caught:
+            each_confined_signal_call_is_caught_in("tests/common/mod.rs");
         /// Naming the Windows function without calling it (an import, a doc) is never a call.
         a_windows_termination_name_without_a_call_is_never_flagged: never_flagged(
             &[(
@@ -584,15 +753,42 @@ mod tests {
         file shelled out to kill or formatted a process-group target; use the internal guarded \
         signal call only\n";
 
-    /// The shipped gate's whole output when its Windows check fires: the Windows
-    /// process-termination call added outside the reaper.
-    fn windows_termination_outside_the_reaper() -> String {
+    /// The shipped gate's whole output when its reaper-only check fires: a call only the reaper
+    /// may make, either Windows termination call or a confined signal call, added anywhere else.
+    fn a_call_only_the_reaper_makes() -> String {
         format!(
-            "no-os-kill gate FAILED: the Windows process-termination call ({}) was introduced \
-             outside crates/rigger-process/src/reap.rs, whose send_signal is its one sanctioned \
-             site. See specs/78-no-os-level-kills.md\n",
-            join("Terminate", "Process")
+            "no-os-kill gate FAILED: a call only the reaper may make ({}, {}, {}, {} or {}) was \
+             introduced outside crates/rigger-process/src/reap.rs, the one file that may make \
+             them. See specs/78-no-os-level-kills.md\n",
+            join("Terminate", "Process"),
+            join("TerminateJob", "Object"),
+            thread_signal_word(),
+            queued_signal_word(),
+            descriptor_signal_word(),
         )
+    }
+
+    /// The shipped gate's whole output when its group check fires: a process-group signal call
+    /// added to any file.
+    fn a_group_signal_call() -> String {
+        let [rustix, current, libc] = group_signal_words();
+        format!(
+            "no-os-kill gate FAILED: a process-group signal call ({rustix}, {current} or {libc}) \
+             was introduced; no file may signal a group, crates/rigger-process/src/reap.rs and \
+             tests/common/mod.rs included. See specs/78-no-os-level-kills.md\n"
+        )
+    }
+
+    /// The shipped gate fails a unit branch adding any one process-group signal call at `rel`,
+    /// whichever file `rel` is, with its group check's message.
+    fn each_group_signal_call_fails_the_gate_in(rel: &str) {
+        for call in group_signal_calls() {
+            gate_judges(
+                rel,
+                &signal_call_line(&call),
+                (false, &a_group_signal_call()),
+            );
+        }
     }
 
     /// The shipped `.rigger/gates/content.sh no-os-kill`, run by path from a fixture repository as
@@ -615,31 +811,83 @@ mod tests {
     // passes; and a shell-out to the Windows termination utility fails it in every code root, the
     // reaper and the test helper included, as does a shell-out naming any termination utility in
     // another case, since Windows and macOS's default filesystem resolve a program name in any
-    // case. Each failure prints the message of the check that caught it.
+    // case. Each confined signal call fails it in every code root but the reaper, the test helper
+    // included, and each process-group signal call fails it in every code root, the reaper and
+    // the test helper included. Each failure prints the message of the check that caught it.
     rigger::test_cases! {
         the_gate_fails_a_windows_termination_call_added_to_a_crate: gate_judges(
             "crates/somewhere/src/lib.rs",
             &windows_termination_call(),
-            (false, &windows_termination_outside_the_reaper()),
+            (false, &a_call_only_the_reaper_makes()),
         );
         the_gate_fails_a_windows_termination_call_added_to_the_bin: gate_judges(
             "src/somewhere.rs",
             &windows_termination_call(),
-            (false, &windows_termination_outside_the_reaper()),
+            (false, &a_call_only_the_reaper_makes()),
         );
         the_gate_fails_a_windows_termination_call_added_to_a_test_suite: gate_judges(
             "tests/somewhere.rs",
             &windows_termination_call(),
-            (false, &windows_termination_outside_the_reaper()),
+            (false, &a_call_only_the_reaper_makes()),
         );
         the_gate_fails_a_windows_termination_call_added_to_the_test_helper: gate_judges(
             "tests/common/mod.rs",
             &windows_termination_call(),
-            (false, &windows_termination_outside_the_reaper()),
+            (false, &a_call_only_the_reaper_makes()),
         );
         the_gate_passes_a_windows_termination_call_added_to_the_reaper: gate_judges(
             REAPER,
             &windows_termination_call(),
+            (true, ""),
+        );
+        the_gate_fails_a_job_termination_call_added_to_a_crate: gate_judges(
+            "crates/somewhere/src/lib.rs",
+            &job_termination_call(),
+            (false, &a_call_only_the_reaper_makes()),
+        );
+        the_gate_fails_a_job_termination_call_added_to_the_test_helper: gate_judges(
+            "tests/common/mod.rs",
+            &job_termination_call(),
+            (false, &a_call_only_the_reaper_makes()),
+        );
+        the_gate_passes_a_job_termination_call_added_to_the_reaper: gate_judges(
+            REAPER,
+            &job_termination_call(),
+            (true, ""),
+        );
+        the_gate_fails_a_group_signal_call_added_to_a_crate:
+            each_group_signal_call_fails_the_gate_in("crates/somewhere/src/lib.rs");
+        the_gate_fails_a_group_signal_call_added_to_the_bin:
+            each_group_signal_call_fails_the_gate_in("src/somewhere.rs");
+        the_gate_fails_a_group_signal_call_added_to_a_test_suite:
+            each_group_signal_call_fails_the_gate_in("tests/somewhere.rs");
+        the_gate_fails_a_group_signal_call_added_to_the_test_helper:
+            each_group_signal_call_fails_the_gate_in("tests/common/mod.rs");
+        the_gate_fails_a_group_signal_call_added_to_the_reaper:
+            each_group_signal_call_fails_the_gate_in(REAPER);
+        the_gate_fails_a_thread_signal_call_added_to_a_crate: gate_judges(
+            "crates/somewhere/src/lib.rs",
+            &signal_call_line(&join(&thread_signal_word(), "(")),
+            (false, &a_call_only_the_reaper_makes()),
+        );
+        the_gate_fails_a_queued_signal_call_added_to_the_bin: gate_judges(
+            "src/somewhere.rs",
+            &signal_call_line(&join(&queued_signal_word(), "(")),
+            (false, &a_call_only_the_reaper_makes()),
+        );
+        the_gate_fails_a_descriptor_signal_call_added_to_a_test_suite: gate_judges(
+            "tests/somewhere.rs",
+            &signal_call_line(&join(&descriptor_signal_word(), "(")),
+            (false, &a_call_only_the_reaper_makes()),
+        );
+        the_gate_fails_a_descriptor_signal_call_added_to_the_test_helper: gate_judges(
+            "tests/common/mod.rs",
+            &signal_call_line(&join(&descriptor_signal_word(), "(")),
+            (false, &a_call_only_the_reaper_makes()),
+        );
+        the_gate_passes_the_confined_signal_calls_added_to_the_reaper: gate_judges(
+            REAPER,
+            &every_confined_signal_call(),
             (true, ""),
         );
         the_gate_passes_the_windows_termination_name_imported_without_a_call: gate_judges(

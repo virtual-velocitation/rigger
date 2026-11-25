@@ -11,14 +11,11 @@
 # same rationale as claude-code-invalid-utf8-agent.sh), then reads and discards the host's
 # first stream-json message like every sibling fixture.
 #
-# The stand-in work starts BEFORE the init line and the session waits on it after. A `sleep`
-# forked after that line races the host's descendant snapshot, taken the moment the host reads
-# the line: forked after the snapshot but before this shell is ended, it escapes the stop
-# holding stdout and stderr, and the host's pipe joins wait out THE STOP's grace (most runs
-# pinned to one CPU, now and then on a loaded CI runner). That escaped process is THE STOP's
-# bounded-join case, pinned by
-# spawn_stop_returns_within_bound_when_a_descendant_has_already_escaped_the_childs_tree; this
-# fixture pins the stop at init, so its work is in the tree before the host can read the line.
+# The stand-in work starts BEFORE the init line and the session waits on it after. A process
+# forked after that line starts while the host is already ending the session, holding stdout and
+# stderr: the stop must end it all the same, the case the fork-at-stop table pins
+# (claude-code-forks-at-stop-agent.sh in tests/claude_code_stream_periphery.rs). This fixture
+# pins the stop at init, so its work is in the tree before the host can read the line.
 self=$(readlink "$0") || self=$0
 . "$(dirname "$self")/launch-args.sh"
 sid=$(launched_session 44444444-4444-4444-8444-444444444444 "$@")

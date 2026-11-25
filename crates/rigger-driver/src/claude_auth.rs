@@ -12,7 +12,7 @@ use std::time::Instant;
 
 use serde::Deserialize;
 
-use crate::reaped_child::ReapedChild;
+use crate::child_tree::ReapedChild;
 
 use rigger_domain::spawn::AGENT_TOKEN_VAR;
 pub use rigger_domain::spawn::RIGGER_AGENT_TOKEN_VAR;
@@ -72,10 +72,29 @@ impl SessionHost {
     /// [`crate::subprocess::session_dir`] of `dir`, on the environment a spawn gets
     /// ([`apply_agent_credential`]).
     pub(crate) fn command_in(&self, dir: &str) -> std::process::Command {
-        let mut cmd = crate::subprocess::command_in(self.bin(), dir);
-        apply_agent_credential(&mut cmd);
+        let mut cmd = crate::subprocess::command(self.bin());
+        started_in(&mut cmd, dir);
         cmd
     }
+
+    /// The start of a session of this host: [`Self::command_in`]'s start, as a command whose
+    /// process starts a tree contained as `how`. An error where this OS holds no tree as `how`.
+    pub(crate) fn tree_in(
+        &self,
+        dir: &str,
+        how: &crate::child_tree::Containment,
+    ) -> std::io::Result<crate::child_tree::TreeCommand> {
+        let mut tree = crate::child_tree::TreeCommand::new(self.bin(), how)?;
+        started_in(tree.command_mut(), dir);
+        Ok(tree)
+    }
+}
+
+/// What every start of a host sets on its command: the directory, [`crate::subprocess::session_dir`]
+/// of `dir`, and the environment a spawn gets ([`apply_agent_credential`]).
+fn started_in(cmd: &mut std::process::Command, dir: &str) {
+    cmd.current_dir(crate::subprocess::session_dir(dir));
+    apply_agent_credential(cmd);
 }
 
 impl From<String> for SessionHost {

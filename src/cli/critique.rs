@@ -457,6 +457,7 @@ impl CriticHost<'_> {
             handed_env: self.store_env.clone(),
             beat_source: None,
             hold_sink: None,
+            containment: session_containment(),
         };
         eprintln!(
             "{}critiquing with {} at attempt {attempt}",

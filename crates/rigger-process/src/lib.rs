@@ -13,6 +13,8 @@
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod budget;
 #[cfg(any(feature = "store", not(feature = "core")))]
+pub mod child_tree;
+#[cfg(any(feature = "store", not(feature = "core")))]
 pub mod detached;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod file_trust;
@@ -71,10 +73,18 @@ mod keep_awake_fixtures;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 #[path = "../../../tests/common/fixtures/manifest.rs"]
 mod manifest_fixtures;
+/// The FIFO witness the ends' tests read a fixture's process tree through, the one the root
+/// crate's tests read a session's through.
+#[cfg(all(test, unix, any(feature = "store", not(feature = "core"))))]
+#[allow(dead_code)]
+#[path = "../../../tests/common/witness.rs"]
+mod witness_fixtures;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 mod test_support {
     pub use crate::host_fixtures::*;
     #[cfg(target_os = "linux")]
     pub use crate::keep_awake_fixtures::*;
     pub use crate::manifest_fixtures::*;
+    #[cfg(unix)]
+    pub use crate::witness_fixtures::*;
 }

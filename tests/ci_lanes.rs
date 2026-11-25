@@ -607,8 +607,8 @@ fn kurrentdb_job_carries_no_retired_feature_flag_and_still_runs_the_contract_tes
 /// cross-compile of `crates/console-core` for `wasm32-unknown-unknown` runs whenever the outer
 /// build compiles `crates/rigger-dash/src/dash.rs`, and three jobs' cargo invocations do:
 /// `build-test`'s default AND `--no-default-features` lanes, `install-nolock`'s default-feature
-/// install and `cross-os-check`'s `cargo check --workspace`, which runs the build script of every
-/// package it checks. Each of those three jobs' own `dtolnay/rust-toolchain@*` step must
+/// install and `cross-os-check`'s `cargo check --workspace --all-targets`, which runs the build
+/// script of every package it checks. Each of those three jobs' own `dtolnay/rust-toolchain@*` step must
 /// therefore declare the target - a job whose toolchain step lacks it would fail on a runner with
 /// no target preinstalled. The `kurrentdb` job builds `rigger-store-sqlite` alone, which never
 /// compiles dash.rs, and neither does `build-test`'s pure `--features core` lane.
@@ -627,18 +627,33 @@ fn every_job_that_builds_dash_installs_the_console_core_wasm_target() {
     }
 }
 
-/// THE CROSS-OS CHECK (spec 125 criterion 12): CI compiles the workspace on Windows and on macOS.
+/// THE CROSS-OS CHECK (spec 125 criterion 12): CI compiles the workspace on Windows and on macOS,
+/// and runs the process crate's own tests there.
 /// The `cross-os-check` job's `strategy.matrix` is exactly `os: [windows-latest, macos-latest]`,
 /// with no `include` or `exclude` to add or drop a leg, and its `runs-on` is that matrix value, so
 /// each leg runs on its own OS. Its strategy sets `fail-fast: false`, so a red leg never cancels
 /// the other before that one reports its own errors, and neither the job nor any of its steps
 /// carries an `if` or a `continue-on-error`, so each leg checks and a red one fails the job. Its
-/// checkout fetches full history. Its one `run:` step runs under
-/// `bash` on every runner and, in that step's own shell, exports an empty `RUSTC_WRAPPER`, runs
-/// `cargo check --workspace` and then runs the one suite that proves an OS's own behaviour,
-/// `bare_rigger_hooks_resolve_periphery`: the empty value overrides `.cargo/config.toml`'s Unix
-/// wrapper script for cargo and every nested cargo it starts. The job's wasm target is pinned
-/// once, by `every_job_that_builds_dash_installs_the_console_core_wasm_target`.
+/// checkout fetches full history. Each of its `run:` steps runs under `bash` on every runner and
+/// exports an empty `RUSTC_WRAPPER` in its own shell before its cargo command: the empty value
+/// overrides `.cargo/config.toml`'s Unix wrapper script for cargo and every nested cargo it
+/// starts. The first steps run the tests of `rigger-process`, the crate whose own tests hold the
+/// rows for the macOS and Windows adapters, so they run on their own OS whatever else fails to
+/// compile there. One step builds them (`--no-run`, bounded by `timeout-minutes: 5`); then seven
+/// steps run the `reap::` module's tests by the path a process is ended through, one step runs
+/// each other module whose tests start and signal processes (`child_tree::`, `os_process::`), and
+/// a last one runs every other test (`--skip` of each of those). Each group of steps ends in one
+/// that runs what the group's others leave (`--skip` of their filters), so a test added to a group
+/// runs in it and the steps together run each test once. Each test step runs its tests one at a
+/// time (`--test-threads=1`), so libtest prints each test's name as it starts, and `--nocapture`
+/// prints what each writes as it writes it. Each is bounded by `timeout-minutes: 2`, many times its
+/// usual seconds, so a test that hangs ends its step with a log whose last name is that test. A
+/// stall that takes the runner out keeps no log, and the step left unfinished in the job's timeline
+/// is then the only name left, so no step holds many tests. The last step runs `cargo check
+/// --workspace --all-targets --keep-going`, so every test that names one of those adapters compiles
+/// there, and one run names every target that does not, and then the one suite of the product's own
+/// that proves an OS's behaviour, `bare_rigger_hooks_resolve_periphery`. The job's wasm target is
+/// pinned once, by `every_job_that_builds_dash_installs_the_console_core_wasm_target`.
 #[test]
 fn the_cross_os_check_job_checks_the_workspace_on_windows_and_macos() {
     const JOB: &str = "cross-os-check";
@@ -687,28 +702,72 @@ fn the_cross_os_check_job_checks_the_workspace_on_windows_and_macos() {
         [Some(0)],
         "job `{JOB}` must check out once, with `fetch-depth: 0` (full history)"
     );
-    let run_steps: Vec<(Option<&str>, Vec<&str>)> = steps
+    let run_steps: Vec<(Option<&str>, Option<u64>, Vec<&str>)> = steps
         .iter()
         .filter_map(|step| {
             let lines = step.get("run")?.as_str()?.lines().map(str::trim);
             Some((
                 step["shell"].as_str(),
+                step["timeout-minutes"].as_u64(),
                 lines.filter(|line| !line.is_empty()).collect(),
             ))
         })
         .collect();
+    let unwrapped = |minutes, cargo| (Some("bash"), minutes, vec!["export RUSTC_WRAPPER=", cargo]);
+    let one_at_a_time = |filters: &str| {
+        unwrapped(
+            Some(2),
+            format!("cargo test -p rigger-process --lib -- --nocapture --test-threads=1 {filters}")
+                .leak(),
+        )
+    };
     assert_eq!(
         run_steps,
-        [(
-            Some("bash"),
-            vec![
-                "export RUSTC_WRAPPER=",
-                "cargo check --workspace",
-                "cargo test -p rigger --test bare_rigger_hooks_resolve_periphery",
-            ]
-        )],
-        "job `{JOB}` must have one `run:` step, under `shell: bash`, exporting an empty \
-         `RUSTC_WRAPPER`, running `cargo check --workspace` and then the bare-rigger hook suite \
-         (shell, lines)"
+        [
+            unwrapped(Some(5), "cargo test -p rigger-process --lib --no-run"),
+            one_at_a_time(
+                "reap::tests::ends::the_watched_end_ends reap::tests::ends::the_watched_end_freezes \
+                 reap::tests::ends::the_watched_end_stops reap::tests::ends::the_watched_end_walks"
+            ),
+            one_at_a_time(
+                "reap::tests::ends::the_watched_end_never reap::tests::ends::the_watched_end_of_a_main"
+            ),
+            one_at_a_time(
+                "reap::tests::ends::the_watched_end --skip reap::tests::ends::the_watched_end_ends \
+                 --skip reap::tests::ends::the_watched_end_freezes \
+                 --skip reap::tests::ends::the_watched_end_stops \
+                 --skip reap::tests::ends::the_watched_end_walks \
+                 --skip reap::tests::ends::the_watched_end_never \
+                 --skip reap::tests::ends::the_watched_end_of_a_main"
+            ),
+            one_at_a_time("reap::tests::ends::the_ --skip reap::tests::ends::the_watched_end"),
+            one_at_a_time("reap::tests::ends:: --skip reap::tests::ends::the_"),
+            one_at_a_time(
+                "reap::tests::reap_ reap::tests::processes_rooted_under \
+                 reap::tests::signal_if_unchanged"
+            ),
+            one_at_a_time(
+                "reap:: --skip reap::tests::ends:: --skip reap::tests::reap_ \
+                 --skip reap::tests::processes_rooted_under --skip reap::tests::signal_if_unchanged"
+            ),
+            one_at_a_time("child_tree::"),
+            one_at_a_time("os_process::"),
+            one_at_a_time("--skip reap:: --skip child_tree:: --skip os_process::"),
+            (
+                Some("bash"),
+                None,
+                vec![
+                    "export RUSTC_WRAPPER=",
+                    "cargo check --workspace --all-targets --keep-going",
+                    "cargo test -p rigger --test bare_rigger_hooks_resolve_periphery",
+                ],
+            ),
+        ],
+        "job `{JOB}` must have these `run:` steps, each under `shell: bash` exporting an empty \
+         `RUSTC_WRAPPER`: the process crate's tests built, then run one at a time in bounded \
+         steps of few tests each, so the crate's rows run whatever else fails to compile and a \
+         hung one is named by its log or its step, then `cargo check --workspace --all-targets \
+         --keep-going`, so one run names every target that does not compile, and the bare-rigger \
+         hook suite (shell, timeout-minutes, lines)"
     );
 }

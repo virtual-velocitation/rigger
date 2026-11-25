@@ -3,13 +3,12 @@
 # discards the host's first stdin message, prints one `system/init` line, records its
 # own pid (so a test can later prove it stopped existing), then goes SILENT and IGNORES
 # its input closing entirely - it never reads stdin again and never exits on its own -
-# so the host MUST escalate past the grace period to reap::end_child's SIGKILL fallback
-# to end it. `exec sleep` (never a plain `sleep` subprocess): replaces THIS shell's own
-# image in place, so the process the host holds a `Child` handle to (and signals) IS the
-# sleeping process itself - no orphaned grandchild is left holding a duplicate of the
-# stdout pipe fd open after the signalled process exits, which would otherwise strand
-# the host's reader thread blocked on EOF for the sleep's own full duration regardless
-# of the signal succeeding (a real `claude` binary has no such shell-wrapper layer).
+# so the host MUST go past the grace period to the end of the session's tree to end it.
+# `exec sleep` (never a plain `sleep` subprocess): replaces THIS shell's own image in
+# place, so the session's main process IS the sleeping process itself - no orphaned
+# grandchild is left holding a duplicate of the stdout pipe fd open after the main exits,
+# which would otherwise strand the host's reader thread blocked on EOF for the sleep's own
+# full duration (a real `claude` binary has no such shell-wrapper layer).
 self=$(readlink "$0") || self=$0
 . "$(dirname "$self")/launch-args.sh"
 sid=$(launched_session 44444444-4444-4444-8444-444444444444 "$@")

@@ -310,6 +310,16 @@ pub(crate) fn running_executable() -> String {
         .unwrap_or_else(|_| "rigger".to_string())
 }
 
+/// How every agent session this process launches holds its process tree: the containment this
+/// OS gives a tree kept by this very build
+/// ([`rigger::child_tree::Containment::of_running_binary`]), detected once per process, so the
+/// probe runs at most once however many sessions launch.
+pub(crate) fn session_containment() -> &'static rigger::child_tree::Containment {
+    static CONTAINMENT: std::sync::OnceLock<rigger::child_tree::Containment> =
+        std::sync::OnceLock::new();
+    CONTAINMENT.get_or_init(rigger::child_tree::Containment::of_running_binary)
+}
+
 /// Load the config a RUN will drive, refusing to start when a gating persona guarantees an
 /// integration-gate stall (spec 18, unit 2). This is the single load seam the run entry
 /// (`run_cli`) and `rigger gate` share, so the run-start refusal cannot be present
@@ -1135,6 +1145,7 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
         handed_env: selection.handed_env(),
         beat_source: Some(&progress),
         hold_sink: Some(&folding),
+        containment: session_containment(),
     };
     // The decorator records the errors it hands the conductor on the folding store the host
     // records results on, so the graph folds them as it folds the host's.

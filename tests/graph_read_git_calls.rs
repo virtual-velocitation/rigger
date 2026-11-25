@@ -96,7 +96,7 @@ fn every_layout_git_finds_a_checkout_in_is_read_from_its_files() {
     // (layout, how it is laid out, the root its store lies at below the scratch directory the
     // layout lies in, whether the read runs under a git ceiling at that scratch directory, which
     // a walk up from the checkout meets after its `.git`)
-    let layouts: [(&str, Layout, &str, bool); 15] = [
+    let layouts: [(&str, Layout, &str, bool); _] = [
         (
             "a clone",
             |at| cloned(&at.join("origin"), at),
@@ -159,12 +159,14 @@ fn every_layout_git_finds_a_checkout_in_is_read_from_its_files() {
             "outer/sub",
             false,
         ),
+        #[cfg(unix)]
         (
             "a checkout whose .git is a symlink",
             dot_symlink,
             "clone",
             false,
         ),
+        #[cfg(unix)]
         (
             "a linked worktree of a checkout whose .git is a symlink",
             |at| common::git::linked_worktree(&dot_symlink(at), at.join("linked")),
@@ -385,6 +387,8 @@ fn submodule(at: &Path) -> PathBuf {
 
 /// A [`cloned`] checkout under `at` whose `.git` is a symlink to its git directory, moved beside
 /// it.
+// Unix only: the symlink is made by std's unix call.
+#[cfg(unix)]
 fn dot_symlink(at: &Path) -> PathBuf {
     let clone = cloned(&at.join("origin"), at);
     std::fs::rename(clone.join(".git"), at.join("moved.git")).unwrap();

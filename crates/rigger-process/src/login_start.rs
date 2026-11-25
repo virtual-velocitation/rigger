@@ -1277,9 +1277,13 @@ mod tests {
     // THEN the config home wins over the home on Linux, the home roots the macOS agents, the
     // roaming application data roots the Startup folder, and an unset or empty value roots none.
     rigger_domain::test_cases! {
-        the_linux_dir_is_under_the_config_home: reads_dir(
-            systemd_user_dir(Some("/home/dev/cfg".into()), Some("/home/dev".into())),
-            Some("/home/dev/cfg/systemd/user"),
+        /// The config home is [`rooted`](crate::home::rooted): only an absolute value is taken.
+        the_linux_dir_is_under_the_config_home: assert_eq!(
+            systemd_user_dir(
+                Some(crate::home::rooted("/home/dev/cfg").into_os_string()),
+                Some("/home/dev".into())
+            ),
+            Some(crate::home::rooted("/home/dev/cfg/systemd/user"))
         );
         the_linux_dir_is_under_the_homes_config_without_a_config_home: reads_dir(
             systemd_user_dir(Some("".into()), Some("/home/dev".into())),

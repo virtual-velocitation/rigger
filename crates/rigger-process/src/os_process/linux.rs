@@ -8,6 +8,11 @@ use std::path::{Path, PathBuf};
 
 pub(super) use super::scan_holders as holders;
 
+/// The link `/proc` holds to the image this process runs.
+pub(super) fn running_image() -> PathBuf {
+    PathBuf::from("/proc/self/exe")
+}
+
 /// The `/proc` directory of process `pid`.
 fn proc_of(pid: u32) -> PathBuf {
     Path::new("/proc").join(pid.to_string())
@@ -29,32 +34,64 @@ pub(super) fn pids() -> Vec<u32> {
         .collect()
 }
 
+/// The index of `ppid`, the parent, among the `/proc/<pid>/stat` fields after `comm`.
+const PARENT_FIELD: usize = 1;
+
+/// The index of `starttime` among the `/proc/<pid>/stat` fields after `comm`. Those fields,
+/// 1-indexed: state, ppid, pgrp, session, tty_nr, tpgid, flags, minflt, cminflt, majflt, cmajflt,
+/// utime, stime, cutime, cstime, priority, nice, num_threads, itrealvalue, starttime - the 20th,
+/// so index 19 (0-based).
+const START_FIELD: usize = 19;
+
+/// Each listed process ([`pids`]) with its parent and start time, both parsed from ONE read of
+/// its `/proc/<pid>/stat`.
+pub(super) fn table() -> Vec<super::Entry> {
+    pids()
+        .into_iter()
+        .filter_map(|pid| {
+            let stat = after_comm(pid)?;
+            Some(super::Entry {
+                pid,
+                parent: field(&stat, PARENT_FIELD)?.parse().ok()?,
+                start: field(&stat, START_FIELD)?.parse().ok()?,
+            })
+        })
+        .collect()
+}
+
 /// `/proc/<pid>/stat`'s `ppid` field, the parent ([`stat_field_after_comm`] index `1`): the one
 /// read of a process's parent in this adapter.
 pub(super) fn parent(pid: u32) -> Option<u32> {
-    stat_field_after_comm(pid, 1)?.parse().ok()
+    stat_field_after_comm(pid, PARENT_FIELD)?.parse().ok()
+}
+
+/// The text of `/proc/<pid>/stat` after `comm`, located from the LAST `)` in the line rather than
+/// by naive whitespace-splitting, because field 2 (`comm`, the process name in parens) may itself
+/// contain spaces or parens. `None` when the process has already exited or `/proc` is unavailable.
+fn after_comm(pid: u32) -> Option<String> {
+    let stat = std::fs::read_to_string(proc_of(pid).join("stat")).ok()?;
+    Some(stat.rsplit_once(')')?.1.to_string())
+}
+
+/// The `index`-th (0-based) whitespace-separated field of the text [`after_comm`] read.
+fn field(after_comm: &str, index: usize) -> Option<&str> {
+    after_comm.split_whitespace().nth(index)
 }
 
 /// The ONE `/proc/<pid>/stat` parser: the `index`-th (0-based) whitespace-separated field
-/// AFTER `comm` - `0` is the state, `1` the parent, `6` the flags, `19` the start time (see
-/// `proc(5)`). Fields are located from the LAST `)` in the line rather than by naive
-/// whitespace-splitting, because field 2 (`comm`, the process name in parens) may itself contain
-/// spaces or parens. `None` when the process has already exited, `/proc` is unavailable, or the
+/// AFTER `comm` ([`after_comm`]) - `0` is the state, `1` the parent, `6` the flags, `19` the start
+/// time (see `proc(5)`). `None` when the process has already exited, `/proc` is unavailable, or the
 /// line has no such field. Public so the Linux test fixtures read a process's state or group
 /// through this same parser (`crate::reap` re-exports it).
 pub fn stat_field_after_comm(pid: u32, index: usize) -> Option<String> {
-    let stat = std::fs::read_to_string(proc_of(pid).join("stat")).ok()?;
-    let after_comm = stat.rsplit_once(')')?.1;
-    after_comm.split_whitespace().nth(index).map(String::from)
+    field(&after_comm(pid)?, index).map(String::from)
 }
 
-/// `/proc/<pid>/stat` field 22 (`starttime`, clock ticks since boot), which the kernel keeps
-/// for the life of a pid and which repeats only when the pid itself is reused.
+/// `/proc/<pid>/stat` field 22 (`starttime`, clock ticks since boot, [`START_FIELD`] after
+/// `comm`), which the kernel keeps for the life of a pid and which repeats only when the pid
+/// itself is reused.
 pub(super) fn start_time(pid: u32) -> Option<u64> {
-    // Fields after `comm`, 1-indexed: state, ppid, pgrp, session, tty_nr, tpgid, flags,
-    // minflt, cminflt, majflt, cmajflt, utime, stime, cutime, cstime, priority, nice,
-    // num_threads, itrealvalue, starttime - the 20th, so index 19 (0-based).
-    stat_field_after_comm(pid, 19)?.parse().ok()
+    stat_field_after_comm(pid, START_FIELD)?.parse().ok()
 }
 
 /// `/proc/<pid>/cwd`, the link the kernel resolves to the process's absolute, canonical working
@@ -82,9 +119,30 @@ pub(super) fn command(pid: u32) -> String {
             return joined;
         }
     }
-    std::fs::read_to_string(dir.join("comm"))
+    short_name(pid)
+}
+
+/// `/proc/<pid>/comm`, the process's short name; empty when it cannot be read.
+fn short_name(pid: u32) -> String {
+    std::fs::read_to_string(proc_of(pid).join("comm"))
         .map(|s| s.trim().to_string())
         .unwrap_or_default()
+}
+
+/// The file name of the image `/proc/<pid>/exe` links to, without the `" (deleted)"` marker
+/// the kernel adds once that file is replaced ([`super::strip_deleted_suffix`]); the short name
+/// ([`short_name`]) when the link cannot be read, as a zombie's or another user's cannot.
+pub(super) fn executable_name(pid: u32) -> String {
+    std::fs::read_link(proc_of(pid).join("exe"))
+        .ok()
+        .and_then(|image| super::file_name_text(&super::strip_deleted_suffix(&image)))
+        .unwrap_or_else(|| short_name(pid))
+}
+
+/// `/proc/<pid>/cgroup` read whole: one `hierarchy-ID:controllers:path` line per hierarchy
+/// (`cgroups(7)`), the single line `0::<path>` on a host with the unified hierarchy alone.
+pub(super) fn cgroup(pid: u32) -> Option<String> {
+    std::fs::read_to_string(proc_of(pid).join("cgroup")).ok()
 }
 
 /// The first letter of `/proc/<pid>/stat`'s state field: `R` running, `S` sleeping, `D`

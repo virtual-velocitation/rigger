@@ -226,7 +226,10 @@ pub(crate) fn cmd_canary(args: &[String]) -> Res {
     }
     let backend = resolve_store(&selection, &loc.file("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &identity);
-    let driver = cli::Driver::default();
+    let driver = cli::Driver {
+        containment: session_containment().clone(),
+        ..Default::default()
+    };
 
     // Observable progress (spec 61, PROGRESS): stream one line per corpus item the
     // instant it finishes, rather than nothing on stdout until the whole batch is done -

@@ -170,6 +170,8 @@ fn init_base_repo(repo: &Path) -> String {
 /// that exact path is refused (a deterministic property of git's worktree registry, not a race).
 /// Proves `adv-u103c7-r3-createbranch-then-create-leaks-branch` stays fixed: the just-minted
 /// `rigger/postmerge/<unit>-<attempt>` branch must not survive.
+// Unix only: the symlink is made by std's unix call.
+#[cfg(unix)]
 #[test]
 fn worktree_create_err_during_postmerge_regate_leaves_no_branch_behind() {
     let pm = PostmergeFixture::new();

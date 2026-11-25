@@ -2340,6 +2340,7 @@ name = "rigger"
 version = "0.3.0"
 dependencies = [
  "kurrentdb",
+ "libc",
  "regex",
  "rigger-conductor",
  "rigger-config-files",

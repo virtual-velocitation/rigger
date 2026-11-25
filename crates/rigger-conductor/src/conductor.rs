@@ -51082,6 +51082,8 @@ stage "implement" adjudicator "adj" failed
         }
     }
 
+    // Unix only: the symlink is made by std's unix call.
+    #[cfg(unix)]
     #[test]
     fn postmerge_worktree_create_err_still_reaps_the_just_created_branch() {
         // adv-u103c7-r3-createbranch-then-create-leaks-branch: `integrate_and_emit` used to

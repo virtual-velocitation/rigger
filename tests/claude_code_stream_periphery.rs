@@ -62,6 +62,7 @@ use common::fixtures::{
 };
 use common::is_running;
 use common::repo::SILENT_PAST_THE_POLL;
+use rigger::child_tree::{Containment, Why};
 use rigger::conductor::{AgentDriver, AgentFailure, AgentResult, Error, SpawnOpts};
 use rigger::config::AgentDef;
 use rigger::driver::claude_code::{framed, Driver};
@@ -79,6 +80,10 @@ use serde_json::{json, Value};
 
 /// The fixture agent replaying the recorded success stream.
 const STREAM_AGENT: &str = "claude-code-stream-agent.sh";
+
+/// A session's tree watched from its main rather than held: the containment where the OS offers
+/// none to hold a tree in, under which a process that leaves the tree unseen outlives the session.
+static WATCHED: Containment = Containment::Watch(Why::Chosen);
 
 /// A fresh `Driver` wired to two independent in-memory stores and a scratch root under
 /// the test's own tempdir - so every test gets its own isolated scratch tree and stores,
@@ -109,6 +114,7 @@ impl Fixture {
             handed_env: Vec::new(),
             beat_source: None,
             hold_sink: None,
+            containment: common::session_containment(),
         }
     }
 
@@ -1017,7 +1023,8 @@ fn spawn_waits_out_a_clean_eof_before_reaping_never_kills_mid_teardown() {
 #[test]
 fn spawn_stops_gracefully_when_a_silent_child_winds_down_on_its_own() {
     // THE STOP (architecture addendum §4.6): "closes the session's input stream, waits a
-    // grace period, then ends the child through the sanctioned lifecycle helper." This
+    // grace period, then ends the session's process tree through the handle the driver
+    // holds." This
     // fixture goes silent after `system/init` but exits ON ITS OWN the moment its stdin
     // closes - the well-behaved case, proving the grace period is honored rather than an
     // immediate force-end, while `stop_grace` is injected short so the test itself stays
@@ -1069,7 +1076,7 @@ fn spawn_stops_gracefully_when_a_silent_child_winds_down_on_its_own() {
 fn spawn_stop_grace_loop_actually_waits_out_the_injected_duration() {
     // Pins the grace-period LOOP itself, not just its outer bound: a host whose deadline
     // is computed BEHIND `now()` (never ahead of it), or whose `while now() < deadline`
-    // bound check never iterates at all, reaches `reap::end_child`'s SIGTERM the instant
+    // bound check never iterates at all, reaches the end of the session's tree the instant
     // the child's input closes - before this fixture's own deliberate post-EOF sleep
     // completes - so the fixture is killed mid-sleep and never writes its marker. Only a
     // host that genuinely polls across the injected `stop_grace` window observes the
@@ -1099,12 +1106,14 @@ fn spawn_stop_grace_loop_actually_waits_out_the_injected_duration() {
     );
 }
 
+// Unix only: it reads or signals a process through the unix signal helpers.
+#[cfg(unix)]
 #[test]
 fn spawn_escalates_to_the_sanctioned_reap_when_a_silent_child_ignores_its_input_closing() {
     // The escalation half of THE STOP: a session that ignores its stdin closing entirely
-    // (never exits on its own) must still be ended - through `reap::end_child`'s
-    // handle-bound TERM-then-grace-then-KILL sequence, never a computed pid or a
-    // shell-out - once the injected grace elapses. Proven the SAME way this file's own
+    // (never exits on its own) must still be ended - through the end of the session's tree its
+    // handle holds (`ReapedChild::end`), never a computed pid or a shell-out - once the injected
+    // grace elapses. Proven the SAME way this file's own
     // mid-stream-read-error test proves a reap: a REAL pid the fixture wrote itself,
     // checked via `common::is_alive` independently of the `Child` handle that reaped it.
     let fx = Fixture::new();
@@ -1128,10 +1137,12 @@ fn spawn_escalates_to_the_sanctioned_reap_when_a_silent_child_ignores_its_input_
     assert!(
         !common::is_alive(pid),
         "child pid {pid} ignored its input closing and must still be ended by \
-         reap::end_child's escalation - never leaked"
+         the end of the session's tree - never leaked"
     );
 }
 
+// Unix only: it reads or signals a process through the unix signal helpers.
+#[cfg(unix)]
 #[test]
 fn a_concurrent_sibling_spawns_process_in_the_same_worktree_survives_a_wall_clock_stop() {
     // The gap `adv-u104stop-r2-stop-reaps-concurrent-sibling-worktree` named: a worktree-wide
@@ -1185,7 +1196,7 @@ fn a_concurrent_sibling_spawns_process_in_the_same_worktree_survives_a_wall_cloc
     );
     assert!(
         !common::is_alive(stopped_pid),
-        "the stopped spawn's own held child must still be ended by reap::end_child"
+        "the stopped spawn's own held child must still be ended by the end of its tree"
     );
 
     // The SIBLING - sharing the same worktree cwd, never held by this spawn's own `Child`
@@ -1218,8 +1229,7 @@ fn spawn_stop_ends_a_forked_descendant_still_in_the_childs_own_process_tree() {
     // adj-u104stop-r3-verdict-reject UPHELD adv-u104stop-r3-stop-can-still-hang-on-a-
     // descendant: a descendant the driven child forked (`sleep 60 &`, never `exec`'d, so it
     // stays a genuine CHILD of the fixture's own shell) inherits the stdout pipe's write
-    // end before the shell goes silent. reap::end_child's new PID-TREE walk
-    // (descendants_of, snapshotted before the child's own first signal) must find this
+    // end before the shell goes silent. The end of the session's tree must find this
     // descendant and end it too - never left running merely because THE STOP only ever
     // held a `Child` handle to its direct parent - and THE STOP must still return promptly.
     let fx = Fixture::new();
@@ -1249,155 +1259,316 @@ fn spawn_stop_ends_a_forked_descendant_still_in_the_childs_own_process_tree() {
     assert!(
         common::wait_until(|| !is_running(descendant_pid)),
         "a descendant still in the child's own process tree (pid {descendant_pid}) must be \
-         ended by reap::end_child's new pid-tree walk, not merely left to outlive THE STOP"
+         ended by the end of the session's tree, not merely left to outlive THE STOP"
     );
 }
 
-#[test]
-fn spawn_stop_returns_within_bound_when_a_descendant_has_already_escaped_the_childs_tree() {
-    // The bounded-join backstop half of the SAME round-4 fix: a descendant that had
-    // ALREADY double-forked itself out of the driven child's own process tree before THE
-    // STOP's pid-tree snapshot ever ran (reparented to init/a subreaper, so
-    // reap::end_child's walk can never find it) still holds a duplicate of the stdout
-    // pipe's write end open. THE STOP must still return within a bounded time regardless -
-    // Driver::join_within (bounded by self.stop_grace on this path), not reap::end_child,
-    // is what closes this gap - and must never touch this pid, since by the time the walk
-    // runs it is no longer any part of the child's own tree at all.
-    //
-    // stop_grace is injected here as 4s - deliberately LARGER than the ordinary path's own
-    // dedicated ORDINARY_DRAIN_JOIN_BOUND (2s, round-5 fix,
-    // op-104-stop-ordinary-path-drain-bound) - rather than the smaller value a "just prove
-    // it returns" test would use: the escaped descendant holds BOTH the stdout and stderr
-    // pipe copies open (like the ordinary-path fixture below), so the two sequential
-    // trailing joins deterministically block for the FULL injected `stop_grace` each,
-    // never racing a real EOF. That makes the total elapsed a direct, load-bearing readout
-    // of WHICH constant `Driver::join_within` actually used on this path: at this 4s
-    // value, correctly using `self.stop_grace` measures ~9s (baseline wall-clock trigger
-    // plus 2x4s, confirmed empirically); a regression that silently reused the smaller
-    // `ORDINARY_DRAIN_JOIN_BOUND` here instead - exactly the constant the round-5 fix
-    // introduced one call site away - would measure ~5s instead, indistinguishable from
-    // "prompt" under the round-4 test's own loose `elapsed < 5s` ceiling alone. Both a
-    // floor and a ceiling below turn that gap into a fast, deterministic failure rather
-    // than a silent pass.
-    let fx = Fixture::new();
-    let driver = fx.stopping_driver(
-        "claude-code-descendant-out-of-tree-agent.sh",
-        Duration::from_secs(4),
-    );
-    let descendant_pid_file = fx.scratch_file("descendant-out-of-tree.pid");
-    let o = opts_with_env(
-        "u104-stop/implementer#0",
-        "RIGGER_TEST_DESCENDANT_PID_FILE",
-        &descendant_pid_file,
-    );
+// ---- A STOP OR AN END AND WHAT THE SESSION STARTED: a process the session starts at the moment a
+// stop or an end can miss it, or one that left the session's tree before the stop
+// (`claude-code-forks-at-stop-agent.sh`), read through the FIFO witness (`common::witness`), so
+// no signal of the test's own decides what was left running ----
 
-    let (_, elapsed) = stop(&driver, &o);
+#[cfg(unix)]
+mod forks_at_stop {
+    use super::*;
+    use crate::common::repo::FORKS_AT_STOP_AGENT;
+    use crate::common::witness::{Reading, Witness};
+    use rigger::driver::claude_code::STOP_GRACE;
 
-    assert!(
-        elapsed > Duration::from_secs(7),
-        "THE STOP's trailing pipe joins must be bounded by the INJECTED self.stop_grace \
-         (4s here), never silently downgraded to the smaller, un-injected \
-         ORDINARY_DRAIN_JOIN_BOUND the ordinary (non-STOP) path uses - an elapsed time this \
-         low means the wrong constant governed this path: {elapsed:?}"
-    );
-    assert!(
-        elapsed < Duration::from_secs(20),
-        "THE STOP must still return within a bounded time even when a descendant that \
-         already escaped the child's own process tree still holds the stdout pipe's write \
-         end open: {elapsed:?}"
-    );
+    /// The end's own rounds: a TERM round's 300 ms grace, then the KILL round's confirmation.
+    const END_ROUNDS: Duration = Duration::from_millis(600);
+    /// Two pipe joins (stderr, then stdout) at the 2 s bound an ending's joins wait at most.
+    const JOINS: Duration = Duration::from_secs(4);
+    /// A loaded machine's start-up and scheduling.
+    const SLACK: Duration = Duration::from_secs(1);
 
-    let descendant_pid = recorded_pid(
-        &descendant_pid_file,
-        "the fixture recorded its escaped descendant's pid before going silent",
-    );
-    assert!(
-        common::is_alive(descendant_pid),
-        "pid {descendant_pid}, standing in for a descendant that already escaped the \
-         child's own process tree, must be left untouched by THE STOP - it is not part of \
-         the tree reap::end_child's pid-tree walk can ever find, only a stray holder of \
-         its pipe"
-    );
+    /// The ending a row drives the session to.
+    #[derive(Clone, Copy, Debug)]
+    enum Window {
+        /// The init line reports the rigger MCP server `failed`: the launch fault's stop, with no
+        /// grace.
+        InitFault,
+        /// The session goes silent past a `max_wall_clock` of this many seconds: THE STOP.
+        Silence(u64),
+        /// The session prints its result and exits: an ordinary end, whose read gives up 1 s
+        /// after the result when a process still holds its stdout.
+        Result,
+    }
 
-    // This test's own cleanup, through the sanctioned test-side signal call - never any
-    // process rigger's own STOP is responsible for reaping.
-    common::terminate_pid(descendant_pid);
-}
+    /// How a row's session holds its tree.
+    #[derive(Clone, Copy, Debug)]
+    enum Held {
+        /// As the composition root holds it: by the keeper on Linux.
+        Kept,
+        /// Watched from its main ([`WATCHED`]).
+        Watched,
+    }
 
-#[test]
-fn spawn_returns_a_real_result_promptly_even_when_a_descendant_still_holds_the_stdout_pipe() {
-    // The round-4 bounded-join fix (op-104-stop-end-the-tree-and-bound-the-joins) applies
-    // Driver::join_within at FOUR call sites, not just the two inside
-    // stop_for_wall_clock_silence the two tests above already prove: read_stream's own
-    // ORDINARY exit - a genuine result lands, no wall-clock silence, THE STOP never runs
-    // at all - hits the identical two joins right after dash::ReapedChild::drop, which
-    // ends only the ONE held child and (unlike reap::end_child) never walks a process
-    // tree. Before the round-4 fix this path's joins were bare `join()` calls, so a
-    // descendant inheriting the stdout pipe would have hung spawn() forever on a
-    // perfectly ordinary, successful run - a boundary bug with zero periphery coverage on
-    // this non-STOP path until now. This proves the ordinary-completion half: a real
-    // result is still captured and returned, within a bounded time, and the descendant
-    // itself is left running untouched (this path never attempts to end it - only THE
-    // STOP's own reap::end_child does that, by design).
-    //
-    // adj-u104stop-r4-verdict-reject REQUIRED FIX (op-104-stop-ordinary-path-drain-bound):
-    // this path's two joins are bounded by a dedicated constant
-    // (`claude_code::ORDINARY_DRAIN_JOIN_BOUND`, a few seconds), never by `stop_grace` -
-    // `stop_grace` is THE STOP's own wait-for-a-graceful-exit concern and has no meaning
-    // here, where the child has already exited cleanly. Proving "promptly" at a shrunk
-    // `stop_grace` (the prior version of this test overrode it to 300ms) would prove
-    // nothing about the real bound this path now uses, so this `Driver` takes the
-    // PRODUCTION `stop_grace` default (`fx.driver()`'s own 30s) unmodified - only the
-    // STOP-path tests above still shrink `stop_grace`, for THEIR own concern.
-    let fx = Fixture::new();
-    let driver = fx.driver_running("claude-code-descendant-survives-a-clean-result-agent.sh");
-    let descendant_pid_file = fx.scratch_file("descendant-clean-result.pid");
-    let o = opts_with_env(
-        "u104-stop/implementer#0",
-        "RIGGER_TEST_DESCENDANT_PID_FILE",
-        &descendant_pid_file,
-    );
+    /// What a row's ending leaves running.
+    #[derive(Clone, Copy, Debug)]
+    enum Leaves {
+        /// Nothing the session started; a stop names in its progress line the holder it was sent
+        /// to.
+        Nothing,
+        /// The process the session started before its result, which an ordinary end leaves
+        /// alone, or one that left a watched tree before the watch saw it.
+        TheLeftover,
+        /// The process the watch saw leave the session's tree: left running, never signalled, and
+        /// named in the end's progress line.
+        TheEscapee,
+    }
 
-    let started = Instant::now();
-    let result = driver
-        .spawn(&wall_clock_bounded(1), "do the thing", &o, &no_emit)
-        .expect(
-            "a real result line must still be read back even though a descendant \
-             outlives the driven child and keeps the stdout pipe's write end open",
+    /// Drives the fixture in RIGGER_FORK_AT `mode`, its tree held as `held`, to `window`'s ending,
+    /// THE STOP's grace `grace`, and reads the witness the moment the spawn returns: `Ended` once
+    /// nothing the session started is still running, `Held` while one process still is. The
+    /// witness holds exactly `up` bytes then, the main's and one for each process the session
+    /// started, so a row whose process was never started fails rather than reads `Ended` over
+    /// nothing. The ending returns within its bound, whoever holds the session's pipes, and the
+    /// test's release then ends what is left.
+    fn ends_held_at(
+        held: Held,
+        window: Window,
+        mode: &str,
+        grace: Duration,
+        up: usize,
+        leaves: Leaves,
+    ) {
+        let mut witness = Witness::new();
+        let fx = Fixture::new();
+        let status = match window {
+            Window::InitFault => "failed",
+            Window::Silence(_) | Window::Result => "connected",
+        };
+        let mut env = witness.env();
+        env.push(("RIGGER_FORK_AT".to_string(), mode.to_string()));
+        env.push(("RIGGER_TEST_MCP_STATUS".to_string(), status.to_string()));
+        let o = SpawnOpts {
+            env,
+            ..opts("u-tree/implementer#0")
+        };
+        let wall = match window {
+            Window::Silence(secs) => secs,
+            Window::InitFault | Window::Result => 1,
+        };
+
+        let driver = match held {
+            Held::Kept => fx.stopping_driver(FORKS_AT_STOP_AGENT, grace),
+            Held::Watched => Driver {
+                containment: &WATCHED,
+                ..fx.stopping_driver(FORKS_AT_STOP_AGENT, grace)
+            },
+        };
+
+        let started = Instant::now();
+        let outcome = driver.spawn(&wall_clock_bounded(wall), "do the thing", &o, &no_emit);
+        let elapsed = started.elapsed();
+        let reading = witness.read();
+        eprintln!(
+            "forks_at_stop {held:?} {window:?} {mode}: {} up, {reading:?}, {elapsed:?}",
+            witness.up()
         );
-    let elapsed = started.elapsed();
 
-    assert_eq!(
-        result.output,
-        "done: a result survives a still-open descendant pipe"
-    );
-    // The fixture's forked descendant inherits copies of BOTH the stdout and stderr
-    // write ends, so both joins (stderr drain, then stdout reader, run sequentially)
-    // independently hit `claude_code::ORDINARY_DRAIN_JOIN_BOUND` before detaching -
-    // worst case is ~2x that bound, plus slack for process/scheduling overhead. This is
-    // what proves "promptly" at the real production `stop_grace` (unmodified above):
-    // the ordinary path no longer owes that field anything.
-    assert!(
-        elapsed < Duration::from_secs(6),
-        "an ordinary completion must return within the dedicated ordinary-path drain \
-         bound (never stop_grace) even when a descendant still holds the stdout pipe \
-         open: {elapsed:?}"
-    );
+        let bound = match (window, outcome) {
+            (Window::InitFault, Err(e)) => {
+                let message = rigger::conductor::strip_failure_marker(&e);
+                assert!(
+                    message.contains("rigger MCP server") && message.contains("\"failed\""),
+                    "the launch fault names the server and its status: {message}"
+                );
+                END_ROUNDS + JOINS + SLACK
+            }
+            (Window::Silence(_), Err(e)) => {
+                assert!(e.0.contains("stopped"), "{}", e.0);
+                Duration::from_secs(wall) + grace + END_ROUNDS + JOINS + SLACK
+            }
+            (Window::Result, Ok(result)) => {
+                assert_eq!(
+                    result.output,
+                    "done: a result survives a still-open descendant pipe"
+                );
+                Duration::from_secs(wall) + JOINS + SLACK
+            }
+            (window, outcome) => panic!("{window:?} {mode}: the spawn returned {outcome:?}"),
+        };
+        assert_eq!(
+            witness.up(),
+            up,
+            "{held:?} {window:?} {mode}: the up bytes of the main and of every process the session \
+             started"
+        );
+        let expected = match leaves {
+            Leaves::Nothing => Reading::Ended,
+            Leaves::TheLeftover | Leaves::TheEscapee => Reading::Held,
+        };
+        assert_eq!(
+            (reading, elapsed < bound),
+            (expected, true),
+            "{held:?} {window:?} {mode}: the witness read {reading:?} (Ended: nothing the session \
+             started is still running) and the ending took {elapsed:?} against its bound of \
+             {bound:?}"
+        );
+        if let Leaves::TheEscapee = leaves {
+            let named = fx.activities().into_iter().any(|line| {
+                line.contains("left processes running")
+                    && line.contains("left running, never signalled")
+            });
+            assert!(
+                named,
+                "{mode}: the end names the escapee: {:?}",
+                fx.activities()
+            );
+        }
+        if let (Window::Silence(_), Leaves::Nothing) = (window, leaves) {
+            let holder = format!(" ({})", shell_name());
+            let named = fx.activities().into_iter().any(|line| {
+                line.contains("the end of the session was sent to ") && line.contains(&holder)
+            });
+            assert!(
+                named,
+                "{held:?} {mode}: the stop names the holder it was sent to: {:?}",
+                fx.activities()
+            );
+        }
+        assert_eq!(
+            witness.release(),
+            Reading::Ended,
+            "{mode}: the test's release ends every process the fixture started"
+        );
+    }
 
-    let descendant_pid = recorded_pid(
-        &descendant_pid_file,
-        "the fixture recorded its forked descendant's pid before exiting",
-    );
-    assert!(
-        common::is_alive(descendant_pid),
-        "pid {descendant_pid}: an ordinary completion's reap ends only the ONE held \
-         child (dash::ReapedChild::drop), never a descendant - this is the join bound's \
-         job, not a sweep, so the descendant must be left running"
-    );
+    /// The name an end gives a holder, a fresh `sh` the fixture starts: the file name of the
+    /// image `sh` on this test's `PATH` runs, never the holder's arguments.
+    fn shell_name() -> String {
+        let search = rigger::subprocess::SearchPath::ambient();
+        let sh = rigger::subprocess::find_executable(&search, "sh").expect("sh is on PATH");
+        let image = std::fs::canonicalize(sh).unwrap();
+        image.file_name().unwrap().to_string_lossy().into_owned()
+    }
 
-    // This test's own cleanup, through the sanctioned test-side signal call - never any
-    // process rigger's own ordinary completion path is responsible for reaping.
-    common::terminate_pid(descendant_pid);
+    /// [`ends_held_at`] with the tree kept, as the composition root holds it.
+    fn ends_at(window: Window, mode: &str, grace: Duration, up: usize, leaves: Leaves) {
+        ends_held_at(Held::Kept, window, mode, grace, up, leaves);
+    }
+
+    /// [`ends_held_at`] with the tree watched.
+    fn ends_watched_at(window: Window, mode: &str, grace: Duration, up: usize, leaves: Leaves) {
+        ends_held_at(Held::Watched, window, mode, grace, up, leaves);
+    }
+
+    rigger::test_cases! {
+        // The launch fault's stop: the session is ended at once, so a process it starts as the end
+        // reaches it is still the session's to end.
+        // Linux only: a process that left the session's tree is the session's to end only where
+        // the keeper adopts it, and only Linux has the keeper.
+        #[cfg(target_os = "linux")]
+        an_init_fault_ends_what_the_sessions_term_trap_starts:
+            ends_at(Window::InitFault, "term", Duration::from_secs(1), 2, Leaves::Nothing);
+        #[cfg(target_os = "linux")]
+        an_init_fault_ends_what_the_sessions_term_trap_starts_as_it_exits:
+            ends_at(Window::InitFault, "term-exit", Duration::from_secs(1), 2, Leaves::Nothing);
+        #[cfg(target_os = "linux")]
+        an_init_fault_ends_what_the_session_starts_at_its_input_end:
+            ends_at(Window::InitFault, "eof", Duration::from_secs(1), 2, Leaves::Nothing);
+        #[cfg(target_os = "linux")]
+        an_init_fault_ends_what_the_session_starts_at_its_input_end_as_it_exits:
+            ends_at(Window::InitFault, "eof-exit", Duration::from_secs(1), 2, Leaves::Nothing);
+        // A grace of 15 s: joins that waited the stop's grace would wait it twice and break the
+        // bound, which the ending's own 2 s join bound keeps.
+        // Linux only: a process that left the session's tree is the session's to end only where
+        // the keeper adopts it, and only Linux has the keeper.
+        #[cfg(target_os = "linux")]
+        an_init_fault_ends_a_process_that_left_the_sessions_tree_without_waiting_on_its_pipes:
+            ends_at(Window::InitFault, "double", Duration::from_secs(15), 2, Leaves::Nothing);
+        // THE STOP: input closed, the grace waited, then the end.
+        // Linux only: a process that left the session's tree is the session's to end only where
+        // the keeper adopts it, and only Linux has the keeper.
+        #[cfg(target_os = "linux")]
+        a_stop_ends_what_the_sessions_term_trap_starts:
+            ends_at(Window::Silence(1), "term", Duration::from_secs(1), 2, Leaves::Nothing);
+        #[cfg(target_os = "linux")]
+        a_stop_ends_what_the_sessions_term_trap_starts_as_it_exits:
+            ends_at(Window::Silence(1), "term-exit", Duration::from_secs(1), 2, Leaves::Nothing);
+        a_stop_ends_what_the_session_starts_at_its_input_end:
+            ends_at(Window::Silence(1), "eof", Duration::from_secs(1), 2, Leaves::Nothing);
+        // Linux only: a process that left the session's tree is the session's to end only where
+        // the keeper adopts it, and only Linux has the keeper.
+        #[cfg(target_os = "linux")]
+        a_stop_ends_what_the_session_starts_at_its_input_end_as_it_exits:
+            ends_at(Window::Silence(1), "eof-exit", Duration::from_secs(1), 2, Leaves::Nothing);
+        a_stop_ends_what_the_session_starts_during_the_grace:
+            ends_at(
+                Window::Silence(1),
+                "eof-then-margin",
+                Duration::from_secs(4),
+                2,
+                Leaves::Nothing,
+            );
+        // Linux only: a process that left the session's tree is the session's to end only where
+        // the keeper adopts it, and only Linux has the keeper.
+        #[cfg(target_os = "linux")]
+        a_stop_ends_a_process_that_left_the_sessions_tree_without_waiting_on_its_pipes:
+            ends_at(Window::Silence(1), "double", Duration::from_secs(15), 2, Leaves::Nothing);
+        // The process leaves the tree 3 s after init, before the stop at 5 s.
+        // Linux only: a process that left the session's tree is the session's to end only where
+        // the keeper adopts it, and only Linux has the keeper.
+        #[cfg(target_os = "linux")]
+        a_stop_ends_a_process_that_left_the_sessions_tree_while_it_ran:
+            ends_at(Window::Silence(5), "double-slow", Duration::from_secs(1), 2, Leaves::Nothing);
+        // Linux only: util-linux `setsid`, which the fixture starts its process with.
+        #[cfg(target_os = "linux")]
+        a_stop_ends_a_process_in_a_session_of_its_own:
+            ends_at(Window::Silence(1), "setsid", Duration::from_secs(1), 2, Leaves::Nothing);
+        a_stop_ends_a_process_started_in_another_directory:
+            ends_at(Window::Silence(1), "chdir", Duration::from_secs(1), 2, Leaves::Nothing);
+        // An ordinary end at the production grace, which it never waits: the result returns within
+        // the read's 1 s and two 2 s joins, and the process still holding the pipes runs on.
+        a_result_returns_promptly_and_leaves_a_leftover_alone:
+            ends_at(Window::Result, "clean-exit", STOP_GRACE, 2, Leaves::TheLeftover);
+        // Watched: the end freezes the tree and asks nothing of it, so no trap of the session's
+        // runs.
+        a_watched_init_fault_ends_the_session_without_running_its_term_trap:
+            ends_watched_at(Window::InitFault, "term", Duration::from_secs(1), 1, Leaves::Nothing);
+        a_watched_stop_ends_what_the_session_starts_at_its_input_end:
+            ends_watched_at(Window::Silence(1), "eof", Duration::from_secs(1), 2, Leaves::Nothing);
+        a_watched_stop_ends_what_the_session_starts_during_the_grace:
+            ends_watched_at(
+                Window::Silence(1),
+                "eof-then-margin",
+                Duration::from_secs(4),
+                2,
+                Leaves::Nothing,
+            );
+        // Linux only: util-linux `setsid`, which the fixture starts its process with.
+        #[cfg(target_os = "linux")]
+        a_watched_stop_ends_a_process_in_a_session_of_its_own:
+            ends_watched_at(
+                Window::Silence(1),
+                "setsid",
+                Duration::from_secs(1),
+                2,
+                Leaves::Nothing,
+            );
+        // What a watch cannot hold: a process that left the tree before the stop runs on, and the
+        // stop still returns within its bound.
+        a_watched_stop_leaves_a_process_that_left_the_tree_without_waiting_on_its_pipes:
+            ends_watched_at(
+                Window::Silence(1),
+                "double",
+                Duration::from_secs(15),
+                2,
+                Leaves::TheLeftover,
+            );
+        a_watched_stop_names_a_process_it_saw_leave_the_tree_and_never_signals_it:
+            ends_watched_at(
+                Window::Silence(5),
+                "double-slow",
+                Duration::from_secs(1),
+                2,
+                Leaves::TheEscapee,
+            );
+        a_watched_result_returns_promptly_and_leaves_a_leftover_alone:
+            ends_watched_at(Window::Result, "clean-exit", STOP_GRACE, 2, Leaves::TheLeftover);
+    }
 }
 
 // ---- THE STOP's bound: `max_wall_clock` 0 is unbounded, never a 5 s stop ----
@@ -3300,8 +3471,12 @@ fn a_launch_ends_as_the_hold_and_its_class_decide() {
         let name = case.name;
         let fx = Fixture::started(&case.seeded);
         let before = fx.holds().len();
+        // Watched, not kept: the window a hold lands in while the launch ends is the one a
+        // process that left the session's tree holds open (`unreadable-pipes-held`), and only a
+        // watched tree leaves one; a keeper adopts that process and ends it with the session.
         let driver = Driver {
             hold_sink: (!case.no_sink).then_some(&fx.run_store as &dyn EventStore),
+            containment: &WATCHED,
             ..fx.stopping_driver(RESUME_ENDING_AGENT, WIND_DOWN_GRACE)
         };
         let mut o = if case.fresh {

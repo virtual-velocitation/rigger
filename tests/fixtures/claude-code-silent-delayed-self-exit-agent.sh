@@ -7,7 +7,7 @@
 # skipped wait to have raced against. This one instead sleeps a beat past its own EOF
 # before exiting, standing in for a session that takes a MOMENT to wind itself down once
 # its input closes - long enough that a host with a genuinely broken (zero-iteration)
-# grace loop reaches `reap::end_child`'s SIGTERM before this script ever gets there,
+# grace loop reaches the end of the session's tree before this script ever gets there,
 # killing it mid-sleep; only a host that actually POLLS across the grace window observes
 # the exit on its own and lets it finish. The marker is written only once that sleep
 # completes, so a live host's own `try_wait` timing decides its fate.

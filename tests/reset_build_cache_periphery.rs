@@ -297,6 +297,8 @@ fn reset_build_cache_refuses_rather_than_waits_while_a_build_holds_the_guard() {
     );
 }
 
+// Unix only: it reads or signals a process through the unix signal helpers.
+#[cfg(unix)]
 #[test]
 fn reset_build_cache_still_refuses_when_the_guard_holders_orchestrator_died_but_the_build_lives_on()
 {
