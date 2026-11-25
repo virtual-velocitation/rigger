@@ -99,11 +99,10 @@ pub const TYPE_DEFERRED_GATE_FAILED: &str = ledger::TYPE_DEFERRED_GATE_FAILED;
 
 pub use crate::metrics::TYPE_BLAST_RADIUS_COMPUTED;
 
-/// The grounder `k` cap the conductor seeds every unit's PRECISE view at (§5.3): at most this
-/// many distinct files seed a prompt and drive the blast-radius-narrowed gate loop. The
-/// safe-superset view unit 3 partitions and routes tiers by is UNCAPPED (never bounded by this),
-/// so a wide structural change's true width reaches the tier size signal.
-const GROUNDED_SEED_K: usize = 8;
+/// The grounder `k` the conductor asks for: every grounded file, never a cut. Every file the
+/// grounder grounds seeds the prompt (whose sections render through their capped writers, with
+/// an elision note) and the blast-radius-narrowed gate loop.
+const EVERY_GROUNDED_FILE: usize = usize::MAX;
 
 /// The metadata key carrying an event's deterministic REPLAY KEY (spec 04, criterion 4),
 /// RE-EXPORTED from [`crate::ingest`], which owns it: that module builds the
@@ -12956,16 +12955,16 @@ impl RunCtx<'_> {
     }
 
     /// The unit's TWO-VIEW blast radius (spec 16 unit 3, architecture 5.5.1): computed from the
-    /// grounder over the unit's grounding query at the [`GROUNDED_SEED_K`] cap. The UNCAPPED
+    /// grounder over the unit's grounding query, every grounded file ([`EVERY_GROUNDED_FILE`]). The
     /// `.safe`-superset view is what every SAFETY consumer keys on: `run_wave` and
     /// `route_review_tier` (spec 16 unit 3), plus rule-6 conflict detection
     /// (`dag_unit_blast_radii`) (spec 17 unit 3, 3b) - over-inclusion is the safe error (a
     /// missed reference could co-schedule two conflicting units or route a wide/high-risk
     /// change to the light panel). The `.safe` view is the `BlastRadiusComputed` audit's
     /// payload; the audit's `precise` is instead the actual prompt SEED
-    /// ([`grounded_seed`](Self::grounded_seed)), because this radius's `.precise` - a k-FILE
-    /// structural rank - DIVERGES from the seed (the grounder's `seed`, whose fill is a k-LINE pass)
-    /// past the cap (spec 17, 4b), so `record_blast_radius` records the seed the agent actually saw and
+    /// ([`grounded_seed`](Self::grounded_seed)), because this radius's `.precise` - the
+    /// structural rank, definers then referencers - DIVERGES from the seed (the grounder's
+    /// `seed`, whose tail is the text match) (spec 17, 4b), so `record_blast_radius` records the seed the agent actually saw and
     /// `.precise` here has no production reader. `grounded_seed` stays the cheap `seed` path so the
     /// many per-unit / per-reviewer seed calls never pay for the uncapped safe walk. With no grounder
     /// configured this is the empty fail-safe (`BlastRadius::default()`). On the symbols-INACTIVE
@@ -13011,7 +13010,7 @@ impl RunCtx<'_> {
         };
         let query = self.ground_query(st);
         let Some(context) = self.deps.context else {
-            return grounder.blast_radius_stamped(&query, GROUNDED_SEED_K);
+            return grounder.blast_radius_stamped(&query, EVERY_GROUNDED_FILE);
         };
         let head = match unit_tree {
             Some(tree) => context.head_in(tree),
@@ -13024,7 +13023,7 @@ impl RunCtx<'_> {
         } = grounder.blast_radius_stamped_over(
             head.as_ref().map_err(String::as_str),
             &query,
-            GROUNDED_SEED_K,
+            EVERY_GROUNDED_FILE,
         );
         let radius = match &head {
             Ok(head) => self.graph_tiered(context, head, base, depth),
@@ -13077,8 +13076,8 @@ impl RunCtx<'_> {
     }
 
     /// The stage's PRECISE grounded seed: the grounder's [`Grounder::seed`] of the stage's
-    /// grounding query (its `coverage`/name, or the spec criteria for a planner), at most
-    /// [`GROUNDED_SEED_K`] files (§5.3). For the `symbols` grounder that is the code the criterion
+    /// grounding query (its `coverage`/name, or the spec criteria for a planner), every grounded
+    /// file ([`EVERY_GROUNDED_FILE`]). For the `symbols` grounder that is the code the criterion
     /// names, resolved to its definition files, before any whole-text match, which never matches
     /// test code. It is the same grounding `build_prompt` seeds the graph
     /// context from, the spawn's `blast_radius` field carries, and the blast-radius-narrowed gate
@@ -13095,7 +13094,7 @@ impl RunCtx<'_> {
             Some(g) => g,
             None => return Vec::new(),
         };
-        gr.seed(&self.ground_query(st), GROUNDED_SEED_K)
+        gr.seed(&self.ground_query(st), EVERY_GROUNDED_FILE)
     }
 
     /// Record a unit's computed blast radius as a `BlastRadiusComputed` audit event (spec 16 unit
@@ -13238,7 +13237,7 @@ impl RunCtx<'_> {
         // from), but those refs are no longer rendered as a parallel "Relevant locations" block:
         // the code neighborhood now comes from the ONE `graph_context` traversal below, alongside
         // the decisions/findings and design-intent nodes about the SAME files. `grounded_seed`
-        // derives the seed from the SAME `seed(query, GROUNDED_SEED_K)` pass the spawn's blast
+        // derives the seed from the SAME `seed(query, EVERY_GROUNDED_FILE)` pass the spawn's blast
         // radius and audit already use, so the seed is unchanged - only the render collapses from
         // two stitched sources onto the single unified traversal.
         let seed = self.grounded_seed(st);
@@ -46636,14 +46635,13 @@ stage "implement" adjudicator "adj" failed
     /// signal `record_blast_radius` keys the audit off - so the audit is NOT skipped by the
     /// empty-stamp early return that keeps the non-structural grep / nop default silent.
     ///
-    /// (4b) The recorded `precise` equals the files that SEEDED the prompt at AND beyond the
-    /// truncation cap. The prompt seed is `grounded_seed` - the named `target`'s definer, then the
-    /// distinct FILES of a k-LINE-truncated `ground` fill - while the radius's `precise` is a k-FILE-truncated structural rank;
-    /// past the cap the two diverge. The fixture makes the divergence unmissable: `busy.rs`
-    /// references `target` on many LINES, consuming the k-LINE `ground` budget so the distinct-FILE
-    /// seed is just {def.rs, busy.rs}; the structural `precise` instead ranks def-then-referencers
-    /// truncated at k FILES, carrying `x0.rs..x5.rs` - files that never seeded the prompt. The audit
-    /// must record the 2-file seed, not the beyond-cap structural rank.
+    /// (4b) The recorded `precise` equals the files that SEEDED the prompt, every one of them. The
+    /// prompt seed is `grounded_seed` - the named `target`'s definer, then every production file
+    /// the text match holds - while the radius's `precise` is the structural rank, definers then
+    /// referencers, test code among them. The fixture makes the divergence unmissable: a test file
+    /// calls `target`, so the structural `precise` carries it while the seed never does, and
+    /// twelve production files reference `target`, more than any cut would keep. The audit must
+    /// record the seed, all of it, not the structural rank.
     ///
     /// Runs under a REAL `Symbols` grounder, so it needs the `symbols` feature (tree-sitter); the
     /// `cfg` gate excludes it from `--no-default-features` (no `symbols`, no tree-sitter).
@@ -46662,8 +46660,7 @@ stage "implement" adjudicator "adj" failed
             format!("fn caller() {{\n{body}}}\n"),
         )
         .unwrap();
-        // Ten more single-reference files: the STRUCTURAL precise (def, then referencers, truncated
-        // at k FILES) ranks these into its top-k, but they NEVER seed the prompt.
+        // Ten more single-reference files: every one seeds the prompt.
         for i in 0..10 {
             std::fs::write(
                 dir.path().join(format!("x{i}.rs")),
@@ -46671,6 +46668,13 @@ stage "implement" adjudicator "adj" failed
             )
             .unwrap();
         }
+        // A test that calls `target`: a structural referencer, never a seed file.
+        std::fs::create_dir_all(dir.path().join("tests")).unwrap();
+        std::fs::write(
+            dir.path().join("tests").join("caller.rs"),
+            "fn checks() { target(); }\n",
+        )
+        .unwrap();
         let root = dir.path().to_str().unwrap();
         let symbols = Symbols::in_directory(root);
 
@@ -46707,16 +46711,21 @@ stage "implement" adjudicator "adj" failed
         ctx.record_blast_radius(&st, 0, &stamped).unwrap();
         let (seed, radius) = (&stamped.seed, &stamped.radius);
 
-        // The seed is the small distinct-FILE set; the structural precise diverges past the cap.
+        // The seed is every production file grounded on `target`; the structural precise also
+        // carries the test that calls it.
+        let mut seeded = seed.clone();
+        seeded.sort();
+        let mut production: Vec<String> = ["busy.rs", "def.rs"].map(String::from).to_vec();
+        production.extend((0..10).map(|i| format!("x{i}.rs")));
+        production.sort();
         assert_eq!(
-            *seed,
-            vec!["def.rs".to_string(), "busy.rs".to_string()],
-            "the prompt seed is the distinct FILES of ground(target, k): {seed:?}"
+            seeded, production,
+            "the prompt seed is every production file grounded on `target`: {seed:?}"
         );
+        let test_file = "tests/caller.rs".to_string();
         assert!(
-            radius.precise.len() > seed.len() && radius.precise.contains(&"x0.rs".to_string()),
-            "precondition: the structural precise diverges past the cap, carrying x*.rs files the \
-             seed never did: {:?}",
+            radius.precise.contains(&test_file) && !seed.contains(&test_file),
+            "precondition: the structural precise carries the test caller the seed never does: {:?}",
             radius.precise
         );
 
@@ -46742,12 +46751,7 @@ stage "implement" adjudicator "adj" failed
             .collect();
         assert_eq!(
             recorded_precise, *seed,
-            "the audit must record the prompt seed as precise, not the k-FILE structural rank"
-        );
-        assert!(
-            !recorded_precise.contains(&"x0.rs".to_string()),
-            "the recorded precise must NOT carry a beyond-cap structural file the prompt never \
-             seeded on: {recorded_precise:?}"
+            "the audit must record the prompt seed as precise, not the structural rank"
         );
         assert_eq!(
             v["index_stamp"], stamped.stamp,
@@ -46800,6 +46804,43 @@ stage "implement" adjudicator "adj" failed
         };
         let ctx = RunCtx::for_test(&cfg, &deps);
         assert_eq!(ctx.grounded_seed(&st), vec!["named.rs".to_string()]);
+    }
+
+    /// Every grounded file seeds the prompt and the gate narrowing, however many the grounder
+    /// returns: nine named files are nine seed files on both paths, none dropped.
+    #[test]
+    fn every_grounded_file_seeds_the_prompt_and_the_gate_narrowing() {
+        let files: Vec<String> = (0..9).map(|i| format!("f{i}.rs")).collect();
+        let coverage = "`nine` names nine files";
+        let grounder = StructuralStubGrounder {
+            by_query: HashMap::from([(
+                coverage.to_string(),
+                BlastRadius {
+                    precise: files.clone(),
+                    safe: files.clone(),
+                },
+            )]),
+            stamp: String::new(),
+        };
+        let st = Stage {
+            name: "u".into(),
+            coverage: coverage.into(),
+            ..Default::default()
+        };
+        let cfg = Config::default();
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            grounder: Some(&grounder),
+            ..stub_deps(&store, &driver, Vec::new())
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+        assert_eq!(ctx.grounded_seed(&st), files, "the prompt seed");
+        assert_eq!(
+            ctx.grounded_blast_radius_stamped(&st, None).seed,
+            files,
+            "the seed the gate narrowing selects on"
+        );
     }
 
     /// A driver whose every spawn holds for its agent's configured time (`hold`, else 400 ms) and
