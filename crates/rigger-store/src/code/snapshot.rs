@@ -849,7 +849,7 @@ impl Snapshot {
         let mut next_attr = 0;
         for i in 0..nodes.rows {
             let run = self.attrs_of(self.row(nodes, i));
-            if run.start != next_attr {
+            if run.start != next_attr || run.end < run.start {
                 return Err("node attributes are not one run a node".into());
             }
             next_attr = run.end;
