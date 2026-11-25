@@ -1928,10 +1928,11 @@ fn bindings_at<'t>(node: tree_sitter::Node<'t>, source: &[u8]) -> Vec<String> {
                         .filter_map(|c| c.child_by_field_name("pattern")),
                 );
             }
+            // A `let` is the one statement of a block that holds a `pattern` field.
             "block" => patterns.extend(
                 named(Some(ancestor))
                     .into_iter()
-                    .filter(|s| s.kind() == "let_declaration" && s.end_byte() <= node.start_byte())
+                    .filter(|s| s.end_byte() <= node.start_byte())
                     .filter_map(|s| s.child_by_field_name("pattern")),
             ),
             _ => {}
