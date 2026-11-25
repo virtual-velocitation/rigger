@@ -129,7 +129,7 @@ Only **console events** count toward N: the run-lifecycle types (`RunStarted`,
 `UnitProposed`, `UnitStarted`, `UnitStatus`, `UnitIntegrated`, `UnitFailed`, `UnitEscalated`,
 `UnitResumed`, `SpawnRequested`, `SpawnResult`, `StepTaken`, `GateVerdict`, `ReviewFinding`,
 `DecisionMade`, `LessonLearned`, `BlastRadiusComputed`, `FileTouched`,
-`DefinitionSuperseded`, `BudgetExhausted`, `RunHeld`, `RunReleased`, `DagRecorded`,
+`DefinitionSuperseded`, `RunHeld`, `RunReleased`, `DagRecorded`,
 `SpecDefect`, `DeferredGateFailed`). The graph-extraction
 types that share the stream (`CodeEntityExtracted`, `EdgeInferred`, `DocLinkExtracted`,
 `DocConceptExtracted`) are the knowledge graph's and reach the console only as the graph payload; they never appear on the
@@ -458,7 +458,7 @@ has allowed it once, a browser notification, so nobody watches a board to be tap
 rules on a unit in review; an implementer finishes a round; a rejected unit re-spawns for its
 next round; a blocked unit unblocks when its needs land; the capstone runs; release-ready) -
 the current one highlighted. **Needs you** is the attention list: every `AttentionEntry` the
-ledger already computes (escalated, halted, reject recurrence, budget final tenth, stalled
+ledger already computes (escalated, halted, reject recurrence, stalled
 frontier), plus release-ready and stale heartbeats; each item carries the exact command chips
 (copyable) and, for the two actions the console may perform, a guarded button. When the list
 is empty it says so:

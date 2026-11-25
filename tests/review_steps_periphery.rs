@@ -928,7 +928,7 @@ type RaisedFinding<'a> = (&'a str, &'a str, &'a str);
 type WalkedStep<'a> = (&'a [&'a str], &'a [&'a str], &'a str);
 
 /// The workflow of a run, for [`declaring`]: one stage `s` reviewed by its `{panel}`.
-const WALKED_WORKFLOW: &str = "defaults:\n  grounder: nop\n  budget: 60\ngates:\n  ok: { run: \
+const WALKED_WORKFLOW: &str = "defaults:\n  grounder: nop\ngates:\n  ok: { run: \
                                \"true\", kind: core }\nstages:\n  s:\n    agent: a\n    gates: \
                                [ok]\n    on_pass: none\n    review: {panel}\n";
 
@@ -1186,11 +1186,12 @@ fn a_run_takes_a_rejected_list_through_remediation_into_a_round_of_the_same_toke
     assert_eq!(stamps, ["s/reviewed#1"]);
 }
 
-/// Given a run on a map-form panel halted mid-round once its lenses answered, when the operator
+/// Given a run on a map-form panel interrupted mid-round once its lenses answered, when the operator
 /// rewrites the panel as the list spelling its canonical sequence, then a relaunched run stops on
 /// the definition drift, and once rebased it answers the recorded steps from the log and requests
 /// the rest of the round under the ids and rosters the map form mints, no spawn of the round
 /// requested twice.
+#[cfg(unix)]
 #[test]
 fn a_run_rebased_from_a_map_onto_its_canonical_list_keeps_the_rounds_ids() {
     let dir = temp_git_project_with_commit();
@@ -1217,21 +1218,34 @@ fn a_run_rebased_from_a_map_onto_its_canonical_list_keeps_the_rounds_ids() {
         let (out, err, ok, _fake) = run_on_arms(root, args, scratch.path(), &arms);
         (out, err, ok, requested_waves(&read_run_events(root)))
     };
-    let halts_after_the_lenses = WALKED_WORKFLOW.replace("budget: 60", "budget: 3");
-    let lenses_answered = walk.waves()[..2].to_vec();
+    let adversary = "    s/adversary#0) ";
+    let interrupted_at_the_adversary = arms.replacen(
+        adversary,
+        &format!(
+            "    s/adversary#0)\n{}        ",
+            common::cli::FIRST_LAUNCH_WAITS_FOR_ITS_INTERRUPT
+        ),
+        1,
+    );
+    assert_ne!(
+        interrupted_at_the_adversary, arms,
+        "the walk answers {adversary}"
+    );
+    let lenses_answered = walk.waves()[..3].to_vec();
 
-    let (out, err, ok, waves) = relaunch(&halts_after_the_lenses, MAP_PANEL, &["run"]);
-    assert!(ok, "premise: the run halts on its budget; stderr: {err}");
-    assert!(
-        out.contains("halted: budget exhausted: 3/3 spawns"),
-        "{out}"
+    write_panel_project(root, &declaring(WALKED_WORKFLOW, MAP_PANEL));
+    common::cli::a_run_interrupted_at_its_waiting_launch(
+        root,
+        scratch.path(),
+        &interrupted_at_the_adversary,
     );
     assert_eq!(
-        waves, lenses_answered,
-        "premise: halted once the lenses answered"
+        requested_waves(&read_run_events(root)),
+        lenses_answered,
+        "premise: interrupted once the lenses answered, the adversary live"
     );
 
-    let (_, err, ok, waves) = relaunch(&halts_after_the_lenses, MAP_PANEL_AS_LIST, &["run"]);
+    let (_, err, ok, waves) = relaunch(WALKED_WORKFLOW, MAP_PANEL_AS_LIST, &["run"]);
     assert!(!ok, "premise: the rewrite drifts the pinned definition");
     assert!(err.contains("definition drift"), "{err}");
     assert_eq!(waves, lenses_answered, "a drifted run requests nothing");

@@ -3,7 +3,7 @@
 //!
 //! This is a GATE, not a shipped surface: the whole module lives under `#[cfg(test)]` (it is
 //! declared `#[cfg(test)] mod` in `lib.rs`). It adds NO runtime API and NO new event - the
-//! RUNTIME wave-level parallelism-retention warn-metric derivable from `BlastRadiusComputed`
+//! RUNTIME wave-level parallelism-retention metric derivable from `BlastRadiusComputed`
 //! is unit 3's; unit 2 owns only the PRE-SHIP validation and its red-on-regression assertions,
 //! so `grounded_seed` and every production surface stay byte-for-byte unchanged.
 //!
@@ -33,8 +33,8 @@
 //! width-distribution-tuned threshold to prove such a split is FEASIBLE.
 
 // Only the ONE partitioner authority is needed by the always-compiled metric core. The
-// symbols-specific imports (`Grep`, `Grounder`, `BlastRadius`, `HashSet`, the `GROUND_K` cap
-// and `safe_superset_violations`) live in the feature-gated `corpus_gates` module below, so the
+// symbols-specific imports (`Grep`, `Grounder`, `BlastRadius`, `HashSet` and
+// `safe_superset_violations`) live in the feature-gated `corpus_gates` module below, so the
 // symbols-OFF lane carries no dead code.
 use crate::conductor::partition_by_blast_radius;
 
@@ -248,15 +248,6 @@ mod corpus_gates {
     use std::collections::HashSet;
     use std::path::Path;
 
-    /// The distinct-file cap `grounded_seed` grounds at today (conductor.rs `grounded_seed`). It
-    /// bounds the SUBJECT symbols view at the production cap - though the symbols safe view is
-    /// uncapped by construction regardless, so `k` only bounds the precise seed. The grep
-    /// BASELINE, by contrast, runs UNCAPPED (`usize::MAX`) in `measure`: grep's trait-default
-    /// `blast_radius` returns `ground(q, k)` for both views, so a capped baseline would be a
-    /// read_dir-order nondeterministic WHICH-`k` slice, unfit for a frozen gate
-    /// (d16-u2-retention-isolates-serialize-cost). Arm (a) likewise runs grep uncapped.
-    const GROUND_K: usize = 8;
-
     /// A symbol name as a criterion names it - in a code span - so the symbols radius grounds on
     /// it (a bare prose word is never a blast-radius term).
     fn span(name: &str) -> String {
@@ -274,11 +265,7 @@ mod corpus_gates {
     ) -> Vec<String> {
         let mut bad = Vec::new();
         for &q in queries {
-            let safe: HashSet<String> = subject
-                .blast_radius(&span(q), GROUND_K)
-                .safe
-                .into_iter()
-                .collect();
+            let safe: HashSet<String> = subject.blast_radius(&span(q)).safe.into_iter().collect();
             let grep_files: HashSet<String> = grep
                 .ground_identifier(q, usize::MAX)
                 .into_iter()
@@ -373,7 +360,7 @@ mod corpus_gates {
             violations.is_empty(),
             "an unresolved span's safe view must carry every text hit; misses for: {violations:?}"
         );
-        let reload = symbols.blast_radius("`on_reload`", GROUND_K);
+        let reload = symbols.blast_radius("`on_reload`");
         assert!(
             reload.safe.contains(&"reflect.rs".to_string())
                 && !reload.precise.contains(&"reflect.rs".to_string()),
@@ -384,14 +371,14 @@ mod corpus_gates {
         // inside a macro body in macros.rs, which the name-level index does not link, so
         // macros.rs is a text-only mention and stays out of the safe view. Text-searching a
         // resolved name again would add it.
-        let render = symbols.blast_radius("`render`", GROUND_K);
+        let render = symbols.blast_radius("`render`");
         assert!(
             render.precise.contains(&"widget.rs".to_string())
                 && !render.safe.contains(&"macros.rs".to_string()),
             "a resolved name grounds on its structural set alone; got {render:?}"
         );
         for &q in &queries {
-            let br = symbols.blast_radius(&span(q), GROUND_K);
+            let br = symbols.blast_radius(&span(q));
             for f in &br.precise {
                 assert!(
                     br.safe.contains(f),
@@ -485,17 +472,15 @@ mod corpus_gates {
         let mut baseline = Vec::new();
         let mut subject = Vec::new();
         for (unit, query, ..) in pinned_polyglot_units() {
-            // The grep BASELINE runs UNCAPPED (usize::MAX), matching arm-a's uncapped grep and
-            // honoring d16-u2-retention-isolates-serialize-cost: grep's trait-default blast_radius
-            // returns ground(q, k) for both views, so a capped baseline would be a read_dir-order
-            // nondeterministic WHICH-k slice, unfit for a frozen gate. Uncapped, the baseline IS
-            // the full grep radius, the floor the safe superset can only widen.
-            let g: BlastRadius = grep.blast_radius(query, usize::MAX);
+            // The grep BASELINE is grep's trait-default blast_radius, every ground hit's file in
+            // both views, matching arm-a's uncapped grep: the full grep radius, the floor the safe
+            // superset can only widen.
+            let g: BlastRadius = grep.blast_radius(query);
             baseline.push(UnitRadius {
                 unit: unit.to_string(),
                 files: g.safe,
             });
-            let s: BlastRadius = symbols.blast_radius(&span(query), GROUND_K);
+            let s: BlastRadius = symbols.blast_radius(&span(query));
             subject.push(UnitRadius {
                 unit: unit.to_string(),
                 files: s.safe,
@@ -518,8 +503,7 @@ mod corpus_gates {
         let (baseline, subject) = measure(root);
 
         // On this corpus every grep hit is a structural reference, so the safe view holds the
-        // grep baseline for every unit, and because the baseline runs UNCAPPED (measure passes
-        // usize::MAX) it IS the full grep radius; with structural ⊆ grep that makes safe == the
+        // grep baseline for every unit, and the baseline IS the full grep radius; with structural ⊆ grep that makes safe == the
         // baseline grep radius EXACTLY
         // (both are widths 9..=15). The hub `audit` costs no parallelism of its own: its whole
         // neighborhood is in its radius, and that neighborhood shares no file with another unit.

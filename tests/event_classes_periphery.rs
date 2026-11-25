@@ -68,12 +68,6 @@ fn each_moved_type_string_reads_the_same_through_the_conductor_and_the_ledger() 
             rigger::ledger::TYPE_SPEC_DEFECT,
             "SpecDefect",
         ),
-        (
-            "TYPE_TASK_ABORTED",
-            rigger::conductor::TYPE_TASK_ABORTED,
-            rigger::ledger::TYPE_TASK_ABORTED,
-            "TaskAborted",
-        ),
     ] {
         assert_eq!(
             through_conductor, wire,

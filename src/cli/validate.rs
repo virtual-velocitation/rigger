@@ -363,7 +363,7 @@ fn store_advisories(
 /// per variable the workflow's `build.env` declares, in name order, or `build env: none
 /// declared` when it declares none; then the machine-wide build budget, ALWAYS:
 /// `build.max_concurrent` gates every compiler invocation this loop runs (spec 65 unit 3). `0`
-/// is the documented unlimited convention (mirrors `defaults.budget`), reported in words rather
+/// is the documented unlimited convention, reported in words rather
 /// than a bare, easily-misread `0`.
 ///
 /// Pure formatting over the declaration `Config::validate` already accepted, so it is

@@ -173,7 +173,7 @@ way). The protocol, validated in production:
    in-flight reviewers ground through the knowledge graph and see it IMMEDIATELY, ahead of
    their worktrees picking up the text.
 4. If the run still escalates, restart FRESH under the amended spec: durable unit branches
-   carry the work forward, the budget resets, and the graph's findings steer the new attempts.
+   carry the work forward, and the graph's findings steer the new attempts.
 
 ## What good looks like, measured
 

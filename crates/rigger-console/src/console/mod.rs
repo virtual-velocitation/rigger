@@ -66,11 +66,10 @@ impl Dock {
 }
 
 /// Derive the dock's needs-you list from a projected [`RunState`] plus the raw
-/// `events` (needed only for the durable budget fact, exactly as
-/// [`blocker::from_state`] already takes both, and for the run's holds). Four
-/// CURRENT-STATE signals, spec 105's hold and a snapshot subset of spec 69's five crossing
-/// signals - the two that are genuinely crossings with no persisting "still true" state of their
-/// own (the budget's final-tenth threshold, a frontier stall reported only once) stay push-side,
+/// `events` (needed only for the run's holds). Three
+/// CURRENT-STATE signals, spec 105's hold and a snapshot subset of spec 69's crossing
+/// signals - a crossing with no persisting "still true" state of its
+/// own (a frontier stall reported only once) stays push-side,
 /// not here, and spec 105's `released` stays off the dock too (spec 106's
 /// `rigger attention --follow` delivers it):
 ///
@@ -82,9 +81,6 @@ impl Dock {
 /// - **escalated** - every unit whose [`Status`] is currently [`Status::Escalated`], listed
 ///   under the spec-defect stop's own kind and reason when it stopped the run on one
 ///   ([`AttentionEntry::escalation`], spec 112 criterion 5).
-/// - **halted** - the run's spawn budget is currently spent
-///   ([`blocker::budget_halt`], the same durable fact [`blocker::classify`]'s
-///   run-level [`blocker::Kind::Budget`] line already surfaces).
 /// - **reject-recurrence** - a unit [`blocker::awaits_finding_audit`] holds for: currently
 ///   [`Status::Failed`] (mid-remediation: the status holds from its failure until its next
 ///   green, whether or not its next attempt is already running) with recorded attempts at or
@@ -120,13 +116,6 @@ pub fn dock(run: &RunState, events: &[Event]) -> Dock {
         if u.status == Status::Escalated {
             needs_you.push(AttentionEntry::escalation(u));
         }
-    }
-
-    if let Some(b) = blocker::budget_halt(events) {
-        needs_you.push(AttentionEntry::run_scoped(
-            ledger::ATTENTION_HALTED,
-            format!("budget spent {}/{}", b.spent, b.cap),
-        ));
     }
 
     for (id, u) in &run.units {
@@ -440,8 +429,7 @@ pub const VIEWS: [(&str, &str); 7] = [
 /// `dash.rs::console_snapshot_json`'s `if let Ok(...)` already use for this identical
 /// older-run scenario - CONSTRAINTS WALK: "An older run lacking a field - the fold
 /// renders the blank, never fails." [`spawn::recorded`] stays the right tool for its
-/// OTHER callers (the replay driver's park-or-replay decision, the budget breaker's hard
-/// count), where a malformed spawn is a genuine invariant violation; [`spawn::recorded_lenient`]
+/// OTHER callers (the replay driver's park-or-replay decision), where a malformed spawn is a genuine invariant violation; [`spawn::recorded_lenient`]
 /// is the sibling this read-only display caller needs instead, so one malformed or
 /// older-run spawn entry loses only its own agent row, never the views/courtroom/live/
 /// replay entries that don't depend on it at all.
@@ -608,45 +596,6 @@ mod tests {
             .lines(),
             vec!["plan-critique: amend the spec and relaunch: x"]
         );
-        /// The dock lists a currently-spent budget, run-scoped (no `unit`), from the SAME
-        /// durable `BudgetExhausted` fact `blocker::classify`'s run-level line already reads.
-        dock_lists_a_currently_spent_budget: assert_eq!(
-            docked_one(
-                &[ev(
-                    blocker::TYPE_BUDGET_EXHAUSTED,
-                    r#"{"budget":10,"spawns":10}"#,
-                )],
-                ledger::ATTENTION_HALTED,
-                "",
-            )
-            .lines(),
-            vec!["run: budget spent 10/10"]
-        );
-    }
-
-    /// A budget halt already RESOLVED (a later unit-lifecycle event followed
-    /// it - the exact "operator raised the budget and work resumed" case
-    /// `blocker::budget_halt`'s own doc names) leaves the dock silent on it,
-    /// exactly as `blocker::classify`'s run-level line does.
-    #[test]
-    fn dock_drops_a_resolved_budget_halt() {
-        let mut events = vec![
-            ev(
-                blocker::TYPE_BUDGET_EXHAUSTED,
-                r#"{"budget":10,"spawns":10}"#,
-            ),
-            ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u-new"}"#),
-        ];
-        for (i, e) in events.iter_mut().enumerate() {
-            e.position = (i + 1) as u64;
-        }
-        let run = ledger::project(&events).unwrap();
-        let d = dock(&run, &events);
-        assert!(
-            d.needs_you.is_empty(),
-            "a resolved budget halt must not appear: {:?}",
-            d.needs_you
-        );
     }
 
     /// A unit an operator has just resumed (`rigger resume-unit`, spec 88) is
@@ -654,8 +603,7 @@ mod tests {
     /// `blocker::classify`'s own resumed guard already excludes from
     /// `RejectRecurrence`. The dock's reject-recurrence arm must agree: a
     /// just-resumed unit reads "the operator already acted", not "still needs
-    /// you" - mirrors `dock_drops_a_resolved_budget_halt`'s "operator already
-    /// acted -> dock silent" pattern for the budget arm.
+    /// you".
     #[test]
     fn dock_drops_a_resumed_unit_from_reject_recurrence() {
         let events = vec![
@@ -821,7 +769,7 @@ mod tests {
         let run = ledger::project(&events).unwrap();
         let d = dock(&run, &events);
         assert!(d.needs_you.is_empty());
-        let blockers = blocker::from_state(&run, &events, 3);
+        let blockers = blocker::from_state(&run, 3);
         assert_eq!(statusline(&run, &blockers, &d), "- . 0/0 units . healthy");
     }
 
@@ -829,7 +777,7 @@ mod tests {
     /// current blockers it was built over.
     fn statusline_of(events: &[Event]) -> (String, usize) {
         let run = ledger::project(events).unwrap();
-        let blockers = blocker::from_state(&run, events, 3);
+        let blockers = blocker::from_state(&run, 3);
         let d = dock(&run, events);
         (statusline(&run, &blockers, &d), blockers.len())
     }
@@ -1022,7 +970,6 @@ mod tests {
                 ledger::TYPE_UNIT_FAILED,
                 r#"{"id":"u-churn","attempts":2,"cause":"reject"}"#,
             ),
-            ev(blocker::TYPE_BUDGET_EXHAUSTED, r#"{"budget":5,"spawns":5}"#),
         ];
         assert_eq!(fold(&events, 3).unwrap(), fold(&events, 3).unwrap());
     }

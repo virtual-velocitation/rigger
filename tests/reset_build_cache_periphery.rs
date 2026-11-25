@@ -629,7 +629,6 @@ const DEFERRED_GATE_WORKFLOW: WorkflowFixture = WorkflowFixture {
     worker: ISOLATED_WORKER,
     body: r#"defaults:
   grounder: nop
-  budget: 60
 gates:
   ok: { run: "true", kind: core }
   late: { run: "touch late-ran", kind: deferred }

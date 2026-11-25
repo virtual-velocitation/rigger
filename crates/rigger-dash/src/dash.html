@@ -155,7 +155,7 @@
   .st-red { color: var(--bad); border-color: var(--bad); }
   .st-green, .st-verified, .st-reviewed { color: var(--accent); border-color: var(--accent); }
   /* Current-blocker rows, coloured by kind so attention-worthy states stand out. */
-  .blk-escalated, .blk-budget { color: var(--bad); }
+  .blk-escalated { color: var(--bad); }
   .blk-reject-recurrence { color: var(--warn); }
   .swim { display: flex; gap: 3px; }
   .swim .cell {
@@ -540,8 +540,8 @@
           <div class="scroll" id="ready"></div>
         </div>
         <div class="card">
-          <h3>Budget runway</h3>
-          <div id="runway"></div>
+          <h3>Halt</h3>
+          <div id="halt"></div>
         </div>
         <div class="card" style="grid-column: 1 / -1;">
           <h3>Declared DAG (unit dependencies)</h3>
@@ -750,7 +750,7 @@ function render(state) {
     ? inbox.map(t => '<div class="row">' + esc(t) + '</div>').join("")
     : '<div class="empty">nothing needs a human</div>';
 
-  // PRESENT: current blocker per unfinished unit + the run-level budget halt (spec 19a,
+  // PRESENT: current blocker per unfinished unit (spec 19a,
   // unit 1). One line each, from the SAME shared classifier `rigger status` prints - the
   // server sends `subject`/`kind`/`detail` pre-split (and `line`, the exact status string,
   // so the two surfaces cannot drift). We render subject + detail so the line reads the
@@ -832,10 +832,10 @@ function render(state) {
   el("ready").innerHTML = table(["spawn", "unit", "stage"],
     wave.map(w => [esc(w.id), esc(w.unit), esc(w.stage)]));
 
-  // FUTURE: budget runway (a live halt reason - the budget breaker's, a plan-critique
-  // spec-defect stop's or a hung agent's - or a clean fixpoint).
+  // FUTURE: halt (a live halt reason - a plan-critique spec-defect stop's or a hung
+  // agent's - or a clean fixpoint).
   const halted = step.halted;
-  el("runway").innerHTML = halted
+  el("halt").innerHTML = halted
     ? '<div class="pill st-bad">HALTED: ' + esc(halted) + '</div>'
     : (step.done ? '<div class="muted">run converged (fixpoint)</div>'
                  : '<div class="muted">running; no halt</div>');

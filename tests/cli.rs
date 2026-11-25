@@ -51,7 +51,6 @@ use common::cli::{
     run_on_arms_beside_with, run_recording, POLLS_BESIDE_A_RUN, RECORDING_WORKER_ARM,
 };
 use common::fixtures::file_len;
-use common::fixtures::MAX_PARALLEL_UNITS_DECLARED;
 use common::fixtures::{
     api_retry_lines, headless_progress_frame, recorded_argv, recorded_task, stand_in_launches,
     ERROR_RESULT, GHOST_TEST_AUTHOR_REFUSAL, RECORD_EACH_LAUNCH,
@@ -3249,25 +3248,6 @@ const TWO_STAGE_WORKFLOW: WorkflowFixture = WorkflowFixture {
     worker: UNISOLATED_WORKER,
     body: r#"defaults:
   grounder: nop
-  budget: 60
-stages:
-  a:
-    agent: worker
-    on_pass: none
-  b:
-    agent: worker
-    on_pass: none
-"#,
-};
-
-/// Like [`TWO_STAGE_WORKFLOW`] but with a spawn budget of ONE: two independent units
-/// are ready in the first wave, so exactly one implementer spawn is admitted and the other is
-/// refused - tripping the breaker so the run halts on its budget (Gap 13).
-const BUDGET_ONE_TWO_STAGE_WORKFLOW: WorkflowFixture = WorkflowFixture {
-    worker: UNISOLATED_WORKER,
-    body: r#"defaults:
-  grounder: nop
-  budget: 1
 stages:
   a:
     agent: worker
@@ -3412,7 +3392,6 @@ const REVIEW_GATED_GIT_ESCALATING_UNIT_WORKFLOW: WorkflowFixture = WorkflowFixtu
     worker: ISOLATED_WORKER,
     body: r#"defaults:
   grounder: nop
-  budget: 60
   max_retries: 2
 gates:
   ok: { run: "true", kind: core }
@@ -3551,43 +3530,24 @@ fn resume_unit_refuses_an_unknown_unit() {
     );
 }
 
-/// [`REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW`] with a spawn budget of ONE and a bound of two
-/// attempts: the first attempt's red gate leaves `solo` failed with a retry owed, and the budget
-/// halts the run before that retry, so `solo` ends the run failed but never escalated.
-const BUDGET_HALTED_RED_UNIT_WORKFLOW: WorkflowFixture = WorkflowFixture {
-    worker: ISOLATED_WORKER,
-    body: r#"defaults:
-  grounder: nop
-  budget: 1
-  max_retries: 2
-gates:
-  red: { run: "false", kind: core }
-stages:
-  solo:
-    agent: worker
-    gates: [red]
-    on_pass: merge
-"#,
-};
-
 #[test]
 fn resume_unit_refuses_a_unit_that_has_not_escalated() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_workflow_fixture(root, &BUDGET_HALTED_RED_UNIT_WORKFLOW);
+    write_workflow_fixture(root, &MANUAL_REVIEW_GIT_UNIT_WORKFLOW);
     let (out, err, ok, _fake) = run_on_arms(
         root,
         &["run"],
         &common::default_scratch_root(root),
         WORK_WRITING_ARM,
     );
-    assert!(ok, "a budget halt still exits 0; stderr: {err}");
+    assert!(ok, "a run awaiting review exits 0; stderr: {err}");
     assert!(
-        out.contains("halted: budget exhausted")
+        out.contains("incomplete: not every unit integrated")
             && !read_run_events(root)
                 .iter()
                 .any(|e| e.type_ == rigger::ledger::TYPE_UNIT_ESCALATED),
-        "precondition: solo must be owed a retry, not escalated; got: {out:?}"
+        "precondition: solo must await review, not escalated; got: {out:?}"
     );
 
     let (out, err, ok) = run_rigger(root, &["resume-unit", "solo"]);
@@ -3646,7 +3606,6 @@ fn resume_unit_re_enters_an_escalated_speculation_group_on_fresh_lanes_told_the_
         format!(
             r#"defaults:
   grounder: nop
-  budget: 60
 gates:
   ok:
     run: 'if [ -f "{flag}" ]; then exit 1; else touch "{flag}"; fi'
@@ -4378,7 +4337,7 @@ fn a_session_held_by_its_stop_hook_fixes_its_tree_and_the_unit_lands() {
     }
 }
 
-/// The arms of [`install_fake_claude`] for [`BUDGET_SEVEN_TWO_REVIEWED_UNITS_WORKFLOW`] standing in
+/// The arms of [`install_fake_claude`] for [`TWO_REVIEWED_UNITS_WORKFLOW`] standing in
 /// for the real host's `Stop` contract over a conflict resolver: each implementer meets the other
 /// before it writes its own working directory to `shared.rs`, so the unit integrating second meets
 /// a real merge conflict there. Its resolver stages `resolved` and finishes with the merge
@@ -4422,7 +4381,7 @@ fn resolver_held_until_its_merge_is_concluded_arm() -> String {
 fn a_conflict_resolver_is_held_until_its_merge_is_concluded_and_the_unit_lands() {
     let dir = temp_git_project_with_commit();
     let root = std::fs::canonicalize(dir.path()).unwrap();
-    write_workflow_fixture(&root, &BUDGET_SEVEN_TWO_REVIEWED_UNITS_WORKFLOW);
+    write_workflow_fixture(&root, &TWO_REVIEWED_UNITS_WORKFLOW);
     write_agent(&root, "lens", "Read", "Review it.");
     write_agent(&root, "judge", "Read", "Adjudicate it.");
     let scratch = tempfile::tempdir().unwrap();
@@ -4506,7 +4465,6 @@ const PRODUCER_WORKFLOW: WorkflowFixture = WorkflowFixture {
     worker: REVIEWLESS_GIT_UNIT_WORKFLOW.worker,
     body: r#"defaults:
   grounder: nop
-  budget: 60
 stages:
   plan:
     agent: worker
@@ -5752,7 +5710,6 @@ const NO_INFRA_RULE_WORKFLOW: WorkflowFixture = WorkflowFixture {
     worker: REVIEWLESS_GIT_UNIT_WORKFLOW.worker,
     body: r#"defaults:
   grounder: nop
-  budget: 60
   failure_rules:
     - class: product
 gates:
@@ -5918,7 +5875,6 @@ const THREE_UNIT_WORKFLOW: WorkflowFixture = WorkflowFixture {
     worker: ISOLATED_WORKER,
     body: r#"defaults:
   grounder: nop
-  budget: 60
 gates:
   ok: { run: "true", kind: core }
 stages:
@@ -7798,7 +7754,6 @@ const GATE_AWAITING_A_HOLD_WORKFLOW: WorkflowFixture = WorkflowFixture {
     worker: REVIEWLESS_GIT_UNIT_WORKFLOW.worker,
     body: r#"defaults:
   grounder: nop
-  budget: 60
 gates:
   ok:
     kind: core
@@ -7851,7 +7806,6 @@ const FULLY_REVIEWED_UNIT_WORKFLOW: WorkflowFixture = WorkflowFixture {
     worker: ISOLATED_WORKER,
     body: r#"defaults:
   grounder: nop
-  budget: 60
   max_retries: 2
 gates:
   ok: { run: "true", kind: core }
@@ -8635,7 +8589,6 @@ const MANUAL_REVIEW_GIT_UNIT_WORKFLOW: WorkflowFixture = WorkflowFixture {
     worker: "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nDo the unit.\n",
     body: r#"defaults:
   grounder: nop
-  budget: 60
 gates:
   ok: { run: "true", kind: core }
 stages:
@@ -8648,7 +8601,7 @@ stages:
 };
 
 /// The run teardown, end to end: given a project whose run ends, every way `rigger run` ends it -
-/// done, an escalated unit, a budget halt, a definition-drift halt - reclaims the run-level scratch,
+/// done, an escalated unit, a definition-drift halt - reclaims the run-level scratch,
 /// its agent streams included, and a run that ends with a unit awaiting a human keeps it for the
 /// review that resumes it.
 #[cfg(unix)]
@@ -8667,7 +8620,7 @@ fn every_ending_of_a_run_reclaims_its_run_scratch_and_a_run_awaiting_review_keep
     fn a_pinned_run_then_a_prompt_edit(root: &Path, scratch: &Path) {
         let (out, err, _ok, _fake) = run_recording(root, &["run"], scratch);
         assert!(
-            out.contains("halted: budget exhausted"),
+            out.contains("incomplete: not every unit integrated"),
             "stderr: {err}\nstdout: {out}"
         );
         edit_worker_prompt(root, "Do the unit, but differently now.");
@@ -8690,16 +8643,8 @@ fn every_ending_of_a_run_reclaims_its_run_scratch_and_a_run_awaiting_review_keep
             reclaimed: true,
         },
         Case {
-            name: "budget halt",
-            workflow: &BUDGET_ONE_TWO_STAGE_WORKFLOW,
-            before: nothing,
-            ok: true,
-            tells: "halted: budget exhausted",
-            reclaimed: true,
-        },
-        Case {
             name: "definition-drift halt",
-            workflow: &BUDGET_ONE_TWO_STAGE_WORKFLOW,
+            workflow: &REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW,
             before: a_pinned_run_then_a_prompt_edit,
             ok: false,
             tells: "definition drift",
@@ -8823,7 +8768,7 @@ fn a_run_whose_roots_disagree_refuses_before_it_reclaims() {
 fn a_done_run_in_a_project_with_no_repository_reclaims_nothing() {
     const MERGING_WORKFLOW: WorkflowFixture = WorkflowFixture {
         worker: UNISOLATED_WORKER,
-        body: "defaults:\n  grounder: nop\n  budget: 60\nstages:\n  a:\n    agent: worker\n    \
+        body: "defaults:\n  grounder: nop\nstages:\n  a:\n    agent: worker\n    \
                on_pass: merge\n",
     };
     let dir = temp_repoless_project();
@@ -8857,7 +8802,7 @@ fn a_done_run_in_a_project_with_no_repository_reclaims_nothing() {
 fn a_run_outside_a_rigger_project_refuses_and_a_project_with_no_repository_serves_no_gate_socket() {
     const MERGING_WORKFLOW: WorkflowFixture = WorkflowFixture {
         worker: UNISOLATED_WORKER,
-        body: "defaults:\n  grounder: nop\n  budget: 60\nstages:\n  a:\n    agent: worker\n    \
+        body: "defaults:\n  grounder: nop\nstages:\n  a:\n    agent: worker\n    \
                on_pass: merge\n",
     };
     struct Case {
@@ -9031,7 +8976,6 @@ const TWO_ATTEMPT_RED_UNIT_WORKFLOW: WorkflowFixture = WorkflowFixture {
     worker: ISOLATED_WORKER,
     body: r#"defaults:
   grounder: nop
-  budget: 60
   max_retries: 2
 gates:
   red: { run: "false", kind: core }
@@ -9109,7 +9053,7 @@ fn a_resume_with_no_session_lands_a_fresh_launch_in_the_same_attempt(ending: &st
     let workflow = root.join(".rigger/workflow.yml");
     let bounded = std::fs::read_to_string(&workflow)
         .unwrap()
-        .replace("budget: 60", "budget: 60\n  max_wall_clock: 3");
+        .replace("grounder: nop", "grounder: nop\n  max_wall_clock: 3");
     assert!(bounded.contains("max_wall_clock: 3"), "{bounded}");
     std::fs::write(&workflow, bounded).unwrap();
     let scratch = tempfile::tempdir().unwrap();
@@ -10149,7 +10093,6 @@ fn run_end_to_end_restores_a_worktree_a_reviewer_agent_deletes_mid_review() {
         rigger.join("workflow.yml"),
         r#"defaults:
   grounder: nop
-  budget: 60
 gates:
   ok: { run: "true", kind: core }
 stages:
@@ -10313,7 +10256,6 @@ fn run_speculation_restores_a_gate_deleted_worktree_across_concurrent_lenses_and
         format!(
             r#"defaults:
   grounder: nop
-  budget: 60
 gates:
   ok:
     run: 'd=$(pwd); cd / && rm -rf "$d"; ( [ -d "$d" ] && echo present || echo absent ) >> "{narrowed}"'
@@ -10502,7 +10444,6 @@ fn speculation_reject_worktree_sha_is_stamped_after_the_adjudicators_own_deletio
         rigger.join("workflow.yml"),
         r#"defaults:
   grounder: nop
-  budget: 60
 gates:
   ok: { run: "true" }
 stages:
@@ -10594,25 +10535,27 @@ stages:
     );
 }
 
-/// The bootstrap of a resumed-`reviewed` fixture: a `rigger run` on a workflow with a spawn
-/// budget of ONE mints the run's `RunStarted` and creates the `solo` unit's real, git-backed
-/// worktree/branch at their deterministic path, where its implementer commits the window's work,
-/// the durable checkpoint a real interrupted window leaves on the unit's branch, and then dies
-/// without a result, so the budget halts the run before any gate or review. That stands in for a
-/// prior window whose later spawns carried the unit to `reviewed` and then died before the merge.
-/// Returns the unit branch's tip: the sha a resumed run checks the worktree back out to.
+/// The bootstrap of a resumed-`reviewed` fixture: a `rigger run` mints the run's `RunStarted` and
+/// creates the `solo` unit's real, git-backed worktree/branch at their deterministic path, where
+/// its implementer commits the window's work, the durable checkpoint a real interrupted window
+/// leaves on the unit's branch, and the operator interrupts the run while that implementer is live,
+/// before any gate or review. That stands in for a prior window whose later spawns carried the unit
+/// to `reviewed` and then died before the merge. Returns the unit branch's tip: the sha a resumed
+/// run checks the worktree back out to.
+#[cfg(unix)]
 fn bootstrap_a_prior_windows_committed_checkpoint(root: &Path) -> String {
-    let arm = r#"  *"Do the unit."*)
-    echo "pub fn work() {}" > work.rs
+    let arm = format!(
+        r#"  *"Do the unit."*)
+    echo "pub fn work() {{}}" > work.rs
     git add -A && git commit -q -m "prior window: implemented and reviewed"
-    exit 1
-    ;;
-"#;
-    let (out, err, ok, _fake) =
-        run_on_arms(root, &["run"], &common::default_scratch_root(root), arm);
-    assert!(
-        ok && out.contains("halted: budget exhausted"),
-        "the bootstrap run must halt on its budget; stderr: {err}\nstdout: {out}"
+{}    ;;
+"#,
+        common::cli::FIRST_LAUNCH_WAITS_FOR_ITS_INTERRUPT
+    );
+    common::cli::a_run_interrupted_at_its_waiting_launch(
+        root,
+        &common::default_scratch_root(root),
+        &arm,
     );
     let tip = git_answer(root, &["rev-parse", "refs/heads/rigger/u/solo"])
         .expect("the bootstrap run must leave the unit's branch");
@@ -10674,7 +10617,7 @@ fn assert_the_resumed_unit_failed_at_the_restored_sha(root: &Path, expected_sha:
 /// skipping implement and review entirely - so this arm is reached with NO agent spawn at all
 /// in this process, purely from a real git-backed unit branch (the prior window's durable
 /// checkpoint) plus a seeded `UnitStatus{"status":"reviewed"}` event standing in for the
-/// interrupted window's own recorded verdict. A budget-halted first run BOOTSTRAPS the run
+/// interrupted window's own recorded verdict. An interrupted first run BOOTSTRAPS the run
 /// (mints the real `RunStarted` every fold scopes through, and creates the unit's real
 /// worktree/branch at their deterministic path) - the seed then lands AFTER that boundary, in the SAME slice
 /// `resume_phase` folds, exactly like a real interrupted window's residue. Its resumed
@@ -10684,6 +10627,7 @@ fn assert_the_resumed_unit_failed_at_the_restored_sha(root: &Path, expected_sha:
 /// as a side effect, then reports FAIL (a real `rm -rf` followed by `exit 1`). Before round 6,
 /// `head_sha_of` read the now-missing dir and silently stamped an empty sentinel, the same
 /// class every sibling in this unit was rejected over.
+#[cfg(unix)]
 #[test]
 fn resumed_reviewed_unit_stamps_a_real_failed_sha_after_the_exhaustive_gates_own_deletion_is_restored(
 ) {
@@ -10703,7 +10647,6 @@ fn resumed_reviewed_unit_stamps_a_real_failed_sha_after_the_exhaustive_gates_own
         format!(
             r#"defaults:
   grounder: nop
-  budget: 1
 gates:
   ok:
     run: 'd=$(pwd); cd / && rm -rf "$d"; ( [ -d "$d" ] && echo present || echo absent ) > "{marker}"; exit 1'
@@ -10772,6 +10715,7 @@ stages:
 /// fast-forward - a fast-forward's merged tree is byte-identical to the worktree's own
 /// pre-merge tree, which would CACHE-HIT the exhaustive check's green verdict (spec 12, unit
 /// 1's content-address cache) and never run the post-merge command at all.
+#[cfg(unix)]
 #[test]
 fn resumed_reviewed_unit_stamps_a_real_failed_sha_after_the_post_merge_re_gates_own_deletion_is_restored(
 ) {
@@ -10802,7 +10746,6 @@ fn resumed_reviewed_unit_stamps_a_real_failed_sha_after_the_post_merge_re_gates_
         format!(
             r#"defaults:
   grounder: nop
-  budget: 1
 gates:
   ok:
     run: 'if [ -f "{flag}" ]; then rm -rf "{wtdir}"; ( [ -d "{wtdir}" ] && echo present || echo absent ) > "{marker}"; exit 1; else touch "{flag}"; fi'
@@ -10939,7 +10882,6 @@ fn run_speculation_stamps_a_real_failed_sha_after_the_post_merge_re_gates_own_de
         format!(
             r#"defaults:
   grounder: nop
-  budget: 60
 gates:
   ok:
     run: 'if [ -f "{flag}" ]; then rm -rf "{wtdir0}"; ( [ -d "{wtdir0}" ] && echo present || echo absent ) > "{marker}"; exit 1; else touch "{flag}"; fi'
@@ -11202,41 +11144,6 @@ fn assert_a_run_registers_a_credential_free_shared_instance(port: u16, path: &st
 #[test]
 fn run_registers_a_credential_free_shared_instance() {
     assert_a_run_registers_a_credential_free_shared_instance(65533, "native run");
-}
-
-/// Spec 115, criterion 1: the blocking `rigger run` prints the conductor's halt reason. Budget 1
-/// with two independent units: one implementer spawn is admitted and answered by the fake agent,
-/// the other is refused, so the run ends incomplete with the budget breaker's reason, printed as
-/// `halted: <reason>` on stdout right after the run state. The process still exits 0: a halt is
-/// a run outcome.
-#[cfg(unix)]
-#[test]
-fn run_prints_the_budget_halt_reason_after_the_run_state() {
-    let dir = temp_git_project_with_commit();
-    let root = dir.path();
-    write_workflow_fixture(root, &BUDGET_ONE_TWO_STAGE_WORKFLOW);
-    let (_fakebin, path_env) = install_fake_claude(
-        r#"  *"Do the unit."*)
-    echo "did the unit"
-    ;;
-"#,
-    );
-
-    let (out, err, ok) = run_rigger_envs(root, &["run"], &[("PATH", &path_env)]);
-    assert!(
-        ok,
-        "a budget-halted run still exits 0; stderr: {err}\nstdout: {out}"
-    );
-    let lines: Vec<&str> = out.lines().collect();
-    let state_end = lines
-        .iter()
-        .position(|l| *l == "incomplete: not every unit integrated")
-        .unwrap_or_else(|| panic!("the run state must end incomplete; stdout: {out}"));
-    assert_eq!(
-        lines.get(state_end + 1).copied(),
-        Some("halted: budget exhausted: 1/1 spawns"),
-        "the halt reason must print right after the run state; stdout: {out}"
-    );
 }
 
 /// Every line of `text` starting with `prefix`, in order.
@@ -11626,7 +11533,7 @@ fn a_run_dash_started_where_another_dash_serves_binds_the_next_free_port_and_rep
 /// against, `isolation: none` (no worktree), and `on_pass: none` (no integrate).
 const LIVENESS_WORKFLOW: WorkflowFixture = WorkflowFixture {
     worker: UNISOLATED_WORKER,
-    body: "defaults:\n  grounder: nop\n  budget: 60\n  max_wall_clock: 60\nstages:\n  a:\n    agent: worker\n    on_pass: none\n",
+    body: "defaults:\n  grounder: nop\n  max_wall_clock: 60\nstages:\n  a:\n    agent: worker\n    on_pass: none\n",
 };
 
 /// The body of `run_cli` within `src/cli/run.rs` (its declaration up to the next top-level `fn`),
@@ -12717,13 +12624,11 @@ fn a_live_runs_launch_is_left_alone_beside_it_and_reconciled_by_the_next_start_o
     );
 }
 
-/// A unit reviewed by one lens and an adjudicator, merging once its one gate passes, on a budget
-/// of two spawns: its implementer and its lens fit the budget, its adjudicator does not.
-const BUDGET_TWO_REVIEWED_UNIT_WORKFLOW: WorkflowFixture = WorkflowFixture {
+/// A unit reviewed by one lens and an adjudicator, merging once its one gate passes.
+const LENS_REVIEWED_UNIT_WORKFLOW: WorkflowFixture = WorkflowFixture {
     worker: ISOLATED_WORKER,
     body: r#"defaults:
   grounder: nop
-  budget: 2
 gates:
   ok: { run: "true", kind: core }
 stages:
@@ -12748,64 +12653,58 @@ fn how_the_run_ended(out: &str) -> Vec<&str> {
         .collect()
 }
 
-/// Spec 105's RESUME BY SESSION across two `rigger run`s: given a reviewed unit whose run halted on
-/// its budget once its implementer and its lens had answered, when the operator raises the budget
-/// by one spawn and runs again, then the restart answers each spawn its run ended from the run's
-/// log with no launch and charges it no budget, so the one spawn it launches, the adjudicator,
-/// fits the one spawn added, and the unit integrates.
+/// Spec 105's RESUME BY SESSION across two `rigger run`s: given a reviewed unit whose run the
+/// operator interrupted while its adjudicator was live, once its implementer and its lens had
+/// answered, when the operator runs again, then the restart answers each spawn its run ended from
+/// the run's log with no launch, launches the adjudicator alone, and the unit integrates.
 #[cfg(unix)]
 #[test]
-fn a_restart_answers_each_spawn_its_run_ended_from_the_log_and_charges_it_no_budget() {
+fn a_restart_answers_each_spawn_its_run_ended_from_the_log() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_workflow_fixture(root, &BUDGET_TWO_REVIEWED_UNIT_WORKFLOW);
+    write_workflow_fixture(root, &LENS_REVIEWED_UNIT_WORKFLOW);
     write_agent(root, "lens", "Read", "Review it.");
     write_agent(root, "judge", "Read", "Adjudicate it.");
     let scratch = tempfile::tempdir().unwrap();
-    let arms = r#"  *"Do the unit."*)
-    echo "pub fn work() {}" >> work.rs
+    // The restart's host is a fresh fake, so its arms leave the wait out.
+    let arms = |waits: &str| {
+        format!(
+            r#"  *"Do the unit."*)
+    echo "pub fn work() {{}}" >> work.rs
     ;;
   *"Review it."*)
     echo "reviewed: no blocker"
     ;;
   *"Adjudicate it."*)
-    echo '{"verdict":"approve"}'
+{waits}    echo '{{"verdict":"approve"}}'
     ;;
-"#;
+"#
+        )
+    };
     let answered = [("solo/implementer#0", 0), ("solo/lens:lens#0", 0)];
 
-    let (out, err, ok, _fake) = run_on_arms(root, &["run"], scratch.path(), arms);
-    assert_eq!(
-        (ok, how_the_run_ended(&out)),
-        (
-            true,
-            vec![
-                "incomplete: not every unit integrated",
-                "halted: budget exhausted: 2/2 spawns"
-            ]
-        ),
-        "the first run halts on its budget; stderr: {err}"
+    common::cli::a_run_interrupted_at_its_waiting_launch(
+        root,
+        scratch.path(),
+        &arms(common::cli::FIRST_LAUNCH_WAITS_FOR_ITS_INTERRUPT),
     );
-    assert_closed_spawns(root, &answered, "the first run");
+    assert_closed_spawns(root, &answered, "the interrupted run");
 
-    std::fs::write(
-        root.join(".rigger/workflow.yml"),
-        BUDGET_TWO_REVIEWED_UNIT_WORKFLOW
-            .body
-            .replace("budget: 2", "budget: 3"),
-    )
-    .unwrap();
-    let (out, err, ok, _fake) =
-        run_on_arms(root, &["run", "--rebase-definition"], scratch.path(), arms);
+    let (out, err, ok, _fake) = run_on_arms(root, &["run"], scratch.path(), &arms(""));
     assert_eq!(
         (ok, how_the_run_ended(&out)),
         (true, vec!["done: every unit integrated"]),
-        "the restart fits the adjudicator in the one spawn added; stderr: {err}"
+        "the restart drives the unit to done; stderr: {err}"
     );
     assert_closed_spawns(
         root,
-        &[answered[0], answered[1], ("solo/adjudicator#0", 0)],
-        "the restart launches the adjudicator alone",
+        &[
+            answered[0],
+            answered[1],
+            ("solo/adjudicator#0", 0),
+            ("solo/adjudicator#0", 1),
+        ],
+        "the restart launches the adjudicator alone, the interrupted launch's relaunch",
     );
 }
 
@@ -12935,14 +12834,11 @@ fn a_fresh_run_launches_each_spawn_only_a_prior_run_ended() {
 }
 
 /// Two units of one wave, each reviewed by a lens and an adjudicator and merging once its one gate
-/// passes, on a budget of seven spawns: both units' implementer, lens and adjudicator and one
-/// conflict-resolution round fit the budget, a second round does not. The units are reviewed
-/// because only an approved unit's restart resumes at its merge.
-const BUDGET_SEVEN_TWO_REVIEWED_UNITS_WORKFLOW: WorkflowFixture = WorkflowFixture {
+/// passes. The units are reviewed because only an approved unit's restart resumes at its merge.
+const TWO_REVIEWED_UNITS_WORKFLOW: WorkflowFixture = WorkflowFixture {
     worker: ISOLATED_WORKER,
     body: r#"defaults:
   grounder: nop
-  budget: 7
 gates:
   ok: { run: "true", kind: core }
 stages:
@@ -12963,12 +12859,15 @@ stages:
 "#,
 };
 
-/// The arms of [`install_fake_claude`] for [`BUDGET_SEVEN_TWO_REVIEWED_UNITS_WORKFLOW`]: each
+/// The arms of [`install_fake_claude`] for [`TWO_REVIEWED_UNITS_WORKFLOW`]: each
 /// implementer meets the other before it writes its own working directory to `shared.rs`, so the
 /// unit integrating second meets a real merge conflict there; every launch of that unit's first
-/// conflict-resolution round (`~retry1`) dies with no result, and a later round writes `resolved`
-/// to `shared.rs` and commits the merge. Each unit's reviewers approve it.
-fn conflicting_units_arm() -> String {
+/// conflict-resolution round (`~retry1`) dies with no result, the first launch of its second round
+/// waits for the run's interrupt ([`common::cli::FIRST_LAUNCH_WAITS_FOR_ITS_INTERRUPT`]), and a
+/// later launch writes `resolved` to `shared.rs` and commits the merge. Each unit's reviewers
+/// approve it. A restart's fresh fake takes `waits` empty, since its first launch is the round
+/// the interrupted run left open.
+fn conflicting_units_arm(waits: &str) -> String {
     let met = rendezvous("edited", 2);
     format!(
         r#"  *"Do the unit."*)
@@ -12977,7 +12876,7 @@ fn conflicting_units_arm() -> String {
         exit 1
         ;;
       *"~retry"*)
-        echo resolved > shared.rs
+{waits}        echo resolved > shared.rs
         git add shared.rs
         git commit -q -m "resolve the conflict"
         ;;
@@ -12994,41 +12893,30 @@ fn conflicting_units_arm() -> String {
 /// approved units of one wave writing one file, when the unit integrating second meets a real merge
 /// conflict and its first resolution round ends on an error its session left unmarked, then the
 /// round is spent like one resolving nothing, its error recorded as its result and no attempt
-/// charged, and the second round is refused on the run's budget; when the operator raises the
-/// budget by one spawn and runs again, then the restart answers the first round from the run's log
-/// with no launch, launches the second round alone, and the unit integrates its resolution.
+/// charged; when the operator interrupts the run while the second round is live and runs again,
+/// then the restart answers the first round from the run's log with no launch, launches the second
+/// round alone, and the unit integrates its resolution.
 #[cfg(unix)]
 #[test]
 fn a_resolver_round_ending_on_an_error_is_spent_and_a_restart_answers_it_from_the_log() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_workflow_fixture(root, &BUDGET_SEVEN_TWO_REVIEWED_UNITS_WORKFLOW);
+    write_workflow_fixture(root, &TWO_REVIEWED_UNITS_WORKFLOW);
     write_agent(root, "lens", "Read", "Review it.");
     write_agent(root, "judge", "Read", "Adjudicate it.");
     let scratch = tempfile::tempdir().unwrap();
-    let arm = conflicting_units_arm();
+    let arm = conflicting_units_arm(common::cli::FIRST_LAUNCH_WAITS_FOR_ITS_INTERRUPT);
 
-    let (out, err, ok, fake) = run_on_arms(root, &["run"], scratch.path(), &arm);
+    let ended = common::cli::a_run_interrupted_at_its_waiting_launch(root, scratch.path(), &arm);
     assert!(
-        !fake.path().join("bin/alone").exists(),
-        "both implementers met before either wrote; stderr: {err}"
-    );
-    assert_eq!(
-        (ok, how_the_run_ended(&out)),
-        (
-            true,
-            vec![
-                "incomplete: not every unit integrated",
-                "halted: budget exhausted: 7/7 spawns"
-            ]
-        ),
-        "the first run halts on its budget at the second round; stderr: {err}"
+        !ended.fake.path().join("bin/alone").exists(),
+        "both implementers met before either wrote"
     );
     let errored = closed_launches(root)
         .into_iter()
         .map(|close| close.0)
         .find(|spawn| spawn.ends_with("~retry1"))
-        .unwrap_or_else(|| panic!("a first resolution round closed; stderr: {err}"));
+        .expect("a first resolution round closed");
     let unit = &errored[..errored.find('/').unwrap()];
     let resolving = format!("{unit}/implementer#0~retry2");
     let implemented = common::cli::handed_over("");
@@ -13056,24 +12944,20 @@ fn a_resolver_round_ending_on_an_error_is_spent_and_a_restart_answers_it_from_th
     assert_eq!(
         sorted_closes(root),
         closes,
-        "the first run launches both units' implementer and reviewers and one round; stderr: {err}"
+        "the interrupted run closes both units' implementer and reviewers and one round"
     );
 
-    std::fs::write(
-        root.join(".rigger/workflow.yml"),
-        BUDGET_SEVEN_TWO_REVIEWED_UNITS_WORKFLOW
-            .body
-            .replace("budget: 7", "budget: 8"),
-    )
-    .unwrap();
     let (out, err, ok, _fake) =
-        run_on_arms(root, &["run", "--rebase-definition"], scratch.path(), &arm);
+        run_on_arms(root, &["run"], scratch.path(), &conflicting_units_arm(""));
     assert_eq!(
         (ok, how_the_run_ended(&out)),
         (true, vec!["done: every unit integrated"]),
-        "the restart fits the second round in the one spawn added; stderr: {err}"
+        "the restart drives both units to done; stderr: {err}"
     );
-    closes.push(completed_first_launch(&resolving));
+    closes.extend([
+        (resolving.clone(), 0, "interrupted".to_string(), None),
+        (resolving.clone(), 1, "completed".to_string(), None),
+    ]);
     closes.sort();
     assert_eq!(
         sorted_closes(root),
@@ -13415,7 +13299,6 @@ fn write_gated_reviewed_workflow(root: &Path) {
         &[("worker", "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\nisolation: none\n---\nImplement the unit.\n"), ("judge", "---\nid: judge\nmodel: sonnet\ntools: [Read]\nisolation: none\n---\nAdjudicate the unit.\n")],
         r#"defaults:
   grounder: nop
-  budget: 60
   review:
     adjudicator: judge
 gates:
@@ -13624,7 +13507,6 @@ fn replay_re_drives_the_trajectory_and_diffs_stats_without_touching_the_real_str
 /// approved` from 1 to 0 - the signal that a config edit changes the re-driven metrics.
 const NO_REVIEW_WORKFLOW: &str = r#"defaults:
   grounder: nop
-  budget: 60
 gates:
   check: { run: "true", kind: core }
 stages:
@@ -13696,7 +13578,6 @@ fn replay_candidate_column_reacts_to_a_changed_config() {
 /// verdict is not reached.
 const NO_GATE_WORKFLOW: &str = r#"defaults:
   grounder: nop
-  budget: 60
   review:
     adjudicator: judge
 stages:
@@ -13733,7 +13614,6 @@ fn replay_removing_a_gate_lowers_the_candidate_gate_runs() {
 /// pass) - the `solo` unit's gates fail and it cannot integrate first-pass.
 const ADDED_GATE_WORKFLOW: &str = r#"defaults:
   grounder: nop
-  budget: 60
   review:
     adjudicator: judge
 gates:
@@ -13784,7 +13664,6 @@ fn replay_an_added_gate_fails_safe_and_never_fabricates_a_pass() {
 /// (no recorded result to answer it), so the candidate column is partial and honest.
 const EXTRA_STAGE_WORKFLOW: &str = r#"defaults:
   grounder: nop
-  budget: 60
   review:
     adjudicator: judge
 gates:
@@ -14185,88 +14064,29 @@ fn validate_reports_each_declared_build_variable_then_the_budget() {
 }
 
 // ---------------------------------------------------------------------------
-// `defaults.max_parallel_units` scaffold + config-load (spec 102 criterion 2: THE
-// SCAFFOLD WRITES THE KEY). Criterion 1 (the wave-width bound `run_wave` enforces) and
-// criterion 3 (`deny_unknown_fields` naming the dotted path) are separate units - this
-// section covers only the scaffold-writes-the-key surface this unit's diff touches.
+// `defaults.max_parallel_units` scaffold + config-load
 // ---------------------------------------------------------------------------
 
-/// Spec 102 criterion 2, PERIPHERY: the scaffold text the implementer's in-process unit
-/// tests assert on (`scaffold_workflow_declares_max_parallel_units_two_with_a_sizing_comment`,
-/// `init_project_writes_max_parallel_units_with_its_sizing_comment` in `src/cli/setup.rs`,
-/// which call `init_project`/parse the constant directly) is what actually reaches disk THROUGH
-/// the compiled binary's real CLI wiring (`cmd_init` -> `init_project`), and the scaffolded
-/// `max_parallel_units: 2` key resolves cleanly all the way through `rigger validate`'s real
-/// `config_store::load` -> `Config::validate` path - not merely an in-process
-/// `serde_yaml::from_str` call. A regression that broke `cmd_init`'s wiring without
-/// touching `init_project` itself, or that broke `Deserialize` for `Defaults` in a way an
-/// in-process struct-level test would miss, fails here.
+/// A fresh `rigger init` writes no width through the compiled binary's real CLI wiring, so the
+/// width follows the build slot count, and the workflow it writes validates through `rigger
+/// validate`'s real `config_store::load` -> `Config::validate` path.
 #[test]
-fn a_fresh_scaffolded_init_writes_max_parallel_units_and_validates_through_the_binary() {
+fn a_fresh_scaffolded_init_declares_no_width_and_validates_through_the_binary() {
     let dir = initialized_project();
     let root = dir.path();
 
-    let workflow_path = root.join(".rigger").join("workflow.yml");
-    let workflow = std::fs::read_to_string(&workflow_path).unwrap();
-    assert_eq!(
-        (
-            workflow.matches(MAX_PARALLEL_UNITS_DECLARED).count(),
-            workflow.matches("max_parallel_units").count()
-        ),
-        (1, 1),
-        "a fresh scaffold must declare max_parallel_units: 2 verbatim on disk, right under the \
-         sizing comment, not a bare unexplained number; workflow.yml:\n{workflow}"
+    let workflow = std::fs::read_to_string(root.join(".rigger").join("workflow.yml")).unwrap();
+    assert!(
+        !workflow.contains("max_parallel_units"),
+        "a fresh scaffold declares no width; workflow.yml:\n{workflow}"
     );
 
     let path = real_path_dir_of("git");
     let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("PATH", &path)]);
     assert!(
         ok,
-        "a fresh scaffold carrying max_parallel_units: 2 must validate cleanly through the \
-         real config-load path; stdout:\n{out}\nstderr:\n{err}"
-    );
-}
-
-/// Spec 102 criterion 2, PERIPHERY back-compat: the outside-in half of the in-process
-/// `defaults_max_parallel_units_is_unbounded_when_the_key_is_absent` unit test in
-/// `src/main.rs` (which parses a bare `Workflow` in-process and asserts the field resolves
-/// to `0`). That test cannot see a regression in the REAL load path a live operator's
-/// pre-102 `workflow.yml` runs through (`config_store::load` -> `Config::validate`, wired
-/// by `cmd_validate`); this one drives the compiled binary against a `workflow.yml` that
-/// never mentions `max_parallel_units` at all - exactly what every project scaffolded
-/// before spec 102 has on disk - and proves it still validates cleanly, never refusing a
-/// config that predates the key.
-#[test]
-fn a_workflow_without_max_parallel_units_still_validates_through_the_binary() {
-    let dir = initialized_project();
-    let root = dir.path();
-
-    let workflow_path = root.join(".rigger").join("workflow.yml");
-    let workflow = std::fs::read_to_string(&workflow_path).unwrap();
-    assert!(
-        workflow.contains("max_parallel_units"),
-        "precondition: the fresh scaffold must carry the key this test then strips; \
-         workflow.yml:\n{workflow}"
-    );
-    let stripped: String = workflow
-        .lines()
-        .filter(|l| !l.trim_start().starts_with("max_parallel_units"))
-        .map(|l| format!("{l}\n"))
-        .collect();
-    assert!(
-        !stripped.contains("max_parallel_units"),
-        "the stripped fixture must never mention max_parallel_units at all, matching a \
-         pre-spec-102 workflow.yml; stripped:\n{stripped}"
-    );
-    std::fs::write(&workflow_path, &stripped).unwrap();
-
-    let path = real_path_dir_of("git");
-    let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("PATH", &path)]);
-    assert!(
-        ok,
-        "a workflow.yml with no max_parallel_units key must still validate cleanly - the \
-         field must default to unbounded, never refuse a pre-102 config; \
-         stdout:\n{out}\nstderr:\n{err}"
+        "a fresh scaffold with no width must validate cleanly through the real config-load \
+         path; stdout:\n{out}\nstderr:\n{err}"
     );
 }
 
@@ -16332,28 +16152,28 @@ fn edit_worker_prompt(root: &Path, new_body: &str) {
     .unwrap();
 }
 
-/// A two-stage run whose first launch pinned its definition and halted on its budget, still
+/// A run whose first launch pinned its definition and escalated its one unit, so the run is still
 /// live, after which a mid-campaign prompt edit to `new_prompt` drifted the on-disk definition
 /// from the pin.
 fn a_pinned_run_whose_definition_drifted(new_prompt: &str) -> tempfile::TempDir {
     a_pinned_run_changed(|_| {}, |root| edit_worker_prompt(root, new_prompt))
 }
 
-/// A two-stage run over a project `before` prepared, whose first launch pinned its definition
-/// and halted on its budget of one spawn - so the run is still live - after which `after`
-/// changed the project mid-campaign.
+/// A run over a project `before` prepared, whose first launch pinned its definition and escalated
+/// its one unit - so the run is still live - after which `after` changed the project
+/// mid-campaign.
 fn a_pinned_run_changed(
     before: impl FnOnce(&Path),
     after: impl FnOnce(&Path),
 ) -> tempfile::TempDir {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_workflow_fixture(root, &BUDGET_ONE_TWO_STAGE_WORKFLOW);
+    write_workflow_fixture(root, &REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW);
     before(root);
     let (out, err, ok) = run_reporting(root, &["run"]);
     assert!(
-        ok && out.contains("halted: budget exhausted"),
-        "the first run must pin the definition and halt on its budget; stderr: {err}\nstdout: {out}"
+        ok && out.contains("incomplete: not every unit integrated"),
+        "the first run must pin the definition and leave the run live; stderr: {err}\nstdout: {out}"
     );
     after(root);
     dir
@@ -16365,7 +16185,7 @@ fn a_pinned_run_changed(
 /// after which plain runs no longer halt.
 #[test]
 fn run_halts_on_definition_drift_and_rebase_definition_continues() {
-    // The first run pins the definition (and halts on its budget, still live); a mid-campaign
+    // The first run pins the definition (and escalates its unit, still live); a mid-campaign
     // prompt edit then drifts the on-disk definition from the pinned hash.
     let dir = a_pinned_run_whose_definition_drifted("Do the unit, but differently now.");
     let root = dir.path();
@@ -17909,7 +17729,6 @@ const CHAINED_UNITS: [&str; 3] = ["alpha", "bravo", "charlie"];
 /// gated by an always-passing core gate and merged on a pass.
 const CHAINED_UNIT_WORKFLOW: &str = r#"defaults:
   grounder: nop
-  budget: 60
 gates:
   ok: { run: "true", kind: core }
 stages:
@@ -18043,14 +17862,11 @@ fn an_interrupted_driver_is_stopped_on_purpose_and_never_relaunched() {
     let root = dir.path();
     write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
     let scratch = common::default_scratch_root(root);
-    let ended = common::cli::a_run_ended_mid_unit(root, &scratch, &[], |driver| {
-        assert!(
-            common::interrupt_pid(driver.id()),
-            "the interrupt reaches the driver"
-        );
-        driver.wait().unwrap();
-    });
-    common::cli::release_the_unit(ended.fake.path());
+    let ended = common::cli::a_run_interrupted_at_its_waiting_launch(
+        root,
+        &scratch,
+        common::cli::HOLDING_WORKER_ARM,
+    );
     assert!(!ended.record.is_empty(), "the live driver kept its record");
     let after = invoke_over_record(root, &common::cli::driver_record(root), &["status"], &[]);
     assert_eq!(
@@ -25378,7 +25194,6 @@ fn the_real_spec_argument_persists_on_a_real_run_and_reaches_the_status_pr_head(
         rigger.join("workflow.yml"),
         r#"defaults:
   grounder: nop
-  budget: 60
 gates:
   human: { run: "true", kind: core }
 stages:

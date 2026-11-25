@@ -2606,15 +2606,9 @@ const NO_RUNS_MESSAGE: &str =
 /// default. Both operator surfaces then omit the line, so default output is byte-for-byte unchanged.
 ///
 /// When measured it reports the share of grounded units that stay co-schedulable (the
-/// wave-parallelism the fleet retained), and a fleet that has quietly serialized itself - a
-/// retention below [`metrics::PARALLELISM_RETENTION_WARN`], per
-/// [`parallelism_retention_warns`](Metrics::parallelism_retention_warns) - gets a loud inline
-/// `WARN` naming the floor. Units whose radius is empty (their criterion names no code) are
+/// wave-parallelism the fleet retained), with no threshold. Units whose radius is empty (their criterion names no code) are
 /// counted on the line, since under the partition each runs alone and so lowers the share by
 /// construction.
-///
-/// Single-sourced so the `rigger stats` retention row and the end-of-`rigger run` stderr notice
-/// render IDENTICALLY: the warn text and its firing condition have ONE authority and cannot drift.
 fn parallelism_retention_line(m: &Metrics) -> Option<String> {
     let retention = m.parallelism_retention?;
     let mut line = format!(
@@ -2625,13 +2619,6 @@ fn parallelism_retention_line(m: &Metrics) -> Option<String> {
         line.push_str(&format!(
             "; {} of {} grounded units name no code (an empty radius runs alone under the partition)",
             m.empty_radii, m.grounded_units,
-        ));
-    }
-    if m.parallelism_retention_warns() {
-        line.push_str(&format!(
-            " - WARN: below the {:.1}% floor, the fleet is largely serializing (most units \
-             alone in their partition batch)",
-            metrics::PARALLELISM_RETENTION_WARN * 100.0,
         ));
     }
     Some(line)
@@ -2669,8 +2656,8 @@ fn format_stats(m: &Metrics) -> Vec<String> {
     ));
     // The runtime parallelism-retention row (spec 17 criterion 4c): shown only when structural
     // grounding measured it (`Some`); omitted on the shipped non-symbols default so that output
-    // is unchanged. A below-floor share carries a loud inline WARN (single-sourced via
-    // `parallelism_retention_line`, shared with the end-of-run stderr notice).
+    // is unchanged. The line is `parallelism_retention_line`'s, shared with the end-of-run
+    // stderr notice.
     if let Some(body) = parallelism_retention_line(m) {
         lines.push(format!("  parallelism        {body}"));
     }
@@ -7281,7 +7268,7 @@ mod tests {
     /// Spec 19a, unit 1 (the shared current-blocker classifier): `rigger status` and the
     /// dashboard render the SAME one-line current-blocker per unfinished unit, from ONE
     /// classifier - covering building, reject-recurrence (#n/max), approved-not-integrated,
-    /// escalated, and the run-level budget halt. Proven over the PRODUCTION render of each
+    /// and escalated. Proven over the PRODUCTION render of each
     /// surface: the exact `Vec<String>` `cmd_status` prints (via `console::fold`, spec 93
     /// criterion 4) versus the `line` field the dashboard serializes into its `/api/state`
     /// snapshot (via `dash::build_state`). Byte-identical lines are the structural proof
@@ -7291,9 +7278,7 @@ mod tests {
         use rigger::contextgraph::Graph;
         use std::collections::HashMap;
 
-        // A run holding a unit in every classifier arm, plus a live budget halt. The
-        // BudgetExhausted is LAST (highest position) so it is the current run-level blocker,
-        // not a stale one a resume progressed past.
+        // A run holding a unit in every classifier arm.
         let mut events = vec![
             Event::new(ledger::TYPE_UNIT_STARTED, br#"{"id":"u-build"}"#.to_vec()),
             Event::new(ledger::TYPE_UNIT_STARTED, br#"{"id":"u-fail"}"#.to_vec()),
@@ -7308,10 +7293,6 @@ mod tests {
             ),
             Event::new(ledger::TYPE_UNIT_STARTED, br#"{"id":"u-esc"}"#.to_vec()),
             Event::new(ledger::TYPE_UNIT_ESCALATED, br#"{"id":"u-esc"}"#.to_vec()),
-            Event::new(
-                conductor::TYPE_BUDGET_EXHAUSTED,
-                br#"{"budget":200,"spawns":200}"#.to_vec(),
-            ),
         ];
         for (i, e) in events.iter_mut().enumerate() {
             e.position = (i + 1) as u64;
@@ -7344,12 +7325,10 @@ mod tests {
             "rigger status and the dashboard must render identical current-blocker lines"
         );
 
-        // Every required kind is covered, deterministically ordered (run-level budget first,
-        // then units lexically).
+        // Every required kind is covered, deterministically ordered (units lexically).
         assert_eq!(
             status_lines,
             vec![
-                "run: budget spent 200/200 (raise defaults.budget and resume)".to_string(),
                 "u-appr: approved, not yet integrated (review passed; integration pending)"
                     .to_string(),
                 "u-build: building (attempt 1)".to_string(),
@@ -9818,9 +9797,8 @@ mod tests {
     // ---- `rigger result` refuses to replace the result of an ended spawn (gap 108) ----
 
     /// The two checked-in workflows that ship with the repo - the self-hosted
-    /// `.rigger/workflow.yml` and `examples/demo` - must each carry a NON-ZERO spawn
-    /// budget (FIX 3): a shipped, unattended config must cap its own spawns. A 0
-    /// (unlimited) budget here is what let a runaway loop churn for hours.
+    /// `.rigger/workflow.yml` and `examples/demo` - each load and validate, so neither
+    /// carries a retired key such as `defaults.budget`.
     #[test]
     // Reads relative paths (`.`, `..`) so it depends on the process CWD. Another test
     // (`cmd_stats_on_a_never_run_project...`) temporarily `set_current_dir`s to a temp
@@ -9829,7 +9807,7 @@ mod tests {
     // process-global, so a restore guard in the other test does not close the window -
     // the two must be mutually exclusive. Both share the `cwd` serial key.
     #[serial_test::serial(cwd)]
-    fn shipped_workflows_carry_a_non_zero_spawn_budget() {
+    fn shipped_workflows_load_and_validate() {
         for root in ["..", "../examples/demo", ".", "examples/demo"] {
             // The test runs from the crate root in CI and from the workspace root
             // locally; probe both layouts and skip a path that does not resolve to a
@@ -9838,13 +9816,8 @@ mod tests {
             if !path.join(RIGGER_DIR).join("workflow.yml").exists() {
                 continue;
             }
-            let cfg = config_store::load(root)
+            config_store::load(root)
                 .unwrap_or_else(|e| panic!("shipped workflow at {root:?} must load: {e}"));
-            assert!(
-                cfg.workflow.defaults.budget > 0,
-                "shipped workflow at {root:?} must cap spawns with a non-zero budget; was {}",
-                cfg.workflow.defaults.budget
-            );
         }
     }
 
@@ -12009,14 +11982,13 @@ mod tests {
 
     /// spec 17 criterion 4c: the runtime parallelism-retention metric must REACH an operator on
     /// the production `rigger stats` render (previously it was computed by `metrics::project` but
-    /// no path surfaced it). A MEASURED retention shows a row with the co-schedulable share; a
-    /// retention below [`metrics::PARALLELISM_RETENTION_WARN`] adds a loud inline WARN naming the
-    /// floor so a silently-serializing fleet is visible; and an UNMEASURED retention (`None` - the
+    /// no path surfaced it). A MEASURED retention shows a row with the co-schedulable share and
+    /// no threshold or WARN at any value; and an UNMEASURED retention (`None` - the
     /// shipped non-symbols default records no `BlastRadiusComputed` audit) OMITS the row entirely,
     /// so the default `rigger stats` output is byte-for-byte unchanged.
     #[test]
-    fn format_stats_surfaces_parallelism_retention_and_warns_below_the_floor() {
-        // Measured and above the floor: a row with the share, no WARN.
+    fn format_stats_surfaces_parallelism_retention_with_no_threshold() {
+        // Measured: a row with the share, no WARN.
         let healthy = Metrics {
             parallelism_retention: Some(0.95),
             ..Default::default()
@@ -12026,12 +11998,9 @@ mod tests {
             out.contains("parallelism        95.0%"),
             "a measured retention must appear on an operator-visible stats row:\n{out}"
         );
-        assert!(
-            !out.contains("WARN"),
-            "a healthy fleet at or above the floor must not warn:\n{out}"
-        );
+        assert!(!out.contains("WARN"), "no retention warns:\n{out}");
 
-        // Measured and below the floor: the share is still shown AND a loud WARN names the floor.
+        // Measured low: the share is shown, still with no WARN.
         let serializing = Metrics {
             parallelism_retention: Some(0.5),
             ..Default::default()
@@ -12039,12 +12008,9 @@ mod tests {
         let out = format_stats(&serializing).join("\n");
         assert!(
             out.contains("parallelism        50.0%"),
-            "the below-floor retention share must still be shown:\n{out}"
+            "a low retention share is shown:\n{out}"
         );
-        assert!(
-            out.contains("WARN") && out.contains("80.0% floor"),
-            "a below-floor retention must warn and name the 80.0% floor:\n{out}"
-        );
+        assert!(!out.contains("WARN"), "no retention warns:\n{out}");
 
         // Unmeasured (the shipped non-symbols default): no retention row at all.
         let unmeasured = Metrics {
@@ -12173,13 +12139,10 @@ mod tests {
         );
     }
 
-    /// The parallelism-retention line is single-sourced through [`parallelism_retention_line`] so
-    /// the `rigger stats` row and the end-of-`rigger run` stderr notice (spec 17 4c's "logged
-    /// warning when retention drops below the threshold on a run") render IDENTICALLY and cannot
-    /// drift: `None` when unmeasured, no `WARN` at or above the floor, and a `WARN` naming the
-    /// floor below it.
+    /// The parallelism-retention line: `None` when unmeasured, and the measured share with no
+    /// `WARN` at any value.
     #[test]
-    fn parallelism_retention_line_is_single_sourced_and_warns_below_the_floor() {
+    fn parallelism_retention_line_states_the_share_with_no_threshold() {
         assert!(
             parallelism_retention_line(&Metrics {
                 parallelism_retention: None,
@@ -12195,16 +12158,16 @@ mod tests {
         .expect("a measured retention yields a line");
         assert!(
             healthy.contains("90.0%") && !healthy.contains("WARN"),
-            "a healthy retention shows the share without a warning: {healthy}"
+            "a retention shows the share without a warning: {healthy}"
         );
-        let warn = parallelism_retention_line(&Metrics {
+        let low = parallelism_retention_line(&Metrics {
             parallelism_retention: Some(0.4),
             ..Default::default()
         })
         .expect("a measured retention yields a line");
         assert!(
-            warn.contains("40.0%") && warn.contains("WARN") && warn.contains("80.0% floor"),
-            "a below-floor retention warns and names the floor: {warn}"
+            low.contains("40.0%") && !low.contains("WARN"),
+            "a low retention shows the share without a warning: {low}"
         );
     }
 
@@ -12448,17 +12411,15 @@ mod tests {
         );
     }
 
-    /// Spec 102 criterion 2: a config that never sets `defaults.max_parallel_units` loads as
-    /// UNBOUNDED (`0`), so an existing consumer's behavior is unchanged until it writes the
-    /// key - the scaffold's `2` above is a fresh-project opinion, never a forced default onto
-    /// an already-authored workflow.yml.
+    /// A config that never sets `defaults.max_parallel_units` loads it as unset (`0`), so the
+    /// width follows the build slot count.
     #[test]
-    fn defaults_max_parallel_units_is_unbounded_when_the_key_is_absent() {
+    fn defaults_max_parallel_units_is_unset_when_the_key_is_absent() {
         let wf: config::Workflow = serde_yaml::from_str("stages: {}\ngates: {}\n")
             .expect("a workflow with no defaults: block must still parse");
         assert_eq!(
             wf.defaults.max_parallel_units, 0,
-            "an absent max_parallel_units key must load as 0 (unbounded), not a forced bound"
+            "an absent max_parallel_units key must load as 0 (unset)"
         );
     }
 

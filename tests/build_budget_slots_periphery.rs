@@ -318,7 +318,7 @@ fn configured_max_concurrent_serializes_two_real_concurrent_stage_gate_builds() 
     );
     // Two INDEPENDENT stages (`needs` empty on both): `ready_stages` puts both in
     // the SAME wave, and `run_wave` runs a wave's admitted stages concurrently via
-    // `std::thread::scope` (MAX_CONCURRENCY=4, well above 2) - real OS-thread
+    // `std::thread::scope` (an unbounded width) - real OS-thread
     // concurrency, not a simulated one.
     cfg.workflow.stages.insert(
         "a".into(),

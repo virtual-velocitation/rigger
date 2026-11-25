@@ -68,7 +68,7 @@ use serde_json::Value;
 use std::path::Path;
 
 /// WINDOW 1's driver. The implementer writes real work. Of the two lenses in the SAME
-/// concurrent chunk (`MAX_CONCURRENCY` is 4, so both fit in one chunk): lens `a` breaks
+/// concurrent chunk (the width is unbounded, so both run in one chunk): lens `a` breaks
 /// review protocol, commits a real residue commit straight onto the unit's own worktree,
 /// and returns `Ok`; lens `b` parks via the real public [`parked_spawn`] signal - the exact
 /// same signal a real stepwise driver returns for an unanswered spawn. No adversary, no

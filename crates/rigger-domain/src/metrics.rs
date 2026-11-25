@@ -315,12 +315,9 @@ pub struct Metrics {
     /// over all units' latest radii, not a per-wave reconstruction (the audit carries no wave
     /// id), so it reads how PACKABLE the fleet's radii are rather than any one wave's exact
     /// batching. `None` when no `BlastRadiusComputed` event was recorded (the non-symbols default
-    /// emits none, so the metric is absent rather than a spurious `1.0`). A value below
-    /// [`PARALLELISM_RETENTION_WARN`] means a silently-serializing fleet - most units in singleton
-    /// batches, INCLUDING an all-empty (fully unassessable) fleet, which reads `0.0` and warns
-    /// rather than the fail-open `1.0` an empty-collapses partition would report - which
-    /// [`parallelism_retention_warns`](Metrics::parallelism_retention_warns) surfaces so it is
-    /// visible in production.
+    /// emits none, so the metric is absent rather than a spurious `1.0`). An all-empty (fully
+    /// unassessable) fleet reads `0.0`, never the fail-open `1.0` an empty-collapses partition
+    /// would report.
     pub parallelism_retention: Option<f64>,
     /// The grounded units [`parallelism_retention`](Metrics::parallelism_retention) measured over
     /// (each unit's latest recorded radius), so a reading states its own denominator.
@@ -383,24 +380,6 @@ impl SpawnTiming {
         } else {
             self.total / self.count as u32
         }
-    }
-}
-
-/// The parallelism-retention floor below which [`Metrics::parallelism_retention_warns`] fires
-/// (spec 16 unit 3): fewer than this share of grounded units co-scheduling is a fleet that has
-/// quietly serialized itself. Calibrated to unit 2's frozen `MIN_RETENTION` (`0.80`) - the same
-/// bound the offline safety eval holds the partition to - so the runtime warn and the go/no-go
-/// gate agree on what "retained parallelism" means.
-pub const PARALLELISM_RETENTION_WARN: f64 = 0.80;
-
-impl Metrics {
-    /// Whether the recorded blast radii show a silently-serializing fleet: a
-    /// [`parallelism_retention`](Metrics::parallelism_retention) that was measured (structural
-    /// grounding was active) AND fell below [`PARALLELISM_RETENTION_WARN`]. Absent retention
-    /// (no `BlastRadiusComputed` events) never warns - there is no fleet to serialize.
-    pub fn parallelism_retention_warns(&self) -> bool {
-        self.parallelism_retention
-            .is_some_and(|r| r < PARALLELISM_RETENTION_WARN)
     }
 }
 
@@ -1594,47 +1573,41 @@ mod tests {
     }
 
     /// `project` DERIVES the runtime parallelism-retention metric from the `BlastRadiusComputed`
-    /// audit events (spec 16 unit 3), latest-per-unit, and warns when a silently-serializing
-    /// fleet drops below [`PARALLELISM_RETENTION_WARN`]. A run with no such event reports `None`
-    /// (never a spurious `1.0`), so the non-symbols default never warns.
+    /// audit events (spec 16 unit 3), latest-per-unit. A run with no such event reports `None`
+    /// (never a spurious `1.0`).
     #[test]
-    fn project_derives_parallelism_retention_and_warns_below_the_floor() {
-        // A healthy fleet: all disjoint => retention 1.0, no warn.
+    fn project_derives_parallelism_retention_from_the_recorded_radii() {
+        // A healthy fleet: all disjoint => retention 1.0.
         let healthy = project(&[
             blast_radius_ev("a", &["a.rs"], false),
             blast_radius_ev("b", &["b.rs"], false),
         ]);
         assert_eq!(healthy.parallelism_retention, Some(1.0));
-        assert!(!healthy.parallelism_retention_warns());
 
         // A log recorded with a hub flag on every unit (the shape older runs left) reads the
-        // real share: the radii are disjoint, so all three co-schedule => 1.0, no warn.
+        // real share: the radii are disjoint, so all three co-schedule => 1.0.
         let hub_flagged = project(&[
             blast_radius_ev("a", &["a.rs"], true),
             blast_radius_ev("b", &["b.rs"], true),
             blast_radius_ev("c", &["c.rs"], true),
         ]);
         assert_eq!(hub_flagged.parallelism_retention, Some(1.0));
-        assert!(!hub_flagged.parallelism_retention_warns());
 
-        // A genuinely serializing fleet: every radius overlaps the others => 0.0 => warn.
+        // A genuinely serializing fleet: every radius overlaps the others => 0.0.
         let serialized = project(&[
             blast_radius_ev("a", &["shared.rs", "a.rs"], false),
             blast_radius_ev("b", &["shared.rs", "b.rs"], false),
             blast_radius_ev("c", &["shared.rs"], false),
         ]);
         assert_eq!(serialized.parallelism_retention, Some(0.0));
-        assert!(serialized.parallelism_retention_warns());
 
         // An ALL-EMPTY (fully unassessable) fleet: every unit grounds to nothing, so each
-        // own-batches and none co-schedules => 0.0 => warn. This is the adj-u3 metrics corollary:
-        // the warn must fire exactly when the fleet is LEAST assessable, not read a fail-open 1.0.
+        // own-batches and none co-schedules => 0.0, never a fail-open 1.0.
         let all_empty = project(&[
             blast_radius_ev("a", &[], false),
             blast_radius_ev("b", &[], false),
         ]);
         assert_eq!(all_empty.parallelism_retention, Some(0.0));
-        assert!(all_empty.parallelism_retention_warns());
         assert_eq!(
             (all_empty.grounded_units, all_empty.empty_radii),
             (2, 2),
@@ -1642,10 +1615,9 @@ mod tests {
         );
         assert_eq!((healthy.grounded_units, healthy.empty_radii), (2, 0));
 
-        // No `BlastRadiusComputed` events (the non-symbols default): absent metric, never warns.
+        // No `BlastRadiusComputed` events (the non-symbols default): absent metric.
         let none = project(&[verdict("g", true)]);
         assert_eq!(none.parallelism_retention, None);
-        assert!(!none.parallelism_retention_warns());
 
         // Latest-per-unit: a re-record (a remediation re-grounds) supersedes the earlier radius,
         // so `b` moving off the shared file lets both units co-schedule.

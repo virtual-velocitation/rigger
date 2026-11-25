@@ -563,7 +563,7 @@ pub struct SpawnRequest {
     /// The deterministic id (see [`spawn_id`]): `{unit}/{role}#{attempt}`.
     pub id: String,
     /// The unit this spawn belongs to - the display label's unit half and the
-    /// correlation key the replay driver and budget breaker group spawns under.
+    /// correlation key the replay driver groups spawns under.
     pub unit: String,
     /// The stage that produced this spawn - the display label's stage half.
     pub stage: String,
@@ -914,7 +914,7 @@ pub fn requests(events: &[Event]) -> Result<Vec<SpawnRequest>, serde_json::Error
 /// already parked, keyed by their deterministic id.
 ///
 /// The replay driver uses this to tell an already-recorded spawn (answer it from the
-/// log) from an unrecorded one (park it); the budget breaker counts the entries.
+/// log) from an unrecorded one (park it).
 /// Non-spawn events are ignored, so the same run stream feeds this and the
 /// ledger/graph projections. A re-parked id (an idempotency violation the replay
 /// driver is responsible for preventing) collapses to the last-written request. A
@@ -942,8 +942,7 @@ pub fn is_recorded(events: &[Event], id: &str) -> bool {
 /// (`console::palette_commands`'s agent list) where one bad/older-run entry must lose
 /// only its own row, never the whole reply - CONSTRAINTS WALK: "An older run lacking a
 /// field - the fold renders the blank, never fails." [`recorded`]'s own `?` stays
-/// correct for its OTHER callers (the replay driver's park-or-replay decision, the
-/// budget breaker's hard count), where a malformed spawn is a genuine invariant
+/// correct for its OTHER callers (the replay driver's park-or-replay decision), where a malformed spawn is a genuine invariant
 /// violation this function must never silently paper over - this is a second entry
 /// point for a genuinely different caller contract, not a relaxation of that one.
 pub fn recorded_lenient(events: &[Event]) -> BTreeMap<String, SpawnRequest> {
