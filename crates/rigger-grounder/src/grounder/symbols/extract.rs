@@ -5639,6 +5639,172 @@ impl Store {
         }
     }
 
+    /// Spec 117, RUST STAGES VARIANT USES: a scoped path outside a call whose qualifier and leaf
+    /// begin uppercase and whose leaf holds a lowercase letter is a `variant` mention qualified by
+    /// its path, in an expression or a pattern, passed by name or in a token tree, beside the type
+    /// row its path's segment stages; a struct literal's or pattern's `E::V` is one too, its
+    /// fields qualified by `V`, in place of the type row of `E`. A call's head stays a call, a
+    /// leaf holding no lowercase letter stays a const read, a lowercase qualifier stages no
+    /// variant, a path in type position stages by the type rule alone, and a qualifier naming the
+    /// standard library stages nothing.
+    #[test]
+    fn rust_stages_variant_uses() {
+        let cases = [
+            (
+                "a unit variant in an expression is a variant mention qualified by its enum",
+                "fn a() {\n    let o = InstallOutcome::AlreadyCurrent;\n}\n",
+                "\
+1 def Function a to 3
+2 ref type InstallOutcome a
+2 ref variant AlreadyCurrent a q InstallOutcome::",
+            ),
+            (
+                "a tuple variant in a pattern is a variant mention qualified by its enum",
+                "\
+fn b(x: u8) {
+    match x {
+        Located::Many(c) => c,
+        _ => 0,
+    };
+}
+",
+                "\
+1 def Function b to 6
+3 ref type Located b
+3 ref variant Many b q Located::",
+            ),
+            (
+                "a struct variant's pattern is a variant mention, its field one of the variant, and \
+                 no type",
+                "\
+fn c(k: u8) {
+    match k {
+        Kind::RejectRecurrence { n } => n,
+        _ => 0,
+    };
+}
+",
+                "\
+1 def Function c to 6
+3 ref field n c q RejectRecurrence::
+3 ref variant RejectRecurrence c q Kind::",
+            ),
+            (
+                "a struct variant's literal is a variant mention, its field one of the variant, and \
+                 no type",
+                "fn d() {\n    Kind::RejectRecurrence { n: 1 };\n}\n",
+                "\
+1 def Function d to 3
+2 ref field n d q RejectRecurrence::
+2 ref variant RejectRecurrence d q Kind::",
+            ),
+            (
+                "a struct literal whose leaf holds no lowercase letter keeps its type row, and the \
+                 segment before the leaf qualifies a longer path's variant",
+                "fn k() {\n    Kind::IO { n: 1 };\n    a::Kind::Many { n: 1 };\n}\n",
+                "\
+1 def Function k to 4
+2 ref field n k q IO::
+2 ref type Kind k
+3 ref field n k q Many::
+3 ref variant Many k q Kind::",
+            ),
+            (
+                "a tuple variant's construction stays a call, a turbofish's alike",
+                "fn e(cs: u8) {\n    Hop::Frontier(cs);\n    Hop::Frontier::<u8>(cs);\n}\n",
+                "\
+1 def Function e to 4
+2 ref call Frontier e q Hop::
+2 ref type Hop e
+3 ref call Frontier e q Hop::
+3 ref type Hop e",
+            ),
+            (
+                "a variant passed by name outside a call is a variant mention, a turbofish's alike",
+                "fn f(v: u8) {\n    v.map(Hop::Frontier);\n    v.map(Hop::Frontier::<u8>);\n}\n",
+                "\
+1 def Function f to 4
+2 ref call map f
+2 ref type Hop f
+2 ref variant Frontier f q Hop::
+3 ref call map f
+3 ref type Hop f
+3 ref variant Frontier f q Hop::",
+            ),
+            (
+                "a path in type position stages by the type rule alone, no variant",
+                "trait Tr {\n    fn get(&self) -> Self::Target;\n}\n",
+                "\
+1 def Trait Tr to 3
+2 def Declaration Tr::get to 2 in Tr
+2 ref type Target Tr",
+            ),
+            (
+                "Self's variants are qualified by the impl's self type, a literal's fields by the \
+                 variant",
+                "\
+impl Kind {
+    fn g() {
+        Self::One;
+        Self::Many { n: 1 };
+    }
+}
+",
+                "\
+1 def Impl impl Kind to 6
+1 ref call Kind impl Kind
+2 def Method Kind::g to 5 in impl Kind
+3 ref variant One Kind::g q Kind::
+4 ref field n Kind::g q Many::
+4 ref variant Many Kind::g q Kind::",
+            ),
+            (
+                "a leaf holding no lowercase letter is a const, a lowercase qualifier stages no \
+                 variant, and the segment before the leaf qualifies a longer path",
+                "\
+fn h() {
+    let _ = Mode::RO;
+    let _ = models::Unit;
+    let _ = a::Kind::Many;
+}
+",
+                "\
+1 def Function h to 5
+2 ref const RO h
+2 ref type Mode h
+4 ref type Kind h
+4 ref variant Many h q Kind::",
+            ),
+            (
+                "a variant whose qualifier names the standard library stages nothing",
+                "\
+use std::cmp::Ordering;
+fn i(o: Ordering) {
+    match o {
+        Ordering::Less => 0,
+        _ => 1,
+    };
+    std::cmp::Ordering::Greater;
+    Option::<u8>::None;
+}
+",
+                "2 def Function i to 9",
+            ),
+            (
+                "a variant inside a macro's token tree is read",
+                "fn j() {\n    vec![InstallOutcome::AlreadyCurrent];\n}\n",
+                "\
+1 def Function j to 3
+2 ref call vec j
+2 ref type InstallOutcome j
+2 ref variant AlreadyCurrent j q InstallOutcome::",
+            ),
+        ];
+        for (why, src, expected) in cases {
+            assert_eq!(read_lines(src), expected, "{why}");
+        }
+    }
+
     #[test]
     fn malformed_tags_query_surfaces_as_err_not_panic() {
         let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
