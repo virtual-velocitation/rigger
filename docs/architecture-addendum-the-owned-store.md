@@ -252,10 +252,12 @@ process fanning out to every subscription in it). `subscribe_all` and `subscribe
 a client are the same watch on the same file, filtered by stream prefix as the namespace
 decorator already does. There is no wake-up protocol because the file is the protocol.
 
-Why one watcher per process: today every subscription is its own 25 ms thread contending
-for the store's write mutex; the side-car alone stacks a 25 ms database poll under a 50 ms
-channel poll (`crates/rigger-driver/src/sidecar.rs:149`). One length check per process per 250 ms costs nothing
-measurable and cannot contend with appends because it never takes the lock.
+Why one watcher per process: today every subscription is its own thread that takes the
+store's write mutex every 25 ms, so the cost and the contention grow with the number of
+subscriptions, and a namespaced subscription adds a second thread, the namespace
+decorator's relay (`Subscription::map`), that wakes every 50 ms. One length check per
+process per 250 ms costs the same whatever the number of subscriptions, and cannot contend
+with appends because it never takes the lock.
 
 ### 5.7 Compaction and archive
 

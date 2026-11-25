@@ -134,6 +134,7 @@ impl PostmergeFixture {
             store,
             driver: &driver,
             gates: &ExecRunner,
+            run_branch: common::fixtures::branch_of(&self.repo_path),
             repo: self.repo_path.clone(),
             grounder: None,
             graph: None,

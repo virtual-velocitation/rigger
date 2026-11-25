@@ -29,9 +29,6 @@ rigger-domain = { path = "../rigger-domain", default-features = false }
 # `inherit_on_exec`'s descriptor-flag call, and the Linux keeper's child subreaper and its wait on
 # its children. See the root manifest for why the 1.x line with only `std` + `process`.
 rustix = { version = "1.1", default-features = false, features = ["std", "process"] }
-# The build budget's cross-process advisory slot lock (`flock(2)` on unix, `LockFileEx` on
-# Windows).
-fs2 = "0.4"
 # The gate channel's name rule, on every OS: the SHA-256 of the canonical repo root names the
 # Unix domain socket and the Windows named pipe alike, from the `ring` the lock already resolves
 # for the conductor.

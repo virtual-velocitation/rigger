@@ -68,6 +68,7 @@ fn a_speculation_winner_reviewed_sha_stays_the_round_start_sha_across_a_post_rev
         store: &store,
         driver: &driver,
         gates: &ExecRunner,
+        run_branch: common::fixtures::branch_of(&repo_path),
         repo: repo_path.clone(),
         grounder: None,
         graph: None,

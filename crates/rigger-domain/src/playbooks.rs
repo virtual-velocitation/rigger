@@ -5,22 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::contextgraph::query::referenced_id;
 use crate::contextgraph::TYPE_LESSON_LEARNED;
 use crate::eventstore::Event;
-
-/// FNV-1a/64 over `bytes`: the crate's ONE stable, dependency-free hash (never for security).
-/// Its output is identical across processes, machines, builds and releases, unlike `std`'s
-/// `DefaultHasher`, so every id derived through it reproduces: a playbook's slug (the pool is a
-/// reproducible projection - the same lesson text always rebuilds to the same file name), a
-/// criterion's stable id, a gate's input digest, and a project id derived from its remote.
-pub fn fnv1a_64(bytes: &[u8]) -> u64 {
-    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-    const PRIME: u64 = 0x0000_0100_0000_01b3;
-    let mut hash = OFFSET;
-    for &b in bytes {
-        hash ^= b as u64;
-        hash = hash.wrapping_mul(PRIME);
-    }
-    hash
-}
+pub use crate::hash::fnv1a_64;
 
 /// One distilled playbook: a deduplicated lesson, the blast-radius files that trigger it,
 /// and how many `LessonLearned` events folded into it.

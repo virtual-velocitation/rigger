@@ -103,6 +103,16 @@ const DEPARTURES: &[(&str, &[&str], &[&str])] = &[
         ],
         &[],
     ),
+    (
+        "a call inside a macro's token tree is read, so a test's call inside `assert_eq!` proves \
+         the product definition it calls (spec 117, MACRO TOKEN TREES)",
+        &[
+            r#"node src/lib.rs::helper [code-entity] kind=function lang=rust line=26 name=helper proof_evidence=["src/lib.rs:39"] proven_by=1"#,
+        ],
+        &[
+            r#"node src/lib.rs::helper [code-entity] kind=function lang=rust line=26 name=helper proof_evidence=["src/lib.rs:39","src/lib.rs:40"] proven_by=2"#,
+        ],
+    ),
 ];
 
 /// The golden with every departure applied.

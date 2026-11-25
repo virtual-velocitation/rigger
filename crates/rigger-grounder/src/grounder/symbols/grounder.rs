@@ -2400,6 +2400,7 @@ mod tests {
                 compared,
                 behind: None,
                 worktree: worktree.to_path_buf(),
+                extract: None,
             })
         }
     }
@@ -2907,6 +2908,7 @@ mod tests {
                 compared: Compared::Overlaid(0),
                 behind: None,
                 worktree: worktree.to_path_buf(),
+                extract: None,
             })
         }
     }

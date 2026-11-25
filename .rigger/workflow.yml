@@ -130,6 +130,13 @@ build:
   # kind is now a validation error naming this spec): no per-round sweep; the sweep is the
   # `mutation` gate below, declared but unwired until #32 lands.
   max_concurrent: 1         # serialize builds machine-wide: two concurrent cargo-mutants sweeps (~100G each) exhausted /home this session. Blunt cap (operator-binary boundary blocks a surgical mutation-only slot); revisit as a spec.
+  # The variables rigger exports to every gate and agent spawn. CARGO_TARGET_DIR gives each site
+  # its own build cache (a unit's cargo-target-<slug>, its reviewers' review-target-<slug>, the
+  # guarded shared cache for a review worktree): cargo names a workspace member's artifacts by
+  # paths relative to the workspace root and judges them fresh by mtime, so worktrees sharing one
+  # target directory link each other's artifacts and a gate goes red on code outside its diff.
+  # {jobs} exports nothing while build.jobs is unset; .cargo/config.toml caps the jobs.
+  env: {CARGO_BUILD_JOBS: "{jobs}", CARGO_TARGET_DIR: "{build_cache}"}
 
 gates:                      # the project's verification library, referenced by name
   # fmt, clippy and build cover every workspace crate, never the root package alone: a bare

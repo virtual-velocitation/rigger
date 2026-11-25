@@ -69,7 +69,7 @@ pub use rigger_domain::gate::*;
 /// A non-empty `build_cache_guard` is locked shared through [`hold_shared_lock`] before the gate
 /// command runs (spec 121 criterion 19, spec 125 criterion 10): a guard that cannot be locked is
 /// the [`ProbeFault`] `Err`, never a [`GateResult`], and the gate command never runs, so nothing
-/// is built anywhere.
+/// is built anywhere. A `budget` no slot of which can ever be locked is its `Err` likewise.
 pub trait Runner: Send + Sync {
     #[allow(clippy::too_many_arguments)]
     fn run(
@@ -86,19 +86,24 @@ pub trait Runner: Send + Sync {
     ) -> Result<GateResult, ProbeFault>;
 }
 
-/// A requested shared-cache guard that [`hold_shared_lock`] could not lock (spec 121 criterion
-/// 19): its parent directory could not be created, the guard could not be opened, or its
-/// filesystem refused an advisory lock. An infrastructure fault, not a gate failure: no wait
-/// and no rerun changes a local filesystem's answer, only the operator's fix, so its text names
-/// the guard path, the OS error and that fix.
+/// A lock a gate run needs before its command runs that the filesystem refuses. An
+/// infrastructure fault, not a gate failure: no wait and no rerun changes a local filesystem's
+/// answer, only the operator's fix, so its text names the path, the OS error and that fix.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-#[error(
-    "build cache guard {guard:?} failed its probe: {error}; fix the path or set the project's \
-     scratch root to a filesystem with advisory locks, then relaunch"
-)]
-pub struct ProbeFault {
-    pub guard: String,
-    pub error: String,
+pub enum ProbeFault {
+    /// A requested shared-cache guard that [`hold_shared_lock`] could not lock (spec 121
+    /// criterion 19): its parent directory could not be created, the guard could not be opened,
+    /// or its filesystem refused an advisory lock.
+    #[error(
+        "build cache guard {guard:?} failed its probe: {error}; fix the path or set the \
+         project's scratch root to a filesystem with advisory locks, then relaunch"
+    )]
+    Guard { guard: String, error: String },
+    /// A build budget no slot of which could be opened and locked while no other process held
+    /// one, so no holder will ever free one: [`BuildBudget::acquire`]'s error, naming the slot
+    /// and the OS error.
+    #[error("{0}; fix the path, then relaunch")]
+    BudgetSlot(String),
 }
 
 /// BuildEnv is the ONE build-environment authority: the workflow's declared `build.env`,
@@ -497,8 +502,17 @@ impl Runner for ExecRunner {
         // waits for a free slot rather than stacking another compiler fleet into
         // memory. Never held across anything but this call - a hung command still
         // frees its slot the instant it is killed, and no other code path in the crate
-        // acquires a slot, so non-build work is never gated.
-        let _slot = budget.acquire();
+        // acquires a slot, so non-build work is never gated. A slot directory where no slot
+        // can ever be locked is the [`ProbeFault::BudgetSlot`], before the command runs; one
+        // whose slot directory cannot be created admits the command outside the budget, and the
+        // result's note says why.
+        let slot = budget
+            .acquire()
+            .map_err(|e| ProbeFault::BudgetSlot(e.to_string()))?;
+        let note = match slot.unenforced() {
+            "" => String::new(),
+            why => format!("build budget not enforced: {why}; "),
+        };
         // The shared gate build cache's exclusion protocol, PRODUCER half (spec 77 criterion 5,
         // BOUNDED SHARED CACHE; spec 125 criterion 10): a non-empty `build_cache_guard` names the
         // lock file `rigger reset --build-cache` takes EXCLUSIVE before it reclaims the shared
@@ -532,11 +546,13 @@ impl Runner for ExecRunner {
                 GateResult {
                     pass,
                     evidence: compact(pass, &evidence),
+                    note,
                 }
             }
             Err(e) => GateResult {
                 pass: false,
                 evidence: format!("FAIL\ngate {}: {e}", g.id),
+                note,
             },
         })
     }
@@ -559,19 +575,14 @@ pub fn open_build_cache_guard(path: &std::path::Path) -> std::io::Result<std::fs
 /// Takes the in-process shared lock on the shared-cache guard at `guard` (spec 77 criterion 5,
 /// BOUNDED SHARED CACHE; spec 121 criterion 19; spec 125 criterion 10) and answers the open
 /// guard holding it. The guard is opened through [`open_build_cache_guard`], so a missing
-/// scratch root is created rather than faulted, and locked shared through the file-lock
-/// dependency (`flock(2)` on unix, `LockFileEx` on Windows), waiting while
-/// `rigger reset --build-cache` holds it exclusive. Nothing here unlocks it: the lock lasts
-/// while the answered file stays open, and on unix while any process that inherited its
-/// descriptor ([`inherit_on_exec`]) keeps it. A refused create, open or lock is the
-/// [`ProbeFault`] naming `guard` and the OS error.
+/// scratch root is created rather than faulted, and locked shared through std's
+/// [`File::lock_shared`](std::fs::File::lock_shared) (`flock(2)` on unix, `LockFileEx` on
+/// Windows), waiting while `rigger reset --build-cache` holds it exclusive. Nothing here unlocks
+/// it: the lock lasts while the answered file stays open, and on unix while any process that
+/// inherited its descriptor ([`inherit_on_exec`]) keeps it. A refused create, open or lock is
+/// the [`ProbeFault`] naming `guard` and the OS error.
 pub fn hold_shared_lock(guard: &str) -> Result<std::fs::File, ProbeFault> {
-    // Fully-qualified (not `file.lock_shared()`): this crate deliberately uses `fs2` for
-    // every advisory lock ([`crate::budget`], `main.rs`'s step lock) rather than std's
-    // more recently stabilized `File::lock_shared`, which shares this exact method name -
-    // a plain method call would silently resolve to the std inherent method (inherent
-    // methods always win over a trait's) and leave the `fs2` import genuinely unused.
-    lock_guard(guard, <std::fs::File as fs2::FileExt>::lock_shared)
+    lock_guard(guard, std::fs::File::lock_shared)
 }
 
 /// Opens the guard at `guard` through [`open_build_cache_guard`], takes `lock` on it and
@@ -582,7 +593,7 @@ fn lock_guard(
     guard: &str,
     lock: impl FnOnce(&std::fs::File) -> std::io::Result<()>,
 ) -> Result<std::fs::File, ProbeFault> {
-    let fault = |e: std::io::Error| ProbeFault {
+    let fault = |e: std::io::Error| ProbeFault::Guard {
         guard: guard.to_string(),
         error: e.to_string(),
     };
@@ -1245,7 +1256,7 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         // non-blocking; a gate build must hold it SHARED for its whole invocation, so a
         // reset attempted while this gate's command is still running is refused rather
         // than corrupting the cache out from under it. Proven from the OTHER side: while
-        // the gate command is still running, an independent probe's try_lock_exclusive on
+        // the gate command is still running, an independent probe's exclusive try-lock on
         // the SAME guard path must fail (contended); once the gate command exits, the
         // same probe must succeed (the shared hold was released).
         let dir = tempfile::tempdir().expect("tempdir");
@@ -1325,6 +1336,96 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         );
     }
 
+    /// A build budget whose slot directory exists but whose every slot fails to open, so no
+    /// holder will ever free one, is the probe fault naming the slot, the OS error and the
+    /// operator's fix, never a red gate, and the gate's command never runs.
+    #[test]
+    fn a_budget_no_slot_can_satisfy_is_a_probe_fault_and_runs_nothing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let slot = dir.path().join("slots/slot-0.lock");
+        std::fs::create_dir_all(&slot).expect("a directory where the slot file would be");
+        let open_error = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(&slot)
+            .unwrap_err();
+        let ran = dir.path().join("ran");
+        let got = ExecRunner.run(
+            &gate_cmd(&format!("touch {}", ran.display())),
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            &BuildEnv::default(),
+            &BuildBudget::new(1, dir.path().join("slots")),
+        );
+        assert_eq!(
+            (
+                got.map(|res| res.pass).map_err(|fault| fault.to_string()),
+                ran.exists()
+            ),
+            (
+                Err(format!(
+                    "build budget slot {}: {open_error}; fix the path, then relaunch",
+                    slot.display()
+                )),
+                false
+            ),
+            "the unlockable budget faults naming the slot and the command never runs"
+        );
+    }
+
+    /// A build budget whose slot directory cannot be created runs the gate outside the budget
+    /// and says so in the result's note, naming why, while the command's evidence is untouched;
+    /// an enforced budget's result carries no note.
+    #[test]
+    fn a_budget_whose_slot_directory_cannot_be_created_runs_the_gate_and_notes_why() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("file");
+        std::fs::write(&file, b"")
+            .expect("a regular file where the slot directory's parent would be");
+        let slot_dir = file.join("slots");
+        let create_error = std::fs::create_dir_all(&slot_dir).unwrap_err();
+        let run = |budget: BuildBudget| {
+            ExecRunner
+                .run(
+                    &gate_cmd("echo ok"),
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    &BuildEnv::default(),
+                    &budget,
+                )
+                .map(|res| (res.pass, res.evidence, res.note))
+                .expect("a budget that admits the build runs the gate")
+        };
+        assert_eq!(
+            [
+                run(BuildBudget::new(1, slot_dir.clone())),
+                run(BuildBudget::new(1, dir.path().join("slots"))),
+            ],
+            [
+                (
+                    true,
+                    "PASS\nok".to_string(),
+                    format!(
+                        "build budget not enforced: slot directory {} could not be created: \
+                         {create_error}; ",
+                        slot_dir.display()
+                    )
+                ),
+                (true, "PASS\nok".to_string(), String::new()),
+            ],
+            "only the run the budget could not bound notes it, and its evidence is the command's"
+        );
+    }
+
     /// [`hold_shared_lock`] takes the guard SHARED: while it holds the guard, a second open of
     /// it takes a shared try-lock and is refused an exclusive one, so two guarded gates on one
     /// cache run side by side and only `rigger reset --build-cache` waits for them.
@@ -1336,7 +1437,9 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         let second = open_build_cache_guard(&guard).expect("a second open of the guard");
         assert_eq!(
             (
-                fs2::FileExt::try_lock_shared(&second).map_err(|e| e.raw_os_error()),
+                second
+                    .try_lock_shared()
+                    .map_err(|e| std::io::Error::from(e).kind()),
                 try_exclusive_lock(&guard),
             ),
             (Ok(()), contended()),
@@ -1375,7 +1478,7 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         let guard_str = guard.to_str().unwrap();
         let ran = root.path().join("ran");
         let cache = root.path().join("cache");
-        let expected_fault = os_error.map(|error| ProbeFault {
+        let expected_fault = os_error.map(|error| ProbeFault::Guard {
             guard: guard_str.to_string(),
             error: error(&guard).to_string(),
         });
@@ -1494,7 +1597,7 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         assert_eq!(
             (got.map(drop), guard.is_file()),
             (
-                Err(ProbeFault {
+                Err(ProbeFault::Guard {
                     guard: guard_str.to_string(),
                     error: "no locks available".to_string(),
                 }),
@@ -1615,6 +1718,48 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
             set.pass,
             "a non-empty gate_scratch must reach the gate as {GATE_SCRATCH_ENV}, over the \
              inherited value: {set:?}"
+        );
+    }
+
+    /// A gate never sees the agents' login token, even when this process holds it: the gate's
+    /// command is project code. The gate echoes the variable and fails, so its evidence carries
+    /// the line; the assertions never print the evidence, which holds the value when inherited.
+    #[test]
+    fn exec_runner_never_hands_a_gate_the_agents_login_token() {
+        const TOKEN: &str = rigger_domain::spawn::RIGGER_AGENT_TOKEN_VAR;
+        struct Restore(Option<std::ffi::OsString>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(v) => std::env::set_var(TOKEN, v),
+                    None => std::env::remove_var(TOKEN),
+                }
+            }
+        }
+        let _restore = Restore(std::env::var_os(TOKEN));
+        let dummy = "dummy-token-for-test";
+        std::env::set_var(TOKEN, dummy);
+        let result = ExecRunner
+            .run(
+                &gate_cmd(&format!("echo \"error: token=[${{{TOKEN}}}]\"; false")),
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                &BuildEnv::default(),
+                &BuildBudget::default(),
+            )
+            .unwrap();
+        assert!(!result.pass, "the gate exits 1");
+        assert!(
+            result.evidence.contains("token=[]"),
+            "the gate's echo of an unset token reaches the evidence"
+        );
+        assert!(
+            !result.evidence.contains(dummy),
+            "a gate must not be handed {TOKEN}"
         );
     }
 

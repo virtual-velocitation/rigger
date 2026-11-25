@@ -135,6 +135,7 @@ where
         let _ = dash::serve_on(
             listener,
             provider,
+            common::served::no_state_graph,
             graph_provider,
             calls_provider,
             instances_provider,
@@ -152,7 +153,6 @@ fn serve_test_dash(store: FakeStore) -> std::net::SocketAddr {
         move |_instance: Option<&str>| -> Result<DashInputs, String> {
             Ok((
                 store.events.lock().unwrap().clone(),
-                Graph::default().into(),
                 store.progress.lock().unwrap().clone(),
                 store.liveness.lock().unwrap().clone(),
             ))
@@ -184,7 +184,6 @@ fn serve_multi_instance_dash(
                 .unwrap_or(&default);
             Ok((
                 store.events.lock().unwrap().clone(),
-                Graph::default().into(),
                 store.progress.lock().unwrap().clone(),
                 store.liveness.lock().unwrap().clone(),
             ))
@@ -1045,12 +1044,7 @@ fn with_no_activity_the_stream_emits_only_prompt_heartbeats_never_a_liveness_fra
 fn serve_test_dash_over_fixed_events(events: Vec<Event>) -> std::net::SocketAddr {
     serve_dash_with_provider(
         move |_instance: Option<&str>| -> Result<DashInputs, String> {
-            Ok((
-                events.clone(),
-                Graph::default().into(),
-                Vec::new(),
-                HashMap::new(),
-            ))
+            Ok((events.clone(), Vec::new(), HashMap::new()))
         },
     )
 }

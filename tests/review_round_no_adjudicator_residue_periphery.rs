@@ -121,6 +121,7 @@ fn a_lenses_only_panels_residue_is_restored_and_never_merged() {
         store: &store,
         driver: &driver,
         gates: &ExecRunner,
+        run_branch: common::fixtures::branch_of(&repo_path),
         repo: repo_path.clone(),
         grounder: None,
         graph: None,

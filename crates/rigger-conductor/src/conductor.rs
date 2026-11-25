@@ -922,8 +922,8 @@ fn run_base_of(events: &[Event]) -> String {
 }
 
 /// Everything a gate run at a worktree reads besides its command: the build cache, gate scratch
-/// root, shared-cache pair, store fence, build environment and budget it is handed, and the commit
-/// its verdict addresses. Resolved by [`GateInputs::resolve`], the one derivation the driver's
+/// root, shared-cache pair, store fence, build environment and budget it is handed. Resolved by
+/// [`GateInputs::resolve`], the one derivation the driver's
 /// inline gates ([`RunCtx::run_gates_at`]) and `rigger gate <id>` ([`gate_once`]) both use, so
 /// an agent's own run of a gate builds where, and under what, the driver's run would.
 struct GateInputs {
@@ -934,7 +934,6 @@ struct GateInputs {
     store_fence: String,
     build_env: gate::BuildEnv,
     budget: BuildBudget,
-    commit_sha: String,
 }
 
 impl GateInputs {
@@ -1023,11 +1022,6 @@ impl GateInputs {
             build_env: build_env_of(cfg, run_base)?,
             // The machine-wide build budget (spec 65), threaded to every gate this resolves for.
             budget: build_budget_of(cfg),
-            // The content address of the gate's inputs (spec 12, unit 1): the HEAD commit of the
-            // worktree, which fixes both the tree and the history a gate may read. Empty when
-            // there is no worktree (a repo-less / `isolation: none` run), which simply disables
-            // content-addressing there.
-            commit_sha: crate::worktree::head_sha_of(dir),
         })
     }
 }
@@ -1063,7 +1057,9 @@ fn classify_gate_failure(
 /// while a failure that stays red across every rerun is a believed-real failure that demotes
 /// (`flaky`) or holds the ratchet (`infra`).
 ///
-/// Returns `(recorded_pass, flaky_annotation, ratchet_effect, evidence)`, or the
+/// Returns `(recorded_pass, flaky_annotation, ratchet_effect, evidence, note)`, the note being
+/// the first non-empty [`gate::GateResult::note`] across the runs, which the caller records
+/// beside the evidence and never classifies; or the
 /// [`gate::ProbeFault`] of a failed guard probe on the first run or on any rerun, which ends the
 /// gate there with no outcome and no further rerun (spec 121 criterion 19). The one gate run the
 /// driver ([`RunCtx::run_gates_at`]) and `rigger gate <id>` ([`gate_once`]) share.
@@ -1073,7 +1069,7 @@ fn run_gate_with_taxonomy(
     g: &Gate,
     dir: &str,
     inputs: &GateInputs,
-) -> Result<(bool, bool, GateRatchet, String), gate::ProbeFault> {
+) -> Result<(bool, bool, GateRatchet, String, String), gate::ProbeFault> {
     let run = || {
         runner.run(
             g,
@@ -1088,8 +1084,9 @@ fn run_gate_with_taxonomy(
         )
     };
     let res = run()?;
+    let mut note = res.note;
     if res.pass {
-        return Ok((true, false, GateRatchet::CleanPass, res.evidence));
+        return Ok((true, false, GateRatchet::CleanPass, res.evidence, note));
     }
     // Classify the failure. `FailureClass` is Copy and `Backoff` cheap to clone, so we
     // hold no borrow of the taxonomy across the rerun loop below.
@@ -1108,6 +1105,7 @@ fn run_gate_with_taxonomy(
             false,
             GateRatchet::for_persistent_failure(class),
             first_evidence,
+            note,
         ));
     }
     for n in 0..limit {
@@ -1119,7 +1117,11 @@ fn run_gate_with_taxonomy(
             // unit's gate, never the wider wave.
             std::thread::sleep(delay);
         }
-        if run()?.pass {
+        let rerun = run()?;
+        if note.is_empty() {
+            note = rerun.note;
+        }
+        if rerun.pass {
             // MIXED: the gate failed then passed - a FlakyVerdict pass-with-warning.
             let evidence = format!(
                 "flaky: gate {:?} failed then passed on rerun {}/{}; first failure:\n{first_evidence}",
@@ -1127,7 +1129,7 @@ fn run_gate_with_taxonomy(
                 n + 1,
                 limit,
             );
-            return Ok((true, true, GateRatchet::FlakyPass, evidence));
+            return Ok((true, true, GateRatchet::FlakyPass, evidence, note));
         }
     }
     // Stayed red across every rerun: a believed-real failure. A `flaky` class demotes
@@ -1135,7 +1137,7 @@ fn run_gate_with_taxonomy(
     // ratchet - an outage must not cost the gate its earned autonomy. Same single
     // demote-vs-hold authority as the early-return above and the deferred gate.
     let ratchet = GateRatchet::for_persistent_failure(class);
-    Ok((false, false, ratchet, first_evidence))
+    Ok((false, false, ratchet, first_evidence, note))
 }
 
 /// What one run of a declared gate on a committed tree found ([`gate_once`]).
@@ -1158,8 +1160,103 @@ pub struct GateVerbRun {
     pub digest: String,
 }
 
-/// The reason a gate run that changed the tree it gated is not a pass ([`gate_once`]).
+/// The reason a gate run that changed the tree it gated is not a pass ([`changed_refusal`]).
 const WORKTREE_CHANGED: &str = "the worktree changed while the gate ran";
+
+/// Why a run of gate `gate_id` that changed the tree it gated addresses no commit:
+/// [`WORKTREE_CHANGED`], the `changed` paths ([`named_paths`]) or why they are unreadable, and how
+/// to gate it again. The one refusal the driver's gates ([`GateStart::refusal`]) and
+/// `rigger gate <id>` ([`worktree_changed`]) give.
+fn changed_refusal(gate_id: &str, changed: Result<Vec<String>, String>) -> String {
+    let changed = changed
+        .map(|paths| named_paths(&paths))
+        .unwrap_or_else(|e| format!("the changed paths are unreadable ({e})"));
+    format!(
+        "{WORKTREE_CHANGED}, so its result addresses no commit; changed: {changed}. To \
+         gate it: commit changes you made; add files the gate writes to .gitignore; then \
+         run `rigger gate {gate_id}` again"
+    )
+}
+
+/// Why the run of gate `gate_id` that began on `dir`'s clean `commit` addresses no commit, when
+/// it moved HEAD or left any uncommitted path, so `rigger gate <id>`'s verdict addresses exactly
+/// the commit it ran on ([`gate_once`], [`changed_refusal`]); `None` otherwise.
+fn worktree_changed(dir: &str, commit: &str, gate_id: &str) -> Option<String> {
+    if crate::worktree::head_sha_of(dir) == commit && !tree_is_dirty(dir) {
+        return None;
+    }
+    let changed = crate::worktree::paths_changed_since(dir, commit).map_err(|e| e.to_string());
+    Some(changed_refusal(gate_id, changed))
+}
+
+/// The tree one of the driver's gate runs began on ([`RunCtx::run_gates_at`]): its HEAD, empty
+/// with no worktree, and the tracked changes no commit records ([`tracked_changes`]), or why they
+/// are unreadable. Read before each gate, so each is judged on what it changed.
+///
+/// [`tracked_changes`]: crate::worktree::tracked_changes
+struct GateStart {
+    head: String,
+    changes: Result<Vec<(String, String)>, String>,
+}
+
+impl GateStart {
+    /// The tree at `dir` now.
+    fn read(dir: &str) -> Self {
+        GateStart {
+            head: crate::worktree::head_sha_of(dir),
+            changes: crate::worktree::tracked_changes(dir).map_err(|e| e.to_string()),
+        }
+    }
+
+    /// The commit a result begun on this tree addresses: its HEAD when no tracked change sits on
+    /// it, else none, so a result no commit records is never cached ([`input_digest`]).
+    fn commit(&self) -> &str {
+        match &self.changes {
+            Ok(changes) if changes.is_empty() => &self.head,
+            _ => "",
+        }
+    }
+
+    /// What the record of a run begun on this tree says when the run has a commit to address yet
+    /// addresses none ([`Self::commit`]): one clause ending `"; "`, else empty.
+    fn unaddressed(&self) -> String {
+        if self.head.is_empty() {
+            return String::new();
+        }
+        let why = match &self.changes {
+            Ok(changes) if changes.is_empty() => return String::new(),
+            Ok(changes) => {
+                let paths: Vec<String> = changes.iter().map(|(_, path)| path.clone()).collect();
+                format!("on uncommitted tracked changes ({})", named_paths(&paths))
+            }
+            Err(e) => format!("on tracked changes that are unreadable ({e})"),
+        };
+        format!("the gate began {why}, so its result addresses no commit and is not cached; ")
+    }
+
+    /// Why the run of gate `gate_id` that began on this tree addresses no commit, when it left
+    /// tracked changes at `dir` that were not there when it began, with HEAD where it was:
+    /// [`changed_refusal`] naming only those. `None` otherwise. The drive's own paths own the
+    /// other changes: a gate's commit (a regeneration), untracked residue (the review's residue
+    /// check) and a deleted worktree (its restore); and a tree whose changes were unreadable when
+    /// the run began gives nothing to judge it against, so its result addresses no commit
+    /// ([`Self::unaddressed`]). A tree git cannot read after the run is no change of the unit's
+    /// but the conductor's git step failing, so it is that step's halt ([`git_step`]).
+    fn refusal(&self, dir: &str, gate_id: &str) -> Result<Option<String>, Error> {
+        let Ok(before) = &self.changes else {
+            return Ok(None);
+        };
+        if self.head.is_empty() || crate::worktree::head_sha_of(dir) != self.head {
+            return Ok(None);
+        }
+        let made: Vec<String> = git_step(crate::worktree::tracked_changes(dir))?
+            .into_iter()
+            .filter(|change| !before.contains(change))
+            .map(|(_, path)| path)
+            .collect();
+        Ok((!made.is_empty()).then(|| changed_refusal(gate_id, Ok(made))))
+    }
+}
 
 /// How many changed paths a [`WORKTREE_CHANGED`] refusal names before it counts the rest.
 const NAMED_PATHS: usize = 10;
@@ -1224,25 +1321,18 @@ fn gate_once(
         autonomy: gate::Autonomy::Manual,
         history: Vec::new(),
     };
-    let (pass, flaky, _ratchet, evidence) =
+    let (pass, flaky, _ratchet, evidence, note) =
         run_gate_with_taxonomy(runner, taxonomy, &g, dir, &inputs)
             .map_err(|fault| without_halt_markers(probe_fault_halt(fault)))?;
     // A result addresses the commit only if the gate left it as it found it: otherwise no one can
     // say which tree it describes, so it fails closed.
-    if crate::worktree::head_sha_of(dir) != commit || tree_is_dirty(dir) {
-        let changed = crate::worktree::paths_changed_since(dir, &commit)
-            .map(|paths| named_paths(&paths))
-            .unwrap_or_else(|e| format!("the changed paths are unreadable ({e})"));
+    if let Some(refusal) = worktree_changed(dir, &commit, gate_id) {
         return Ok(GateVerbRun {
             gate: gate_id.to_string(),
             command: gc.run.clone(),
             pass: false,
             flaky: false,
-            evidence: format!(
-                "{WORKTREE_CHANGED}, so its result addresses no commit; changed: {changed}. To \
-                 gate it: commit changes you made; add files the gate writes to .gitignore; then \
-                 run `rigger gate {gate_id}` again\n{evidence}"
-            ),
+            evidence: format!("{refusal}\n{note}{evidence}"),
             commit,
             digest: String::new(),
         });
@@ -1253,7 +1343,7 @@ fn gate_once(
         command: gc.run.clone(),
         pass,
         flaky,
-        evidence,
+        evidence: format!("{note}{evidence}"),
         commit,
         digest,
     })
@@ -2999,15 +3089,15 @@ fn landing_refused(unit: &str, paths: &[String]) -> Error {
 }
 
 /// The sentinel a FAILED GUARD PROBE embeds in its error (spec 121 criterion 19): a gate's
-/// requested shared-cache guard failed its probe, so the runner returned a
-/// [`gate::ProbeFault`] and ran nothing. A local filesystem answer that no wait and no rerun
+/// requested shared-cache guard failed its probe, or no slot of its build budget can ever be
+/// locked, so the runner returned a [`gate::ProbeFault`] and ran nothing. A local filesystem answer that no wait and no rerun
 /// changes, only the operator's fix, so it is a halt over [`HALT_MARKERS`], never the F3
 /// infra rerun and never the self-retrying hold: the hold it leaves is the conductor's fault hold,
 /// which no probe ends ([`held_on_a_fault`]).
 const PROBE_FAULT_MARKER: &str = "\u{1}rigger:probe-fault\u{1}";
 
-/// The error a gate runner's [`gate::ProbeFault`] travels as: its text, which names the guard
-/// path, the OS error and the operator's fix, marked with [`PROBE_FAULT_MARKER`].
+/// The error a gate runner's [`gate::ProbeFault`] travels as: its text, which names the path,
+/// the OS error and the operator's fix, marked with [`PROBE_FAULT_MARKER`].
 fn probe_fault_halt(fault: gate::ProbeFault) -> Error {
     marked(PROBE_FAULT_MARKER, fault)
 }
@@ -3029,14 +3119,16 @@ const GIT_STEP_MARKER: &str = "\u{1}rigger:git-step\u{1}";
 /// A LIFECYCLE step answers a plain [`worktree::Error`], and every failure of one is a conductor
 /// fault, marked with [`GIT_STEP_MARKER`]: making, re-asserting and discarding a worktree
 /// ([`Worktree::create`], [`Worktree::ensure_present`], [`Worktree::discard`]); reading a
-/// branch, its tip or its ancestry ([`worktree::branch_present`], [`worktree::branch_tip`],
-/// [`worktree::in_history`]); seeding, rolling back and deleting a branch
+/// branch, its tip, its ancestry or its work ([`worktree::branch_present`],
+/// [`worktree::branch_tip`], [`worktree::in_history`], [`Worktree::branch_has_work`]); seeding, rolling back and deleting a branch
 /// ([`Worktree::create_branch_at`], [`Worktree::reset_branch_to`],
 /// [`Worktree::restore_reviewed_sha`], [`Worktree::delete_branch`]); reading what a unit changed
 /// ([`Worktree::changed_files`], [`Worktree::changed_since_base`],
 /// [`Worktree::committed_since_base`], [`Worktree::commits_since_base`],
 /// [`Worktree::files_touched_by_commit`],
-/// [`Worktree::diff_names`], [`Worktree::find_landed_by_patch_id`]); and the run branch's own
+/// [`Worktree::diff_names`], [`Worktree::find_landed_by_patch_id`]); reading the tracked changes
+/// a driver gate left ([`worktree::tracked_changes`], [`GateStart::refusal`]); and the run
+/// branch's own
 /// moves through [`RunCtx::moving_the_run_branch`] ([`Worktree::land`],
 /// [`Worktree::revert_on_base`], [`Worktree::reset_to`]).
 ///
@@ -3060,6 +3152,15 @@ fn git_step<T, E: Into<worktree::StepError>>(step: Result<T, E>) -> Result<T, Er
         worktree::StepError::Unanswered(fault) => marked(GIT_STEP_MARKER, fault),
         refused => marked(CONTENT_REFUSAL_MARKER, refused),
     })
+}
+
+/// The branch the checkout at `repo` holds, `None` for a repo-less run or a detached HEAD; a
+/// HEAD git cannot read is a git step's halt ([`git_step`]).
+fn checkout_branch(repo: &str) -> Result<Option<String>, Error> {
+    if repo.is_empty() {
+        return Ok(None);
+    }
+    git_step(worktree::current_branch(repo))
 }
 
 /// The sentinel a CONTENT STEP'S REFUSAL embeds in its error ([`git_step`]): git refused a step
@@ -3340,6 +3441,11 @@ pub struct Deps<'a> {
     /// A git repo to isolate each agent in via a throwaway worktree; empty
     /// disables isolation (the agent runs in the current directory).
     pub repo: String,
+    /// The branch the run integrates onto, named by the command that anchored the run and
+    /// checked it out at [`Deps::repo`]; None for a run with no repo. Every move of the run
+    /// branch first checks the checkout still holds it ([`RunCtx::moving_the_run_branch`]), so a
+    /// run over a repo that names none moves nothing.
+    pub run_branch: Option<String>,
     /// Grounds each agent before it runs; None grounds nothing.
     pub grounder: Option<&'a dyn Grounder>,
     /// The record graph the run folds its events into; None folds nothing.
@@ -3733,6 +3839,7 @@ fn drive(
         green_digests,
         verdict_key,
         gate_address: channel.and_then(GateChannel::address),
+        run_base: run_base_of(prior_events),
         settled: Mutex::new(settled_positions(prior_events)),
         live_units: Mutex::new(HashMap::new()),
         compensations: Mutex::new(pending_compensations),
@@ -4366,6 +4473,9 @@ struct RunCtx<'a> {
     /// The absolute address of the gate channel this run serves, handed to every spawn as
     /// [`GATE_SOCKET_ENV`] ([`spawn_env`](Self::spawn_env)); `None` when it serves none.
     gate_address: Option<String>,
+    /// The run's `$RIGGER_RUN_BASE` ([`run_base_of`]), folded once from the run read this
+    /// context is built over; [`run_base_env`](Self::run_base_env) hands it out.
+    run_base: String,
     /// The log positions of the gate verdict rows a settle record cites ([`settled_positions`]),
     /// seeded at run start and extended as this process settles a battery: passes that are history.
     settled: Mutex<HashSet<u64>>,
@@ -4492,6 +4602,9 @@ impl<'a> RunCtx<'a> {
             green_digests: GreenDigests::after(&[]),
             verdict_key: VerdictKey::from_bytes(b"run-ctx-test-key"),
             gate_address: None,
+            run_base: crate::run::read::read_current_run(deps.store, STREAM)
+                .map(|(events, _)| run_base_of(&events))
+                .unwrap_or_default(),
             settled: Mutex::new(HashSet::new()),
             live_units: Mutex::new(HashMap::new()),
             compensations: Mutex::new(Vec::new()),
@@ -4574,11 +4687,25 @@ impl RunCtx<'_> {
     /// drift to a relaunch, while an edit from outside the run still is. Called with
     /// `integrate_mu` held, so no other move lands between the two hashes. A crash between the
     /// move and the re-pin leaves the move unpinned, and that relaunch halts on drift as before.
-    /// The move is a git step ([`git_step`]), classed as that step is.
+    /// The move is a git step ([`git_step`]), classed as that step is. Over a repo, a checkout
+    /// that does not hold [`Deps::run_branch`], a detached HEAD or a run naming no branch
+    /// included, refuses the move before it runs, as a git step's halt.
     fn moving_the_run_branch<T, E: Into<worktree::StepError>>(
         &self,
         move_branch: impl FnOnce() -> Result<T, E>,
     ) -> Result<T, Error> {
+        let repo = &self.deps.repo;
+        let run = self.deps.run_branch.as_deref();
+        let on = checkout_branch(repo)?;
+        if !repo.is_empty() && (on.is_none() || on.as_deref() != run) {
+            let on = on.map_or("a detached HEAD".to_string(), |b| format!("branch {b}"));
+            let not_run = run.map_or("and the run names no branch of its own".to_string(), |b| {
+                format!("not the run's branch {b}")
+            });
+            return git_step(Err::<T, _>(worktree::Error(format!(
+                "refusing to move the run branch: the checkout at {repo} holds {on}, {not_run}"
+            ))));
+        }
         let before = self.checkout_definition();
         let moved = git_step(move_branch())?;
         if let (Some(before), Some(after)) = (before, self.checkout_definition()) {
@@ -5396,7 +5523,7 @@ impl RunCtx<'_> {
             &self.deps.repo,
             &request.dir,
             &request.gate,
-            &self.run_base_env(),
+            self.run_base_env(),
         )?;
         // The first verb key for this commit no verdict holds yet, claimed in the one lookup.
         let key = (0..)
@@ -5997,14 +6124,14 @@ impl RunCtx<'_> {
         // first gate-green adjudicator-approved one. `run_speculation` owns the K isolated
         // worktrees' whole lifecycle. Default width 1 falls through to the single-lane path
         // below, byte-for-byte unchanged (speculation defaults off).
-        if self.speculates(st) {
+        if self.speculates(st)? {
             return self.run_speculation(st);
         }
         // Resume-continuity: decide whether this unit CONTINUES from a prior window's
         // recorded phase (its deterministic branch carries committed work) or runs the
         // full lifecycle fresh. Computed before the worktree is created so a resumed
         // unit reuses its branch's work instead of re-implementing from scratch.
-        let phase = self.resume_phase(st);
+        let phase = self.resume_phase(st)?;
         let wt = self.stage_worktree(st)?;
         let dir = wt.as_ref().map(|w| w.dir.clone()).unwrap_or_default();
         // Out-of-band any-parked signal (spec 64 c1 round 4,
@@ -8477,13 +8604,15 @@ impl RunCtx<'_> {
     /// unit cannot speculate); and it is not a producer (a planner emits a DAG, not a diff to
     /// gate/review). Any false condition falls through to the single-lane `run_single_stage`,
     /// so the default (width 1) changes no current behavior.
-    fn speculates(&self, st: &Stage) -> bool {
-        self.effective_speculation_width(st) > 1
+    /// The resume read comes last, so only a unit that would speculate reads its branch, and a
+    /// read git cannot answer is the error.
+    fn speculates(&self, st: &Stage) -> Result<bool, Error> {
+        Ok(self.effective_speculation_width(st) > 1
             && !st.agent.is_empty()
             && !is_producer(st)
             && !self.deps.repo.is_empty()
             && self.agent_isolated(&st.agent)
-            && self.resume_phase(st) == ResumePhase::Fresh
+            && self.resume_phase(st)? == ResumePhase::Fresh)
     }
 
     /// What the error `e` of `unit`'s speculation lane at `attempt` means ([`LaneError::of`]),
@@ -10750,8 +10879,8 @@ impl RunCtx<'_> {
 
     /// The build environment for this run (the ONE build-environment authority): the
     /// workflow's declared `build.env` and `build.jobs` with the run's recorded base
-    /// ([`run_base_env`](Self::run_base_env), read from the store), re-derived each call rather
-    /// than cached - a single resolver, called from every site that needs it, so a gate build
+    /// ([`run_base_env`](Self::run_base_env), folded once from the store) - a single resolver,
+    /// called from every site that needs it, so a gate build
     /// ([`run_gates`](Self::run_gates), [`run_deferred_gates`](Self::run_deferred_gates)) and an
     /// agent-spawn build (every `SpawnOpts.env`) can never derive two disagreeing copies.
     ///
@@ -10762,7 +10891,7 @@ impl RunCtx<'_> {
     /// PROPAGATES the refusal, so a library caller gets the identical loud failure a CLI caller
     /// does.
     fn build_env(&self) -> Result<gate::BuildEnv, Error> {
-        build_env_of(self.cfg, &self.run_base_env())
+        build_env_of(self.cfg, self.run_base_env())
     }
 
     /// Whether a reviewer spawned at `dir` carries the unit's review cache
@@ -10779,21 +10908,20 @@ impl RunCtx<'_> {
 
     /// The run's own `$RIGGER_RUN_BASE`: the SINGLE resolution the one build environment
     /// ([`build_env`](Self::build_env), and through [`GateInputs::resolve`] every gate) carries
-    /// to every gate and every spawn - never a second, independently re-derived copy. Reads the run's own `RunStarted` off
-    /// the live event stream and folds [`crate::run::current_run_base_tip`] over it: the run
-    /// branch's tip commit sha AT THE MOMENT this run started, persisted once at mint
-    /// (`RunStarted::base_tip`) and never re-resolved live - so a unit that lands mid-run
-    /// never shifts what a LATER gate diffs against, and the check-in stage's gates always diff
-    /// the whole spec's work against the recorded base, never a moving target.
+    /// to every gate and every spawn - never a second, independently re-derived copy. Folded
+    /// once, when this context is built, from the run's own `RunStarted` by
+    /// [`crate::run::current_run_base_tip`]: the run branch's tip commit sha AT THE MOMENT this
+    /// run started, persisted once at mint (`RunStarted::base_tip`) and never re-resolved live -
+    /// so a unit that lands mid-run never shifts what a LATER gate diffs against, and the check-in
+    /// stage's gates always diff the whole spec's work against the recorded base, never a moving
+    /// target.
     ///
     /// Empty (so [`gate::BuildEnv::with_var`] injects nothing) when this run predates the
-    /// field - a legacy `RunStarted` - or the event stream cannot be read; a gate script's own
-    /// `test -n "$RIGGER_RUN_BASE"` guard then refuses loud rather than diffing an empty range,
-    /// the behavior a run with nothing to diff against needs.
-    fn run_base_env(&self) -> String {
-        self.read_current_run()
-            .map(|events| run_base_of(&events))
-            .unwrap_or_default()
+    /// field - a legacy `RunStarted`; a gate script's own `test -n "$RIGGER_RUN_BASE"` guard then
+    /// refuses loud rather than diffing an empty range, the behavior a run with nothing to diff
+    /// against needs.
+    fn run_base_env(&self) -> &str {
+        &self.run_base
     }
 
     /// What a spawn's OWN process carries: `build_env` resolved at the spawn's site
@@ -10936,7 +11064,7 @@ impl RunCtx<'_> {
             &self.deps.repo,
             dir,
             postmerge_unit_dir.as_deref(),
-            &self.run_base_env(),
+            self.run_base_env(),
         )?;
         for gid in &st.gates {
             let gc = self
@@ -10964,6 +11092,9 @@ impl RunCtx<'_> {
                 }
                 _ => gate_key(GateKey::Verdict, &st.name, attempt, ordinal, gid),
             };
+            // The tree this gate begins on, after any earlier gate of the battery ran: the commit
+            // its result addresses and the baseline it is judged against ([`GateStart`]).
+            let start = GateStart::read(dir);
             // REPLAY a recorded verdict (spec 04, criterion 4): this gate already ran in
             // a prior step, so reuse its recorded pass/evidence and re-run NOTHING - not
             // the command, not the GateVerdict emit, not the ratchet. The recorded
@@ -10972,7 +11103,7 @@ impl RunCtx<'_> {
             // (signed verdicts) is not replayed: the gate runs again under the next
             // re-verify key, its evidence saying why.
             let mut why_rerun = String::new();
-            match self.recorded_verdict(&key, &inputs.commit_sha) {
+            match self.recorded_verdict(&key, &start.head) {
                 Some(Recorded::Act(v)) => {
                     if v.pass {
                         acted.push((v.id, v.position));
@@ -11027,7 +11158,8 @@ impl RunCtx<'_> {
             // logged cache-hit citing that green's position - the command is not run and the
             // ratchet does not move, exactly like an exact-key replay - so an unchanged commit
             // re-verifies near-free. Failures never enter the cache, so a red is never
-            // cache-answered (it must always re-prove). An empty digest (no worktree)
+            // cache-answered (it must always re-prove). An empty digest (no worktree, or
+            // tracked changes no commit records when the gate began, [`GateStart::commit`])
             // disables the hit and the gate runs fresh below.
             //
             // The digest alone decides: it addresses the HEAD commit, so a landing or a new
@@ -11037,7 +11169,7 @@ impl RunCtx<'_> {
             //
             // Before the lookup the cache joins the verdicts appended since its last read, so a
             // green an agent's own `rigger gate <id>` recorded on this commit answers here.
-            let digest = input_digest(&gc.run, &inputs.commit_sha);
+            let digest = input_digest(&gc.run, start.commit());
             // The row this gate's verdict records, its outcome filled in where it is known.
             let unfilled = VerdictRow {
                 replay_key: &key,
@@ -11047,7 +11179,7 @@ impl RunCtx<'_> {
                 flaky: false,
                 evidence: "",
                 command: &gc.run,
-                commit: &inputs.commit_sha,
+                commit: &start.head,
             };
             if !digest.is_empty() {
                 self.green_digests
@@ -11078,17 +11210,31 @@ impl RunCtx<'_> {
             // unit 2): a clean pass; a flaky/infra failure that reran and PASSED (a
             // FlakyVerdict pass-with-warning); or a real failure (product/flaky demote,
             // infra hold). A failed guard probe is the halt instead, before any verdict.
-            let (pass, flaky, ratchet, evidence) =
+            let (pass, flaky, ratchet, evidence, note) =
                 run_gate_with_taxonomy(self.deps.gates, &self.taxonomy, &g, dir, &inputs)
                     .map_err(probe_fault_halt)?;
+            // A run that edited the tracked tree it began on addresses no commit: a non-pass with
+            // no digest, so it answers no later gate, and no ratchet move, since it neither proves
+            // nor disproves the gate.
+            let (pass, flaky, ratchet, evidence, digest) = match start.refusal(dir, gid)? {
+                Some(refusal) => (
+                    false,
+                    false,
+                    GateRatchet::FailNoDemote,
+                    format!("{refusal}\n{evidence}"),
+                    String::new(),
+                ),
+                None => (pass, flaky, ratchet, evidence, digest),
+            };
             // The compact gate evidence is threaded into the GateVerdict event payload
             // (item 3): a real run otherwise discarded it, so neither the ledger nor the
             // driver ever saw WHY a gate passed or failed. `flaky` rides as the
             // FlakyVerdict annotation (no new event type). Replay-keyed (and cached) so a
             // re-step replays this verdict instead of re-running; the `digest` addresses it
             // by content so a later gate over the same command + tree is a cache-hit (a
-            // GREEN populates the content cache; a red records the digest but never caches).
-            let recorded_evidence = format!("{why_rerun}{evidence}");
+            // GREEN populates the content cache; a red records the digest but never caches). The
+            // run's notes join the record after the evidence was classified, never before.
+            let recorded_evidence = format!("{why_rerun}{}{note}{evidence}", start.unaddressed());
             let row = VerdictRow {
                 pass,
                 flaky,
@@ -11425,8 +11571,9 @@ impl RunCtx<'_> {
             // no per-tree address to compute (dir "" -> empty digest): it keeps its
             // once-per-run replay semantics and is NOT content-addressed by unit 1
             // (the owning unit is empty and the cache is untouched at an empty
-            // digest). Its verdict still records normally, on no commit.
-            let recorded_evidence = format!("{why_rerun}{}", res.evidence);
+            // digest). Its verdict still records normally, on no commit, the run's note beside
+            // its evidence.
+            let recorded_evidence = format!("{why_rerun}{}{}", res.note, res.evidence);
             let row = VerdictRow {
                 replay_key: &key,
                 unit: "",
@@ -12184,7 +12331,9 @@ impl RunCtx<'_> {
             let _ = Worktree::delete_branch(&self.deps.repo, &pm_branch);
             let merged = gate_result?;
             if !merged.pass {
-                self.moving_the_run_branch(|| Worktree::reset_to(&self.deps.repo, &pre_merge))?;
+                self.moving_the_run_branch(|| {
+                    Worktree::reset_to(&self.deps.repo, &commit, &pre_merge)
+                })?;
                 // Defense in depth (spec 64 criterion 3), same as every other post-gate touch
                 // of `wt` in this function: the post-merge gate just above is real wall-clock
                 // time - a window in which an out-of-band actor (or, as spec 88 criterion 1's
@@ -12568,8 +12717,10 @@ impl RunCtx<'_> {
     /// give this command the identical site cache, which a declared `{build_cache}` resolves
     /// to, and store fence, so a regenerate build shares its unit's gate cache and never walks
     /// into the live event store. A failed guard probe is returned as the [`probe_fault_halt`] `Err`, not
-    /// as this command's own failure, so it ends the step as a halt (spec 121 criterion 19).
-    fn run_regenerate_command(&self, dir: &str, run: &str) -> Result<(), Error> {
+    /// as this command's own failure, so it ends the step as a halt (spec 121 criterion 19). A
+    /// pass answers its run's note ([`gate::GateResult::note`]), which the regeneration commit's
+    /// row records ([`Self::record_regenerate_commit`]).
+    fn run_regenerate_command(&self, dir: &str, run: &str) -> Result<String, Error> {
         let target = crate::worktree::unit_cache_sibling(dir).unwrap_or_default();
         let gate_scratch =
             crate::worktree::unit_sibling(dir, crate::worktree::UNIT_GATE_SCRATCH_PREFIX)
@@ -12606,11 +12757,11 @@ impl RunCtx<'_> {
             .map_err(probe_fault_halt)?;
         if !res.pass {
             return Err(Error(format!(
-                "regenerate command {run:?} failed:\n{}",
-                res.evidence
+                "regenerate command {run:?} failed:\n{}{}",
+                res.note, res.evidence
             )));
         }
-        Ok(())
+        Ok(res.note)
     }
 
     /// Resolve conflicting paths CONFINED to registered regenerable rules (spec 88,
@@ -12629,13 +12780,14 @@ impl RunCtx<'_> {
     /// after this call's real mutation but before that record left the durable regenerate-
     /// pending marker un-cleared, so a resumed call re-enters here, finds nothing new to
     /// commit, and - under the old "" contract - never re-recorded the after-record for the
-    /// mutation that already, genuinely happened).
+    /// mutation that already, genuinely happened). Beside the sha it answers the commands' notes,
+    /// in the order they ran ([`Self::run_regenerate_command`]).
     fn regenerate_conflicted_paths(
         &self,
         wt: &Worktree,
         unit: &str,
         paths: &[String],
-    ) -> Result<String, Error> {
+    ) -> Result<(String, String), Error> {
         let mut commands: Vec<&str> = Vec::new();
         for p in paths {
             if let Some(rule) = self.regenerate_rule_for(p) {
@@ -12644,16 +12796,17 @@ impl RunCtx<'_> {
                 }
             }
         }
+        let mut notes = String::new();
         for cmd in commands {
-            self.run_regenerate_command(&wt.dir, cmd)?;
+            notes.push_str(&self.run_regenerate_command(&wt.dir, cmd)?);
         }
         let committed = on_regenerable_paths(git_step(wt.commit_checkpoint(&format!(
             "rigger: regenerate conflicting artifacts for {unit}"
         ))))?;
         if committed.is_empty() {
-            Ok(worktree::head_sha_of(&wt.dir))
+            Ok((worktree::head_sha_of(&wt.dir), notes))
         } else {
-            Ok(committed)
+            Ok((committed, notes))
         }
     }
 
@@ -12715,8 +12868,8 @@ impl RunCtx<'_> {
         paths: &[String],
         tag: impl FnOnce(&str) -> String,
     ) -> Result<(), Error> {
-        let regen_sha = self.regenerate_conflicted_paths(wt, unit, paths)?;
-        self.record_regenerate_commit(unit, attempt, &tag(&regen_sha), &regen_sha)?;
+        let (regen_sha, note) = self.regenerate_conflicted_paths(wt, unit, paths)?;
+        self.record_regenerate_commit(unit, attempt, &tag(&regen_sha), &regen_sha, &note)?;
         clear_attempt(&self.conflict_regenerate_pending, unit, attempt);
         Ok(())
     }
@@ -12832,23 +12985,29 @@ impl RunCtx<'_> {
     /// [`Self::regenerate_conflicted_paths`] never returns an empty sha (round 4's own fix:
     /// it falls back to the current worktree HEAD when there was nothing NEW to commit,
     /// since that HEAD already IS the regenerate commit either way) - the empty-sha guard
-    /// below is kept purely defensive, never expected to fire in real operation.
+    /// below is kept purely defensive, never expected to fire in real operation. The row carries
+    /// the regenerate commands' `note`, when they gave one.
     fn record_regenerate_commit(
         &self,
         unit: &str,
         attempt: u32,
         episode: &str,
         sha: &str,
+        note: &str,
     ) -> Result<(), Error> {
         if sha.is_empty() {
             return Ok(());
+        }
+        let mut evidence = json!({"sha": sha});
+        if !note.is_empty() {
+            evidence["note"] = json!(note);
         }
         self.record_integrate_row(
             &format!("{unit}/regenerate-commit#{attempt}~{episode}"),
             STATUS_INTEGRATE_REGENERATE_COMMIT,
             unit,
             attempt,
-            json!({"sha": sha}),
+            evidence,
         )
     }
 
@@ -14113,15 +14272,17 @@ impl RunCtx<'_> {
     /// [`RunCtx::integrate_attempted`]'s own doc): `branch_has_work`'s `tip == base` check
     /// alone cannot tell "never had work" apart from "already fast-forward-landed", and a
     /// unit routed to `Reviewed` with a durably-recorded integrate attempt is never the former.
-    fn resume_phase(&self, st: &Stage) -> ResumePhase {
+    /// A branch read git cannot answer is the error ([`git_step`]), never a fresh run over the
+    /// work the branch may hold.
+    fn resume_phase(&self, st: &Stage) -> Result<ResumePhase, Error> {
         // A repo-less or non-isolated unit has no branch to checkpoint on, so there is
         // never reusable prior work - it always runs fresh.
         if self.deps.repo.is_empty() || st.agent.is_empty() || !self.agent_isolated(&st.agent) {
-            return ResumePhase::Fresh;
+            return Ok(ResumePhase::Fresh);
         }
         let prior = match self.prior_status.get(&st.name) {
             Some(s) => *s,
-            None => return ResumePhase::Fresh,
+            None => return Ok(ResumePhase::Fresh),
         };
         let attempts = self.prior_attempts.get(&st.name).copied().unwrap_or(0);
         // Whether the log durably records an integrate attempt at THIS attempt: the merge
@@ -14146,7 +14307,7 @@ impl RunCtx<'_> {
             ledger::Status::Green | ledger::Status::Verified => ResumePhase::Implemented,
             // Below green (pending/grounding/red), or a terminal status that should not
             // have reached the lifecycle: run fresh.
-            _ => return ResumePhase::Fresh,
+            _ => return Ok(ResumePhase::Fresh),
         };
         // Round 4 fix: a unit routed to `Reviewed` whose log already durably proves an
         // integrate attempt was made for THIS attempt is never the "prior worktree's commits were
@@ -14160,12 +14321,15 @@ impl RunCtx<'_> {
         // The unit's branch must actually carry committed work to build on; a recorded
         // status with an empty/missing branch (the prior worktree's commits were lost)
         // falls back to a fresh run rather than skipping a non-existent implementation.
-        if !Worktree::branch_has_work(&self.deps.repo, &unit_branch(&st.name))
-            && !already_integrating
+        if !already_integrating
+            && !git_step(Worktree::branch_has_work(
+                &self.deps.repo,
+                &unit_branch(&st.name),
+            ))?
         {
-            return ResumePhase::Fresh;
+            return Ok(ResumePhase::Fresh);
         }
-        phase
+        Ok(phase)
     }
 
     fn stage_worktree(&self, st: &Stage) -> Result<Option<Worktree>, Error> {
@@ -17387,6 +17551,7 @@ mod tests {
     use crate::test_support::agent;
     use crate::test_support::agent_with_its_own_alias;
     use crate::test_support::agent_with_prompt;
+    use crate::test_support::branch_of;
     use crate::test_support::build_declaring;
     use crate::test_support::commit_at_fixed_date;
     use crate::test_support::conductor_fault_hold;
@@ -17455,6 +17620,7 @@ mod tests {
                 driver,
                 gates: &ExecRunner,
                 repo: String::new(),
+                run_branch: None,
                 grounder: None,
                 graph: None,
                 criteria,
@@ -18415,6 +18581,7 @@ mod tests {
         let runner = ExecRunner;
         let deps = Deps {
             gates: &runner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -18491,6 +18658,7 @@ mod tests {
         let runner = ExecRunner;
         let deps = Deps {
             gates: &runner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -18584,6 +18752,7 @@ mod tests {
         let runner = ExecRunner;
         let deps = Deps {
             gates: &runner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -18769,6 +18938,7 @@ mod tests {
         let runner = ExecRunner;
         let deps = Deps {
             gates: &runner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -18885,6 +19055,7 @@ mod tests {
         );
         let driver = Stub::new();
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -18940,6 +19111,7 @@ mod tests {
         // non-empty criteria is never adopted, so `run()` mints a FRESH RunStarted, and the
         // (unrelated) coverage-gap check is bypassed.
         let deps = Deps {
+            run_branch: branch_of(repo),
             repo: repo.to_string(),
             ..stub_deps(store, &driver, Vec::new())
         };
@@ -20055,6 +20227,7 @@ mod tests {
             store: &st,
             driver: &driver,
             gates: &ExecRunner,
+            run_branch: None,
             repo: String::new(),
             grounder: None,
             graph: None,
@@ -20399,6 +20572,7 @@ mod tests {
             seed_events_in_run(&st, &SWEEP_CRITERIA, seed);
         }
         let deps = Deps {
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(
                 &st,
@@ -20660,6 +20834,7 @@ mod tests {
             store: &st,
             driver: &driver,
             gates: &ExecRunner,
+            run_branch: None,
             repo: String::new(),
             grounder: Some(&grep),
             graph: Some(&graph),
@@ -22204,6 +22379,7 @@ mod tests {
                     ..Stub::new()
                 };
                 let deps = Deps {
+                    run_branch: branch_of(&repo_path),
                     repo: repo_path.clone(),
                     ..stub_deps(&st, &driver, criteria.clone())
                 };
@@ -23994,6 +24170,7 @@ mod tests {
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path,
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -24048,6 +24225,7 @@ mod tests {
             store: &st,
             driver: &driver,
             gates: &ExecRunner,
+            run_branch: None,
             repo: String::new(),
             grounder: Some(&grep),
             graph: Some(&graph),
@@ -24119,6 +24297,7 @@ mod tests {
             store: &st,
             driver: &driver,
             gates: &ExecRunner,
+            run_branch: None,
             repo: String::new(),
             grounder: Some(&grep),
             graph: Some(&graph),
@@ -24262,6 +24441,7 @@ mod tests {
             store: &st,
             driver: &driver,
             gates: &ExecRunner,
+            run_branch: None,
             repo: String::new(),
             grounder: Some(&grep),
             graph: Some(&graph),
@@ -24349,6 +24529,7 @@ mod tests {
             store: &st,
             driver: &driver,
             gates: &ExecRunner,
+            run_branch: None,
             repo: String::new(),
             grounder: Some(&grep),
             graph: Some(&graph),
@@ -24947,6 +25128,7 @@ mod tests {
             store: &st,
             driver: &driver,
             gates: &ExecRunner,
+            run_branch: None,
             repo: String::new(),
             grounder: Some(&grep),
             graph: Some(&graph),
@@ -25131,6 +25313,7 @@ mod tests {
             store: &st,
             driver: &driver,
             gates: &ExecRunner,
+            run_branch: None,
             repo: String::new(),
             grounder: None,
             graph: Some(&graph),
@@ -25312,6 +25495,7 @@ mod tests {
             store: &st_store,
             driver: &driver,
             gates: &ExecRunner,
+            run_branch: None,
             repo: String::new(),
             grounder: Some(&grounder),
             graph: Some(&graph),
@@ -25395,6 +25579,7 @@ mod tests {
         };
         let st = Store::open(":memory:").unwrap();
         let deps = Deps {
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -25482,6 +25667,7 @@ mod tests {
             };
             let st = Store::open(":memory:").unwrap();
             let deps = Deps {
+                run_branch: branch_of(repo.path().to_str().unwrap()),
                 repo: repo.path().to_str().unwrap().to_string(),
                 ..stub_deps(&st, &driver, Vec::new())
             };
@@ -25599,6 +25785,7 @@ mod tests {
         }];
         let driver = Stub::new();
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -25879,6 +26066,7 @@ mod tests {
             store: &st_store,
             driver: &driver,
             gates: &ExecRunner,
+            run_branch: None,
             repo: String::new(),
             grounder: Some(&grounder),
             graph: Some(&graph),
@@ -26615,6 +26803,7 @@ mod tests {
         seed_prior_window_s(&repo_path, &st, after);
         let deps = Deps {
             gates,
+            run_branch: branch_of(&repo_path),
             repo: repo_path,
             ..stub_deps(&st, driver, Vec::new())
         };
@@ -26757,7 +26946,7 @@ mod tests {
             .remove()
             .unwrap();
         assert!(
-            crate::worktree::Worktree::branch_has_work(repo, branch),
+            crate::worktree::Worktree::branch_has_work(repo, branch).unwrap(),
             "the seeded branch must carry committed work"
         );
     }
@@ -26815,6 +27004,7 @@ mod tests {
     fn resume_in(st: &Store, repo: &str) -> RunState {
         let driver = Stub::new();
         let deps = Deps {
+            run_branch: branch_of(repo),
             repo: repo.to_string(),
             ..stub_deps(st, &driver, Vec::new())
         };
@@ -26829,6 +27019,7 @@ mod tests {
         let cfg = Config::default();
         let driver = Stub::new();
         let deps = Deps {
+            run_branch: branch_of(repo),
             repo: repo.to_string(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -26958,6 +27149,7 @@ mod tests {
         let cfg = Config::default();
         let driver = Stub::new();
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -27088,6 +27280,7 @@ mod tests {
         let cfg = Config::default();
         let driver = Stub::new();
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -27411,6 +27604,7 @@ mod tests {
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -27463,6 +27657,7 @@ mod tests {
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -27514,6 +27709,7 @@ mod tests {
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -27879,6 +28075,7 @@ mod tests {
                 store,
                 driver: &driver,
                 gates: &ExecRunner,
+                run_branch: None,
                 repo: String::new(),
                 grounder: None,
                 graph: None,
@@ -27940,6 +28137,7 @@ mod tests {
                 store,
                 driver: &driver,
                 gates: &ExecRunner,
+                run_branch: None,
                 repo: String::new(),
                 grounder: None,
                 graph: None,
@@ -28094,6 +28292,7 @@ Recover by re-driving the reviewer and recording a SUBSTANTIVE result for one of
             let step = run_isolated(
                 &cfg,
                 &Deps {
+                    run_branch: branch_of(&repo_path),
                     repo: repo_path.clone(),
                     ..stub_deps(&store, &driver, Vec::new())
                 },
@@ -28441,6 +28640,7 @@ stage "implement" adjudicator "adj" failed
             green_digests: GreenDigests::after(&[]),
             verdict_key: VerdictKey::from_bytes(b"run-ctx-test-key"),
             gate_address: None,
+            run_base: String::new(),
             settled: Mutex::new(HashSet::new()),
             live_units: Mutex::new(HashMap::new()),
             compensations: Mutex::new(Vec::new()),
@@ -28758,6 +28958,7 @@ stage "implement" adjudicator "adj" failed
             ..approving_panel_stub(&["lens"])
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path,
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -28771,7 +28972,7 @@ stage "implement" adjudicator "adj" failed
             "a Failed-but-not-escalated unit must resume and re-run, not be skipped as terminal"
         );
         assert!(
-            crate::worktree::Worktree::branch_has_work(&deps.repo, &unit_branch("s"))
+            crate::worktree::Worktree::branch_has_work(&deps.repo, &unit_branch("s")).unwrap()
                 || repo.path().join("feature.rs").exists(),
             "the resumed unit reuses its deterministic branch - the prior rejected code persists"
         );
@@ -29011,6 +29212,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path,
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -29047,6 +29249,7 @@ stage "implement" adjudicator "adj" failed
             store: &st,
             driver: &driver,
             gates: &ExecRunner,
+            run_branch: None,
             repo: String::new(),
             grounder: None,
             graph: Some(&graph),
@@ -29551,6 +29754,7 @@ stage "implement" adjudicator "adj" failed
             store: &st,
             driver: &driver,
             gates: &ExecRunner,
+            run_branch: None,
             repo: String::new(),
             grounder: Some(&grep),
             graph: None,
@@ -29829,6 +30033,7 @@ stage "implement" adjudicator "adj" failed
             store: &st,
             driver: &driver,
             gates: &ExecRunner,
+            run_branch: None,
             repo: String::new(),
             grounder: Some(&grep),
             graph: None,
@@ -29945,6 +30150,7 @@ stage "implement" adjudicator "adj" failed
         let st = Store::open(":memory:").unwrap();
         let driver = Stub::answering(r#"{"verdict":"approve"}"#);
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -30028,6 +30234,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -30119,6 +30326,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -30151,6 +30359,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -30192,6 +30401,7 @@ stage "implement" adjudicator "adj" failed
         let store = Store::open(":memory:").unwrap();
         let driver = crate::driver::replay::ReplayDriver::new(&store);
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -30232,6 +30442,7 @@ stage "implement" adjudicator "adj" failed
                 store,
                 driver: &driver,
                 gates: &ExecRunner,
+                run_branch: branch_of(&repo_path),
                 repo: repo_path.clone(),
                 grounder: None,
                 graph: None,
@@ -30391,6 +30602,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -30500,6 +30712,7 @@ stage "implement" adjudicator "adj" failed
             store: &store,
             driver: &driver,
             gates: &ExecRunner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path,
             grounder: Some(&grep),
             graph: None,
@@ -30588,6 +30801,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -30634,6 +30848,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -30700,6 +30915,7 @@ stage "implement" adjudicator "adj" failed
         };
         lose_lane_0(&mut driver);
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -30807,6 +31023,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -30857,6 +31074,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -30921,6 +31139,7 @@ stage "implement" adjudicator "adj" failed
                 refuse(&mut driver, lane);
             }
             let deps = Deps {
+                run_branch: branch_of(&repo_path),
                 repo: repo_path.clone(),
                 ..stub_deps(&store, &driver, Vec::new())
             };
@@ -31011,6 +31230,7 @@ stage "implement" adjudicator "adj" failed
             let mut driver = approving_speculation_stub();
             refuse(&mut driver, 0);
             let deps = Deps {
+                run_branch: branch_of(&repo_path),
                 repo: repo_path.clone(),
                 ..stub_deps(&store, &driver, Vec::new())
             };
@@ -31048,6 +31268,7 @@ stage "implement" adjudicator "adj" failed
                 store,
                 driver: &driver,
                 gates: &ExecRunner,
+                run_branch: branch_of(&repo_path),
                 repo: repo_path.clone(),
                 grounder: None,
                 graph: None,
@@ -31176,6 +31397,7 @@ stage "implement" adjudicator "adj" failed
             let lines = Mutex::new(Vec::<String>::new());
             let log = |line: &str| lines.lock().unwrap().push(line.to_string());
             let deps = Deps {
+                run_branch: branch_of(&repo_path),
                 repo: repo_path.clone(),
                 log: &log,
                 ..stub_deps(&store, &driver, Vec::new())
@@ -31284,6 +31506,7 @@ stage "implement" adjudicator "adj" failed
                 ..Stub::new()
             };
             let deps = Deps {
+                run_branch: branch_of(&repo_path),
                 repo: repo_path.clone(),
                 ..stub_deps(&store, &driver, Vec::new())
             };
@@ -31371,6 +31594,7 @@ stage "implement" adjudicator "adj" failed
                 asked: Mutex::new(Vec::new()),
             };
             let deps = Deps {
+                run_branch: branch_of(repo.path().to_str().unwrap()),
                 repo: repo.path().to_str().unwrap().to_string(),
                 ..stub_deps(&store, &driver, Vec::new())
             };
@@ -31421,6 +31645,7 @@ stage "implement" adjudicator "adj" failed
             asked: Mutex::new(Vec::new()),
         };
         let deps = Deps {
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -31471,6 +31696,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path,
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -31520,6 +31746,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -31591,6 +31818,7 @@ stage "implement" adjudicator "adj" failed
                 store,
                 driver: &driver,
                 gates: &ExecRunner,
+                run_branch: branch_of(&repo_path),
                 repo: repo_path.clone(),
                 grounder: None,
                 graph: None,
@@ -31833,6 +32061,7 @@ stage "implement" adjudicator "adj" failed
             repo: repo_path.clone(),
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -31998,6 +32227,7 @@ stage "implement" adjudicator "adj" failed
 
         let driver = approving_speculation_stub();
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path,
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -32063,6 +32293,7 @@ stage "implement" adjudicator "adj" failed
 
         let driver = approving_speculation_stub();
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path,
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -32210,6 +32441,7 @@ stage "implement" adjudicator "adj" failed
         let told = seed(&store, &repo_path);
         let driver = approving_speculation_stub();
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path,
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -32317,6 +32549,7 @@ stage "implement" adjudicator "adj" failed
         let mut losing = approving_speculation_stub();
         let told = lose(&mut cfg, &mut losing);
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &losing, Vec::new())
         };
@@ -32344,6 +32577,7 @@ stage "implement" adjudicator "adj" failed
         grant_resume(&store, "s", 1);
         let driver = approving_speculation_stub();
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path,
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -32544,6 +32778,7 @@ stage "implement" adjudicator "adj" failed
             let mut driver = approving_speculation_stub();
             outage(&mut driver);
             let deps = Deps {
+                run_branch: branch_of(&repo_path),
                 repo: repo_path,
                 ..stub_deps(&store, &driver, Vec::new())
             };
@@ -32608,6 +32843,7 @@ stage "implement" adjudicator "adj" failed
         let st = Store::open(":memory:").unwrap();
         let driver = Stub::new();
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -33073,6 +33309,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -33132,6 +33369,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -33231,6 +33469,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -33311,6 +33550,7 @@ stage "implement" adjudicator "adj" failed
         // branch (from the prior window) is what conflicts.
         let driver = Stub::new();
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -33373,6 +33613,7 @@ stage "implement" adjudicator "adj" failed
         let cfg = Config::default();
         let driver = Stub::new();
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -33488,6 +33729,7 @@ stage "implement" adjudicator "adj" failed
         let cfg = Config::default();
         let driver = Stub::new();
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -33556,6 +33798,7 @@ stage "implement" adjudicator "adj" failed
         let cfg = Config::default();
         let driver = Stub::new();
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -33666,6 +33909,7 @@ stage "implement" adjudicator "adj" failed
             store: &store,
             driver: &driver,
             gates: &ExecRunner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             grounder: None,
             graph: None,
@@ -33735,6 +33979,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -33844,6 +34089,7 @@ stage "implement" adjudicator "adj" failed
         };
         let st = Store::open(":memory:").unwrap();
         let deps = Deps {
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -33939,6 +34185,7 @@ stage "implement" adjudicator "adj" failed
         let driver = session_stub(verdicts);
         let st = Store::open(":memory:").unwrap();
         let deps = Deps {
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -33971,6 +34218,7 @@ stage "implement" adjudicator "adj" failed
         run_isolated(
             &session_cfg(),
             &Deps {
+                run_branch: branch_of(&repo_path),
                 repo: repo_path.clone(),
                 ..stub_deps(&st, &first, Vec::new())
             },
@@ -33991,6 +34239,7 @@ stage "implement" adjudicator "adj" failed
         let rs = run_isolated(
             &session_cfg(),
             &Deps {
+                run_branch: branch_of(&repo_path),
                 repo: repo_path,
                 ..stub_deps(&st, &relaunched, Vec::new())
             },
@@ -34039,6 +34288,7 @@ stage "implement" adjudicator "adj" failed
         run_isolated(
             &session_cfg(),
             &Deps {
+                run_branch: branch_of(&repo_path),
                 repo: repo_path.clone(),
                 ..stub_deps(&st, &first, Vec::new())
             },
@@ -34047,6 +34297,7 @@ stage "implement" adjudicator "adj" failed
         run_isolated(
             &session_cfg(),
             &Deps {
+                run_branch: branch_of(&repo_path),
                 repo: repo_path,
                 ..stub_deps(&st, relaunched, Vec::new())
             },
@@ -34206,6 +34457,7 @@ stage "implement" adjudicator "adj" failed
             run_isolated(
                 &session_cfg(),
                 &Deps {
+                    run_branch: branch_of(&repo_path),
                     repo: repo_path.clone(),
                     ..stub_deps(&st, driver, Vec::new())
                 },
@@ -34651,6 +34903,7 @@ stage "implement" adjudicator "adj" failed
         let st = Store::open(":memory:").unwrap();
         let deps = Deps {
             gates: &flaky,
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -34693,6 +34946,7 @@ stage "implement" adjudicator "adj" failed
         };
         let st = Store::open(":memory:").unwrap();
         let deps = Deps {
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -34767,6 +35021,7 @@ stage "implement" adjudicator "adj" failed
             let lines = Mutex::new(Vec::<String>::new());
             let log = |line: &str| lines.lock().unwrap().push(line.to_string());
             let deps = Deps {
+                run_branch: branch_of(repo.path().to_str().unwrap()),
                 repo: repo.path().to_str().unwrap().to_string(),
                 log: &log,
                 ..stub_deps(&st, &driver, Vec::new())
@@ -35366,6 +35621,7 @@ stage "implement" adjudicator "adj" failed
         let outcome = run_isolated(
             &cfg,
             &Deps {
+                run_branch: branch_of(&repo_path),
                 repo: repo_path.clone(),
                 ..stub_deps(&st, &driver, Vec::new())
             },
@@ -36182,6 +36438,7 @@ stage "implement" adjudicator "adj" failed
             run_isolated(
                 &cfg,
                 &Deps {
+                    run_branch: branch_of(&repo_path),
                     repo: repo_path.clone(),
                     ..stub_deps(&st, stub, Vec::new())
                 },
@@ -36846,6 +37103,7 @@ stage "implement" adjudicator "adj" failed
         let st = Store::open(":memory:").unwrap();
         let driver = Stub::new();
         let deps = Deps {
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -37067,6 +37325,7 @@ stage "implement" adjudicator "adj" failed
             store: &store,
             driver: &driver,
             gates: &ExecRunner,
+            run_branch: None,
             repo: String::new(),
             grounder: Some(&grounder),
             graph: None,
@@ -37401,6 +37660,7 @@ stage "implement" adjudicator "adj" failed
             green_digests: GreenDigests::after(&[]),
             verdict_key: VerdictKey::from_bytes(b"run-ctx-test-key"),
             gate_address: None,
+            run_base: String::new(),
             settled: Mutex::new(HashSet::new()),
             live_units: Mutex::new(HashMap::new()),
             compensations: Mutex::new(Vec::new()),
@@ -37447,6 +37707,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path,
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -37521,6 +37782,7 @@ stage "implement" adjudicator "adj" failed
         let runner = RecordingRunner::new(&[]);
         let deps = Deps {
             gates: &runner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -37652,6 +37914,7 @@ stage "implement" adjudicator "adj" failed
         let store = Store::open(":memory:").unwrap();
         let driver = UnitDistinctWriter;
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path,
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -37723,6 +37986,7 @@ stage "implement" adjudicator "adj" failed
             let runner = RecordingRunner::new(&[]);
             let deps = Deps {
                 gates: &runner,
+                run_branch: branch_of(&repo_path),
                 repo: repo_path.clone(),
                 ..stub_deps(&store, &driver, Vec::new())
             };
@@ -38024,6 +38288,69 @@ stage "implement" adjudicator "adj" failed
         }
     }
 
+    /// THE RUN BASE IS READ ONCE: GIVEN a run whose `RunStarted` carries a base tip, WHEN the
+    /// context is built and then builds the environment of gates and spawns again and again, THEN
+    /// each build carries that base and none of them reads the event stream.
+    #[test]
+    fn the_run_base_is_read_once_at_context_build_never_per_build_environment() {
+        let inner = Store::open(":memory:").unwrap();
+        inner
+            .append(
+                STREAM,
+                ExpectedRevision::Any,
+                &[Event::new(
+                    crate::run::TYPE_RUN_STARTED,
+                    serde_json::to_vec(&json!({"run": "r", "base_tip": "base-sha"})).unwrap(),
+                )],
+            )
+            .unwrap();
+        let store = crate::test_support::ReadCountingStore::new(&inner);
+        let cfg = Config::default();
+        let driver = Stub::new();
+        let deps = stub_deps(&store, &driver, Vec::new());
+        let ctx = RunCtx::for_test(&cfg, &deps);
+        let built = store.reads().len();
+        for _ in 0..3 {
+            let env = ctx.build_env().unwrap();
+            assert!(
+                env.at("")
+                    .vars
+                    .iter()
+                    .any(|(k, v)| k == crate::spawn::RUN_BASE_ENV && v == "base-sha"),
+                "each build carries the recorded base"
+            );
+        }
+        assert_eq!(store.reads().len(), built, "no build reads the stream");
+    }
+
+    /// A RESUME NEVER READS AN UNANSWERED BRANCH AS NO WORK: GIVEN a unit recorded green last
+    /// window whose branch git cannot read past (HEAD unborn beside it), WHEN its resume phase is
+    /// decided, THEN the read is a git step's halt, never a fresh run over the branch's work.
+    #[test]
+    fn a_resume_whose_branch_read_git_cannot_answer_halts_rather_than_running_fresh() {
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        run_git(&repo_path, &["branch", &unit_branch("s")]);
+        run_git(&repo_path, &["checkout", "-q", "--orphan", "fresh"]);
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        let st = Stage {
+            name: "s".into(),
+            agent: "worker".into(),
+            ..Default::default()
+        };
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            repo: repo_path,
+            ..stub_deps(&store, &driver, Vec::new())
+        };
+        let mut ctx = RunCtx::for_test(&cfg, &deps);
+        ctx.prior_status.insert("s".into(), ledger::Status::Green);
+        let err = ctx.resume_phase(&st).unwrap_err();
+        assert!(err.0.contains(GIT_STEP_MARKER), "{}", err.0);
+    }
+
     #[test]
     fn a_units_per_unit_cache_is_reclaimed_when_its_worktree_is_removed() {
         // Gap 19 (the DOMINANT graceful path): a gate that runs INSIDE a unit's worktree
@@ -38060,6 +38387,7 @@ stage "implement" adjudicator "adj" failed
         let runner = RecordingRunner::with_side_effect(GateSideEffect::MaterializeCache);
         let deps = Deps {
             gates: &runner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -38120,6 +38448,7 @@ stage "implement" adjudicator "adj" failed
         let runner = RecordingRunner::with_side_effect(GateSideEffect::MaterializeCache);
         let deps = Deps {
             gates: &runner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -38190,6 +38519,7 @@ stage "implement" adjudicator "adj" failed
                 fail: HashSet::from(["ok".to_string()]),
                 ..RecordingRunner::with_side_effect(GateSideEffect::MaterializeCache)
             },
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             grounder: None,
             graph: None,
@@ -38324,6 +38654,7 @@ stage "implement" adjudicator "adj" failed
         let runner = RecordingRunner::with_side_effect(GateSideEffect::MaterializeCache);
         let deps = Deps {
             gates: &runner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -38376,6 +38707,7 @@ stage "implement" adjudicator "adj" failed
         let runner = RecordingRunner::with_side_effect(GateSideEffect::DeleteWorktree);
         let deps = Deps {
             gates: &runner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -38422,6 +38754,7 @@ stage "implement" adjudicator "adj" failed
         let runner = RecordingRunner::new(&[]);
         let deps = Deps {
             gates: &runner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -38503,6 +38836,7 @@ stage "implement" adjudicator "adj" failed
         let runner = RecordingRunner::with_side_effect(GateSideEffect::DeleteWorktree);
         let deps = Deps {
             gates: &runner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -38604,6 +38938,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -38681,6 +39016,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -38757,6 +39093,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -38850,6 +39187,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         });
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -38998,6 +39336,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -39101,6 +39440,7 @@ stage "implement" adjudicator "adj" failed
         let store = Store::open(":memory:").unwrap();
         let window = |driver: &Stub| {
             let deps = Deps {
+                run_branch: branch_of(repo),
                 repo: repo.to_string(),
                 ..stub_deps(&store, driver, Vec::new())
             };
@@ -39457,6 +39797,7 @@ stage "implement" adjudicator "adj" failed
 
         let driver = Stub::new();
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -39558,6 +39899,7 @@ stage "implement" adjudicator "adj" failed
             evidence: "error: No space left on device (os error 28)".into(),
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             gates: &outage,
             ..stub_deps(&st, &driver, Vec::new())
@@ -39698,6 +40040,7 @@ stage "implement" adjudicator "adj" failed
         // its whole lifecycle; this window spawns none of it (the premise just after).
         let driver = approving_panel_stub(&["lens"]);
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -39827,6 +40170,7 @@ stage "implement" adjudicator "adj" failed
 
         let driver = Stub::new();
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -39938,6 +40282,7 @@ stage "implement" adjudicator "adj" failed
             cfg.workflow.gates.insert("ok".into(), gate_def(gate));
             let driver = Stub::new();
             let deps = Deps {
+                run_branch: branch_of(&repo_path),
                 repo: repo_path.clone(),
                 ..stub_deps(&store, &driver, Vec::new())
             };
@@ -40133,6 +40478,7 @@ stage "implement" adjudicator "adj" failed
 
         let driver = Stub::new();
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -40205,12 +40551,13 @@ stage "implement" adjudicator "adj" failed
         let store = Store::open(":memory:").unwrap();
         let driver = Stub::new();
         let deps = Deps {
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&store, &driver, Vec::new())
         };
         let ctx = RunCtx::for_test(&cfg, &deps);
 
-        let got = ctx
+        let (got, _) = ctx
             .regenerate_conflicted_paths(&wt, "regen-unit", &["regen.txt".to_string()])
             .expect("a registered regenerable path must regenerate and commit cleanly");
 
@@ -40245,6 +40592,7 @@ stage "implement" adjudicator "adj" failed
         let runner = RecordingRunner::faulting_at(&[], 0);
         let deps = Deps {
             gates: &runner,
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -40315,6 +40663,7 @@ stage "implement" adjudicator "adj" failed
         let runner = RecordingRunner::with_side_effect(GateSideEffect::DeleteWorktree);
         let deps = Deps {
             gates: &runner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -40393,6 +40742,7 @@ stage "implement" adjudicator "adj" failed
         let runner = RecordingRunner::with_side_effect(GateSideEffect::DeleteWorktree);
         let deps = Deps {
             gates: &runner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -40525,6 +40875,7 @@ stage "implement" adjudicator "adj" failed
             store: &store,
             driver: &driver,
             gates: &ExecRunner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             grounder: None,
             graph: None,
@@ -40616,6 +40967,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -40704,6 +41056,7 @@ stage "implement" adjudicator "adj" failed
             store: &store,
             driver: &driver,
             gates: &runner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path,
             grounder: None,
             graph: None,
@@ -41125,6 +41478,7 @@ stage "implement" adjudicator "adj" failed
         let store = ReadCountingStore::new(&inner);
         let driver = crate::driver::replay::ReplayDriver::new(&store);
         let deps = Deps {
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -41236,6 +41590,7 @@ stage "implement" adjudicator "adj" failed
             store: &st,
             driver: &driver,
             gates: &ExecRunner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path,
             grounder: None,
             graph: Some(&graph),
@@ -41357,6 +41712,7 @@ stage "implement" adjudicator "adj" failed
         let runner = RecordingRunner::new(&[]);
         let deps = Deps {
             gates: &runner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -41477,6 +41833,7 @@ stage "implement" adjudicator "adj" failed
         );
         let store = Store::open(":memory:").unwrap();
         let deps = Deps {
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&store, driver, Vec::new())
         };
@@ -41882,6 +42239,7 @@ stage "implement" adjudicator "adj" failed
             store: &store,
             driver: &driver,
             gates: &ExecRunner,
+            run_branch: None,
             repo: String::new(),
             grounder: Some(&grep),
             graph: None,
@@ -41929,11 +42287,13 @@ stage "implement" adjudicator "adj" failed
                 Ok(gate::GateResult {
                     pass: false,
                     evidence: self.evidence.clone(),
+                    ..Default::default()
                 })
             } else {
                 Ok(gate::GateResult {
                     pass: true,
                     evidence: "PASS".into(),
+                    ..Default::default()
                 })
             }
         }
@@ -42006,6 +42366,7 @@ stage "implement" adjudicator "adj" failed
             store: &st,
             driver: &driver,
             gates: &ExecRunner,
+            run_branch: None,
             repo: String::new(),
             grounder: Some(&grep),
             graph: Some(&graph),
@@ -42109,6 +42470,7 @@ stage "implement" adjudicator "adj" failed
             store: &st,
             driver: &driver,
             gates: &ExecRunner,
+            run_branch: None,
             repo: String::new(),
             grounder: Some(&grep),
             graph: Some(&graph),
@@ -42143,6 +42505,7 @@ stage "implement" adjudicator "adj" failed
         }
         let st = Store::open(":memory:").unwrap();
         let deps = Deps {
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -42176,6 +42539,7 @@ stage "implement" adjudicator "adj" failed
         };
         let st = Store::open(":memory:").unwrap();
         let deps = Deps {
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -42555,6 +42919,7 @@ stage "implement" adjudicator "adj" failed
             cfg.workflow.build = build_declaring(declared, 3);
             let st = Store::open(":memory:").unwrap();
             let deps = Deps {
+                run_branch: branch_of(&repo_path),
                 repo: repo_path.clone(),
                 ..stub_deps(&st, &driver, Vec::new())
             };
@@ -42927,6 +43292,7 @@ stage "implement" adjudicator "adj" failed
             store: &st,
             driver: &driver,
             gates: &flaky,
+            run_branch: None,
             repo: String::new(),
             grounder: None,
             graph: None,
@@ -43161,6 +43527,7 @@ stage "implement" adjudicator "adj" failed
             store: &st,
             driver: &driver,
             gates: &always_fail,
+            run_branch: None,
             repo: String::new(),
             grounder: None,
             graph: None,
@@ -43245,6 +43612,7 @@ stage "implement" adjudicator "adj" failed
                 store: &st,
                 driver: &driver,
                 gates: &always_fail,
+                run_branch: None,
                 repo: String::new(),
                 grounder: None,
                 graph: None,
@@ -43506,6 +43874,7 @@ stage "implement" adjudicator "adj" failed
         // the Gap-18 respawn loop).
         let driver = Stub::answering("reviewed the diff");
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -43886,13 +44255,14 @@ stage "implement" adjudicator "adj" failed
                 } else {
                     format!("FAIL\ngate {} failed", g.id)
                 },
+                ..Default::default()
             })
         }
     }
 
     /// The guard-probe fault a [`RecordingRunner`] returns at its faulting run.
     fn probe_fault() -> gate::ProbeFault {
-        gate::ProbeFault {
+        gate::ProbeFault::Guard {
             guard: "/scratch/not-a-directory/cargo-target.lock".into(),
             error: "Not a directory (os error 20)".into(),
         }
@@ -43988,6 +44358,7 @@ stage "implement" adjudicator "adj" failed
             Ok(gate::GateResult {
                 pass,
                 evidence: if pass { "PASS" } else { "FAIL: transient" }.into(),
+                ..Default::default()
             })
         }
     }
@@ -44024,6 +44395,7 @@ stage "implement" adjudicator "adj" failed
         };
         let deps = Deps {
             gates: runner,
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -44113,6 +44485,7 @@ stage "implement" adjudicator "adj" failed
                 return Ok(gate::GateResult {
                     pass: false,
                     evidence: "FAIL: the first run".into(),
+                    ..Default::default()
                 });
             }
             Ok(res)
@@ -44610,6 +44983,7 @@ stage "implement" adjudicator "adj" failed
             let driver = JoiningDriver { store: &store, row };
             let deps = Deps {
                 gates: &runner,
+                run_branch: branch_of(repo.path().to_str().unwrap()),
                 repo: repo.path().to_str().unwrap().to_string(),
                 ..stub_deps(&store, &driver, Vec::new())
             };
@@ -44733,6 +45107,7 @@ stage "implement" adjudicator "adj" failed
         };
         let deps = Deps {
             gates: &runner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path,
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -44950,11 +45325,37 @@ stage "implement" adjudicator "adj" failed
         Writes(usize),
         /// Writes one file, `out-0.rs`, and commits it.
         Commits,
+        /// Overwrites this tracked file and leaves the edit uncommitted.
+        Edits(&'static str),
     }
 
-    /// A gate runner that passes, doing `change` to the tree it gates while it runs.
+    impl TreeChange {
+        /// Do this change to the tree at `dir`.
+        fn apply(self, dir: &str) {
+            let written = match self {
+                TreeChange::Nothing => 0,
+                TreeChange::Writes(n) => n,
+                TreeChange::Commits => 1,
+                TreeChange::Edits(file) => {
+                    std::fs::write(Path::new(dir).join(file), "edited by the gate\n").unwrap();
+                    0
+                }
+            };
+            for n in 0..written {
+                std::fs::write(Path::new(dir).join(format!("out-{n}.rs")), "x\n").unwrap();
+            }
+            if matches!(self, TreeChange::Commits) {
+                run_git(dir, &["add", "-A"]);
+                run_git(dir, &["commit", "-q", "-m", "by the gate"]);
+            }
+        }
+    }
+
+    /// A gate runner that passes, doing `change` to the tree it gates while it runs, and counts
+    /// its runs.
     struct TreeChangingRunner {
         change: TreeChange,
+        runs: AtomicU32,
     }
     impl gate::Runner for TreeChangingRunner {
         fn run(
@@ -44969,21 +45370,12 @@ stage "implement" adjudicator "adj" failed
             _build_env: &gate::BuildEnv,
             _budget: &BuildBudget,
         ) -> Result<gate::GateResult, gate::ProbeFault> {
-            let written = match self.change {
-                TreeChange::Nothing => 0,
-                TreeChange::Writes(n) => n,
-                TreeChange::Commits => 1,
-            };
-            for n in 0..written {
-                std::fs::write(Path::new(dir).join(format!("out-{n}.rs")), "x\n").unwrap();
-            }
-            if matches!(self.change, TreeChange::Commits) {
-                run_git(dir, &["add", "-A"]);
-                run_git(dir, &["commit", "-q", "-m", "by the gate"]);
-            }
+            self.runs.fetch_add(1, Ordering::SeqCst);
+            self.change.apply(dir);
             Ok(gate::GateResult {
                 pass: true,
                 evidence: "PASS".into(),
+                ..Default::default()
             })
         }
     }
@@ -45016,9 +45408,13 @@ stage "implement" adjudicator "adj" failed
             cfg.workflow.gates.insert("g".into(), gate_def("true"));
             let store = Store::open(":memory:").unwrap();
             let driver = Stub::new();
-            let runner = TreeChangingRunner { change };
+            let runner = TreeChangingRunner {
+                change,
+                runs: AtomicU32::new(0),
+            };
             let deps = Deps {
                 gates: &runner,
+                run_branch: branch_of(&dir),
                 repo: dir.clone(),
                 ..stub_deps(&store, &driver, Vec::new())
             };
@@ -45073,6 +45469,347 @@ stage "implement" adjudicator "adj" failed
                 "{change:?}: only an unchanged tree is addressed"
             );
         }
+    }
+
+    /// A gate the driver runs on a verb's request records its run's note before its evidence,
+    /// in the reply and in the recorded verdict.
+    #[test]
+    fn a_gate_the_verb_runs_records_its_note_beside_its_evidence() {
+        let repo = temp_git_project_with_commit();
+        let dir = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.workflow.gates.insert("g".into(), gate_def("true"));
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            gates: &Noted(true),
+            run_branch: branch_of(&dir),
+            repo: dir.clone(),
+            ..stub_deps(&store, &driver, Vec::new())
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+        let _live = ctx.live_unit(&dir, "u");
+        let GateReply::Ran { evidence, .. } = ctx.answer_gate_request(GateRequest {
+            dir: dir.clone(),
+            gate: "g".into(),
+        }) else {
+            panic!("the run gates the commit");
+        };
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert_eq!(
+            (
+                evidence,
+                events
+                    .iter()
+                    .find(|e| is_gate_verdict_row(e))
+                    .map(verdict_evidence)
+            ),
+            (
+                format!("{NOTED_NOTE}PASS"),
+                Some(format!("{NOTED_NOTE}PASS"))
+            ),
+            "the reply and the verdict carry the note, then the evidence"
+        );
+    }
+
+    /// THE DRIVER'S PASS ADDRESSES ONLY THE COMMIT IT GATED: GIVEN a clean committed worktree and
+    /// a gate that exits 0, WHEN the driver's inline battery runs it at two attempts, the tree
+    /// restored between them, THEN a gate that left the tracked tree as it found it records a pass
+    /// with a digest that answers the second attempt unrun, AND a gate that edited a tracked file
+    /// records a non-pass with no digest naming the file, demotes nothing, and runs again at the
+    /// second attempt rather than answering it from a cached green, AND an untracked residue or a
+    /// gate's own commit, which the drive's own paths own, keeps its pass.
+    #[test]
+    fn a_gate_that_changes_the_tree_while_the_driver_runs_it_records_a_non_pass_and_no_green() {
+        let rows: [(TreeChange, bool, u32); 4] = [
+            (TreeChange::Nothing, true, 1),
+            (TreeChange::Writes(1), true, 1),
+            (TreeChange::Commits, true, 2),
+            (TreeChange::Edits("tracked.rs"), false, 2),
+        ];
+        for (change, passes, runs) in rows {
+            let repo = temp_git_project_with_commit();
+            let dir = repo.path().to_str().unwrap().to_string();
+            std::fs::write(repo.path().join("tracked.rs"), "committed\n").unwrap();
+            run_git(&dir, &["add", "tracked.rs"]);
+            run_git(&dir, &["commit", "-q", "-m", "a tracked file"]);
+            let mut cfg = Config::default();
+            cfg.workflow.gates.insert("g".into(), gate_def("true"));
+            let st = Stage {
+                name: "u".into(),
+                gates: vec!["g".into()],
+                // A graduated gate, so a demotion would be visible.
+                autonomy: "silent".into(),
+                ..Default::default()
+            };
+            let store = Store::open(":memory:").unwrap();
+            let driver = Stub::new();
+            let runner = TreeChangingRunner {
+                change,
+                runs: AtomicU32::new(0),
+            };
+            let deps = Deps {
+                gates: &runner,
+                repo: dir.clone(),
+                ..stub_deps(&store, &driver, Vec::new())
+            };
+            let ctx = RunCtx::for_test(&cfg, &deps);
+            let mut outcomes = Vec::new();
+            for attempt in [1, 2] {
+                let outcome = ctx
+                    .run_gates(&st, &dir, attempt, GateSelection::Exhaustive)
+                    .unwrap();
+                outcomes.push(outcome.pass);
+                run_git(&dir, &["checkout", "--", "tracked.rs"]);
+            }
+            assert_eq!(
+                outcomes,
+                [passes, passes],
+                "{change:?}: each battery's outcome"
+            );
+            assert_eq!(
+                runner.runs.load(Ordering::SeqCst),
+                runs,
+                "{change:?}: the gate's runs across the two batteries"
+            );
+            let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+            let verdicts: Vec<&Event> = events
+                .iter()
+                .filter(|e| e.type_ == contextgraph::TYPE_GATE_VERDICT && !is_settle_record(e))
+                .collect();
+            assert_eq!(verdicts.len(), 2, "{change:?}: one verdict per battery");
+            for verdict in &verdicts {
+                let data: serde_json::Value = serde_json::from_slice(&verdict.data).unwrap();
+                let evidence = data["evidence"].as_str().unwrap_or_default();
+                assert_eq!(
+                    (data["pass"].as_bool(), evidence.contains(WORKTREE_CHANGED)),
+                    (Some(passes), !passes),
+                    "{change:?}: the recorded verdict: {evidence}"
+                );
+                assert!(passes || evidence.contains("tracked.rs"), "{evidence}");
+            }
+            assert_eq!(
+                verdicts[0].meta.contains_key(META_INPUT_DIGEST),
+                passes,
+                "{change:?}: only an unchanged tree is addressed"
+            );
+            assert!(
+                !events.iter().any(|e| e.type_ == TYPE_GATE_DEMOTED),
+                "{change:?}: a result addressing no commit moves no ratchet"
+            );
+        }
+    }
+
+    /// A gate runner that passes every gate, doing to the tree it gates the change it names for
+    /// that gate, if any.
+    struct ByGate([(&'static str, TreeChange); 2]);
+    impl gate::Runner for ByGate {
+        fn run(
+            &self,
+            g: &Gate,
+            dir: &str,
+            _target: &str,
+            _gate_scratch: &str,
+            _build_cache_dir: &str,
+            _build_cache_guard: &str,
+            _store_fence: &str,
+            _build_env: &gate::BuildEnv,
+            _budget: &BuildBudget,
+        ) -> Result<gate::GateResult, gate::ProbeFault> {
+            if let Some((_, change)) = self.0.iter().find(|(id, _)| *id == g.id) {
+                change.apply(dir);
+            }
+            Ok(gate::GateResult {
+                pass: true,
+                evidence: "PASS".into(),
+                ..Default::default()
+            })
+        }
+    }
+
+    /// The commit a gate's run began on
+    /// ([`a_gate_is_judged_on_what_it_changed_from_the_tree_it_began_on`]).
+    #[derive(Clone, Copy, Debug)]
+    enum Began {
+        /// The commit the battery began on.
+        AtTheStart,
+        /// The commit the battery's first gate made.
+        AtTheFirstGatesCommit,
+    }
+
+    /// EACH GATE IS JUDGED ON WHAT IT CHANGED: GIVEN a two-gate battery on a committed worktree
+    /// holding the tracked files `tracked.rs` and `other.rs`, WHEN each gate changes the tree as
+    /// its row says, THEN each verdict compares the tree to the one its own run began on: a gate
+    /// that edits a tracked file is refused naming only its own edits, whatever an earlier gate
+    /// committed or left; a gate that begins on a tree with tracked changes keeps its pass but
+    /// records no digest, so it caches nothing, and its record names those changes; and a verdict
+    /// records, and its digest addresses, the commit its own run began on.
+    #[test]
+    fn a_gate_is_judged_on_what_it_changed_from_the_tree_it_began_on() {
+        use Began::{AtTheFirstGatesCommit as Moved, AtTheStart as Start};
+        use TreeChange::{Commits, Edits, Nothing};
+        // Per gate: whether it passes, the paths its refusal names, the commit it began on,
+        // whether its digest addresses that commit, and the uncommitted tracked changes its record
+        // says it began on.
+        type Expect = (
+            bool,
+            Option<&'static str>,
+            Began,
+            bool,
+            Option<&'static str>,
+        );
+        let rows: [(&str, bool, [TreeChange; 2], [Expect; 2]); 5] = [
+            (
+                "a commit, then an edit",
+                false,
+                [Commits, Edits("tracked.rs")],
+                [
+                    (true, None, Start, true, None),
+                    (false, Some("tracked.rs"), Moved, false, None),
+                ],
+            ),
+            (
+                "a start with tracked changes",
+                true,
+                [Nothing, Nothing],
+                [
+                    (true, None, Start, false, Some("tracked.rs")),
+                    (true, None, Start, false, Some("tracked.rs")),
+                ],
+            ),
+            (
+                "an earlier gate's edit",
+                false,
+                [Edits("tracked.rs"), Nothing],
+                [
+                    (false, Some("tracked.rs"), Start, false, None),
+                    (true, None, Start, false, Some("tracked.rs")),
+                ],
+            ),
+            (
+                "an edit beside an earlier gate's",
+                false,
+                [Edits("tracked.rs"), Edits("other.rs")],
+                [
+                    (false, Some("tracked.rs"), Start, false, None),
+                    (false, Some("other.rs"), Start, false, Some("tracked.rs")),
+                ],
+            ),
+            (
+                "a commit, then a pass",
+                false,
+                [Commits, Nothing],
+                [
+                    (true, None, Start, true, None),
+                    (true, None, Moved, true, None),
+                ],
+            ),
+        ];
+        let between = |text: &str, from: &str, to: &str| {
+            text.split_once(from)
+                .and_then(|(_, rest)| rest.split_once(to))
+                .map(|(within, _)| within.to_string())
+        };
+        for (row, dirty_start, [first, second], expected) in rows {
+            let repo = temp_git_project_with_commit();
+            let dir = repo.path().to_str().unwrap().to_string();
+            for file in ["tracked.rs", "other.rs"] {
+                std::fs::write(repo.path().join(file), "committed\n").unwrap();
+            }
+            run_git(&dir, &["add", "tracked.rs", "other.rs"]);
+            run_git(&dir, &["commit", "-q", "-m", "two tracked files"]);
+            if dirty_start {
+                std::fs::write(repo.path().join("tracked.rs"), "edited before\n").unwrap();
+            }
+            let start = crate::worktree::head_sha_of(&dir);
+            let mut cfg = Config::default();
+            for g in ["g1", "g2"] {
+                cfg.workflow.gates.insert(g.into(), gate_def("true"));
+            }
+            let st = Stage {
+                name: "u".into(),
+                gates: vec!["g1".into(), "g2".into()],
+                ..Default::default()
+            };
+            let store = Store::open(":memory:").unwrap();
+            let driver = Stub::new();
+            let runner = ByGate([("g1", first), ("g2", second)]);
+            let deps = Deps {
+                gates: &runner,
+                repo: dir.clone(),
+                ..stub_deps(&store, &driver, Vec::new())
+            };
+            let ctx = RunCtx::for_test(&cfg, &deps);
+            ctx.run_gates(&st, &dir, 1, GateSelection::Exhaustive)
+                .unwrap();
+            let moved = crate::worktree::head_sha_of(&dir);
+            let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+            type Got = (bool, Option<String>, String, Option<String>, Option<String>);
+            let got: Vec<Got> = events
+                .iter()
+                .filter(|e| is_gate_verdict_row(e))
+                .map(|e| {
+                    let data = serde_json::from_slice::<GateVerdictData>(&e.data).unwrap();
+                    let digest = e.meta.get(META_INPUT_DIGEST).map(String::as_str);
+                    (
+                        data.pass,
+                        between(&data.evidence, "changed: ", ". To gate it"),
+                        e.meta.get(META_GATE_COMMIT).cloned().unwrap_or_default(),
+                        digest.and_then(digest_address).map(String::from),
+                        between(
+                            &data.evidence,
+                            "the gate began on uncommitted tracked changes (",
+                            "), so its result addresses no commit and is not cached; ",
+                        ),
+                    )
+                })
+                .collect();
+            let began = |b: Began| match b {
+                Start => start.clone(),
+                Moved => moved.clone(),
+            };
+            let want: Vec<Got> = expected
+                .iter()
+                .map(|&(pass, changed, b, addressed, began_on)| {
+                    (
+                        pass,
+                        changed.map(String::from),
+                        began(b),
+                        addressed.then(|| began(b)),
+                        began_on.map(String::from),
+                    )
+                })
+                .collect();
+            assert_eq!(
+                got, want,
+                "{row}: (pass, refused for, began on, digest addresses, began on changes)"
+            );
+        }
+    }
+
+    /// A GATE BEGUN ON UNREADABLE TRACKED CHANGES ADDRESSES NO COMMIT: GIVEN a committed worktree
+    /// whose tracked file holds an edit, and a gate run that began there when its tracked changes
+    /// could not be read, THEN the run addresses no commit, its record says why, and the edit is
+    /// not laid to the run, since nothing records what the tree held when it began.
+    #[test]
+    fn a_gate_begun_on_unreadable_tracked_changes_addresses_no_commit_and_says_why() {
+        let repo = temp_git_project_with_commit();
+        let dir = repo.path().to_str().unwrap().to_string();
+        std::fs::write(repo.path().join("tracked.rs"), "committed\n").unwrap();
+        run_git(&dir, &["add", "tracked.rs"]);
+        run_git(&dir, &["commit", "-q", "-m", "a tracked file"]);
+        std::fs::write(repo.path().join("tracked.rs"), "edited\n").unwrap();
+        let start = GateStart {
+            head: crate::worktree::head_sha_of(&dir),
+            changes: Err("git status warned".into()),
+        };
+        assert_eq!(start.commit(), "");
+        assert_eq!(
+            start.unaddressed(),
+            "the gate began on tracked changes that are unreadable (git status warned), so its \
+             result addresses no commit and is not cached; "
+        );
+        assert_eq!(start.refusal(&dir, "g").ok(), Some(None));
     }
 
     /// A REPLAY WALKS WHAT A RUN SETTLED: GIVEN a run that passed its inline and deferred gates
@@ -45164,6 +45901,7 @@ stage "implement" adjudicator "adj" failed
             store: &store,
             driver: &driver,
             gates: &runner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path,
             grounder: Some(&grep),
             graph: None,
@@ -45250,6 +45988,7 @@ stage "implement" adjudicator "adj" failed
         });
         let deps = Deps {
             gates: &runner,
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -45292,6 +46031,7 @@ stage "implement" adjudicator "adj" failed
             store: &store,
             driver: &driver,
             gates: &runner,
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             grounder: None,
             graph: None,
@@ -45504,6 +46244,7 @@ stage "implement" adjudicator "adj" failed
         let runner = RecordingRunner::new(&[]);
         let deps = Deps {
             gates: &runner,
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             grounder: Some(&grounder),
             ..stub_deps(&store, &driver, Vec::new())
@@ -45596,6 +46337,7 @@ stage "implement" adjudicator "adj" failed
             store: &store,
             driver: &driver,
             gates: &runner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path,
             grounder: Some(&grounder),
             graph: None,
@@ -45827,6 +46569,7 @@ stage "implement" adjudicator "adj" failed
         };
         let store = Store::open(":memory:").unwrap();
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             gates: &ExecRunner,
             grounder: Some(&grounder),
@@ -45894,6 +46637,7 @@ stage "implement" adjudicator "adj" failed
             store: &store,
             driver: &driver,
             gates: &runner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path,
             grounder: Some(&grounder),
             graph: None,
@@ -45945,6 +46689,7 @@ stage "implement" adjudicator "adj" failed
             store: &store,
             driver: &driver,
             gates: &runner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path,
             grounder: Some(&grounder),
             graph: None,
@@ -46244,6 +46989,7 @@ stage "implement" adjudicator "adj" failed
             store: &store,
             driver: &driver,
             gates: &ExecRunner,
+            run_branch: None,
             repo: String::new(),
             grounder: Some(&grep),
             graph: None,
@@ -46268,6 +47014,7 @@ stage "implement" adjudicator "adj" failed
             store: &store,
             driver: &driver,
             gates: &ExecRunner,
+            run_branch: None,
             repo: String::new(),
             grounder: Some(&grep),
             graph: Some(&graph),
@@ -46716,6 +47463,7 @@ stage "implement" adjudicator "adj" failed
             store: &store,
             driver: &driver,
             gates: &ExecRunner,
+            run_branch: None,
             repo: String::new(),
             grounder: Some(&symbols),
             graph: None,
@@ -46814,6 +47562,7 @@ stage "implement" adjudicator "adj" failed
             store: &store,
             driver: &driver,
             gates: &ExecRunner,
+            run_branch: None,
             repo: String::new(),
             grounder: Some(&SeedOverGround),
             graph: None,
@@ -47602,6 +48351,7 @@ stage "implement" adjudicator "adj" failed
             store: &store,
             driver: &driver,
             gates: &runner,
+            run_branch: None,
             repo: String::new(),
             grounder: Some(&structural),
             graph: None,
@@ -47640,6 +48390,7 @@ stage "implement" adjudicator "adj" failed
             store: &store,
             driver: &driver,
             gates: &runner,
+            run_branch: None,
             repo: String::new(),
             grounder: Some(&plain),
             graph: None,
@@ -47774,6 +48525,7 @@ stage "implement" adjudicator "adj" failed
             store: &store,
             driver: &driver,
             gates: &runner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path,
             grounder: Some(&grounder),
             graph: None,
@@ -47936,6 +48688,7 @@ stage "implement" adjudicator "adj" failed
             store: &store,
             driver: &driver,
             gates: &runner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path,
             grounder: Some(&grounder),
             graph: None,
@@ -48145,6 +48898,7 @@ stage "implement" adjudicator "adj" failed
         let runner = RecordingRunner::new(&[]);
         let deps = Deps {
             gates: &runner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -48603,6 +49357,7 @@ stage "implement" adjudicator "adj" failed
             store: &store,
             driver,
             gates: &runner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             grounder: None,
             graph: None,
@@ -48869,6 +49624,7 @@ stage "implement" adjudicator "adj" failed
         let runner = RecordingRunner::new(&[]);
         let deps = Deps {
             gates: &runner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -48981,6 +49737,7 @@ stage "implement" adjudicator "adj" failed
             repo: repo_path.clone(),
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -49243,6 +50000,284 @@ stage "implement" adjudicator "adj" failed
         }
     }
 
+    /// The rollback of a merge whose post-merge re-gate went red moves only the run branch: an
+    /// uncommitted edit the operator holds in the checkout, to a file no unit touches, is still
+    /// there once the merge is undone.
+    #[test]
+    fn a_red_post_merge_regate_keeps_the_operators_uncommitted_edit() {
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let file = |name: &str| Path::new(&repo_path).join(name);
+        std::fs::write(file("m.rs"), MERGE_BREAK_BASE).unwrap();
+        std::fs::write(file("notes.txt"), "committed\n").unwrap();
+        for args in [
+            &["add", "m.rs", "notes.txt"][..],
+            &["commit", "-q", "-m", "base"][..],
+        ] {
+            run_git(&repo_path, args);
+        }
+        let edit = "the operator's uncommitted edit\n";
+        std::fs::write(file("notes.txt"), edit).unwrap();
+
+        let mut cfg = Config::default();
+        cfg.workflow.defaults.max_retries = 1;
+        for id in ["worker", "lens", "judge"] {
+            cfg.agents.insert(id.into(), agent(id));
+        }
+        cfg.workflow.gates.insert(
+            "g".into(),
+            gate_def("c=$(grep -c MARK m.rs 2>/dev/null); [ \"${c:-0}\" -le 1 ]"),
+        );
+        let panel = crate::config::ReviewPanel {
+            lenses: vec!["lens".into()],
+            adjudicator: "judge".into(),
+            ..Default::default()
+        };
+        for name in ["unit-a", "unit-b"] {
+            let stage = Stage {
+                name: name.into(),
+                agent: "worker".into(),
+                gates: vec!["g".into()],
+                on_pass: "merge".into(),
+                review: panel.clone(),
+                ..Default::default()
+            };
+            cfg.workflow.stages.insert(name.into(), stage);
+        }
+
+        let store = Store::open(":memory:").unwrap();
+        let driver = MergeBreakDriver {
+            repo: repo_path.clone(),
+        };
+        let deps = Deps {
+            run_branch: branch_of(&repo_path),
+            repo: repo_path.clone(),
+            ..stub_deps(&store, &driver, Vec::new())
+        };
+        let rs = run_isolated(&cfg, &deps).unwrap();
+
+        let escalated = ["unit-a", "unit-b"]
+            .iter()
+            .filter(|u| rs.units[**u].status == ledger::Status::Escalated)
+            .count();
+        assert_eq!(escalated, 1, "one merge went red and was rolled back");
+        let merged = std::fs::read_to_string(file("m.rs")).unwrap();
+        assert_eq!(merged.matches("MARK").count(), 1, "{merged}");
+        assert_eq!(std::fs::read_to_string(file("notes.txt")).unwrap(), edit);
+    }
+
+    /// A move of the run branch runs only while the checkout holds the branch the run names
+    /// ([`Deps::run_branch`]): a checkout on another branch or a detached HEAD, or a run over a
+    /// repo that names no branch, halts the move as a git step before git runs it, naming what
+    /// the checkout holds and the run's own branch.
+    #[test]
+    fn a_move_refuses_unless_the_checkout_holds_the_branch_the_run_names() {
+        let named = |repo: &str| Some(git_out(repo, &["symbolic-ref", "--short", "HEAD"]));
+        let unnamed = |_: &str| None;
+        type Names = fn(&str) -> Option<String>;
+        for (left, names, switch, refusal) in [
+            ("stays", named as Names, &[][..], None),
+            (
+                "another branch",
+                named,
+                &["checkout", "-q", "-b", "elsewhere"][..],
+                Some("holds branch elsewhere, not the run's branch "),
+            ),
+            (
+                "a detached HEAD",
+                named,
+                &["checkout", "-q", "--detach"][..],
+                Some("holds a detached HEAD, not the run's branch "),
+            ),
+            (
+                "a run naming no branch",
+                unnamed as Names,
+                &[][..],
+                Some("and the run names no branch of its own"),
+            ),
+        ] {
+            let repo = temp_git_project_with_commit();
+            let repo_path = repo.path().to_str().unwrap().to_string();
+            let store = Store::open(":memory:").unwrap();
+            let driver = Stub::new();
+            let deps = Deps {
+                repo: repo_path.clone(),
+                run_branch: names(&repo_path),
+                ..stub_deps(&store, &driver, Vec::new())
+            };
+            let cfg = Config::default();
+            let ctx = RunCtx::for_test(&cfg, &deps);
+            if !switch.is_empty() {
+                run_git(&repo_path, switch);
+            }
+            let ran = std::cell::Cell::new(false);
+            let moved = ctx.moving_the_run_branch(|| {
+                ran.set(true);
+                Ok::<_, worktree::Error>(())
+            });
+            assert_eq!(ran.get(), refusal.is_none(), "{left}");
+            match (refusal, moved) {
+                (None, Ok(())) => {}
+                (Some(refusal), Err(e)) => {
+                    assert!(e.0.contains(GIT_STEP_MARKER), "{left}: {e}");
+                    let wanted = match &deps.run_branch {
+                        Some(branch) => format!("{refusal}{branch}"),
+                        None => refusal.to_string(),
+                    };
+                    assert!(e.0.contains(&wanted), "{left}: {e}");
+                }
+                (refusal, moved) => panic!("{left}: wanted {refusal:?}, got {moved:?}"),
+            }
+        }
+    }
+
+    /// A drive that holds before it lands, followed by a switch of the checkout to another
+    /// branch and the next drive over the same deps (the `rigger run` hold loop's re-drive),
+    /// refuses the landing, naming the run's own branch, and moves neither branch.
+    #[test]
+    fn a_checkout_switched_between_drives_refuses_the_next_drives_landing() {
+        /// Parks the implementer's first spawn, then writes its file; reviewers approve.
+        #[derive(Default)]
+        struct ParksOnce(std::sync::atomic::AtomicBool);
+        impl AgentDriver for ParksOnce {
+            fn spawn(
+                &self,
+                _a: &AgentDef,
+                _p: &str,
+                opts: &SpawnOpts,
+                _emit: &dyn Fn(&str, serde_json::Value) -> Result<(), Error>,
+            ) -> Result<AgentResult, Error> {
+                if !opts.id.contains("/implementer#") {
+                    return Ok(crate::test_support::review_or_adjudicate(opts));
+                }
+                if !self.0.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                    return Err(parked_spawn(&opts.id));
+                }
+                std::fs::write(Path::new(&opts.dir).join("work.rs"), "work\n").unwrap();
+                Ok(AgentResult::default())
+            }
+        }
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let branch = git_out(&repo_path, &["symbolic-ref", "--short", "HEAD"]);
+        let mut cfg = crate::test_support::gated_scratch_cfg(&repo_path);
+        cfg.workflow.stages.insert(
+            "unit-a".into(),
+            crate::test_support::mk_stage("unit-a", "g"),
+        );
+        let store = Store::open(":memory:").unwrap();
+        let driver = ParksOnce::default();
+        let deps = Deps {
+            repo: repo_path.clone(),
+            run_branch: Some(branch.clone()),
+            ..stub_deps(&store, &driver, Vec::new())
+        };
+        let first = run(&cfg, &deps).expect("a parked drive is no failure");
+        assert_ne!(first.units["unit-a"].status, ledger::Status::Integrated);
+        let tip = git_out(&repo_path, &["rev-parse", "HEAD"]);
+        run_git(&repo_path, &["checkout", "-q", "-b", "elsewhere"]);
+        let Err(refused) = run(&cfg, &deps) else {
+            panic!("the landing refuses")
+        };
+        assert!(
+            refused.0.contains(&format!(
+                "holds branch elsewhere, not the run's branch {branch}"
+            )),
+            "{refused}"
+        );
+        for moved in [branch.as_str(), "elsewhere"] {
+            assert_eq!(git_out(&repo_path, &["rev-parse", moved]), tip, "{moved}");
+        }
+    }
+
+    /// An operator edit to a file a landed merge changed, made while that merge's post-merge
+    /// re-gate runs red, halts the rollback with a message naming the merge, the file and the
+    /// recovery, and leaves the merge and the edit in place; once the edit is stashed, the next
+    /// drive completes the rollback to the tip the merge was made over.
+    #[test]
+    fn a_rollback_over_an_operator_edit_halts_and_completes_once_the_edit_is_stashed() {
+        /// The implementer writes `work.rs`; its first spawn also commits `other.rs` on the run
+        /// branch, so the merge carries a tree no pre-merge gate saw and the re-gate runs.
+        struct OperatorCommitsOnce {
+            repo: String,
+            operator: std::sync::Mutex<String>,
+        }
+        impl AgentDriver for OperatorCommitsOnce {
+            fn spawn(
+                &self,
+                _a: &AgentDef,
+                _p: &str,
+                opts: &SpawnOpts,
+                _emit: &dyn Fn(&str, serde_json::Value) -> Result<(), Error>,
+            ) -> Result<AgentResult, Error> {
+                if !opts.id.contains("/implementer#") {
+                    return Ok(crate::test_support::review_or_adjudicate(opts));
+                }
+                let mut operator = self.operator.lock().unwrap();
+                if operator.is_empty() {
+                    std::fs::write(Path::new(&self.repo).join("other.rs"), "other\n").unwrap();
+                    run_git(&self.repo, &["add", "other.rs"]);
+                    run_git(&self.repo, &["commit", "-q", "-m", "operator"]);
+                    *operator = git_out(&self.repo, &["rev-parse", "HEAD"]);
+                }
+                std::fs::write(Path::new(&opts.dir).join("work.rs"), "work\n").unwrap();
+                Ok(AgentResult::default())
+            }
+        }
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let edited = tempfile::tempdir().unwrap();
+        let edited = edited.path().join("edited");
+        let mut cfg = crate::test_support::scratch_cfg(&repo_path);
+        // Green in the unit's worktree, red in the post-merge one, whose first run edits the
+        // operator's copy of the file the merge added.
+        cfg.workflow.gates.insert(
+            "g".into(),
+            gate_def(&format!(
+                "case \"$(basename \"$(pwd -P)\")\" in rigger-postmerge-*) [ -e '{e}' ] || \
+                 {{ : > '{e}'; printf 'operator\\n' > '{repo_path}/work.rs'; }}; exit 1;; esac",
+                e = edited.display()
+            )),
+        );
+        cfg.workflow.stages.insert(
+            "unit-a".into(),
+            crate::test_support::mk_stage("unit-a", "g"),
+        );
+        let store = Store::open(":memory:").unwrap();
+        let driver = OperatorCommitsOnce {
+            repo: repo_path.clone(),
+            operator: Default::default(),
+        };
+        let deps = Deps {
+            run_branch: branch_of(&repo_path),
+            repo: repo_path.clone(),
+            ..stub_deps(&store, &driver, Vec::new())
+        };
+        let Err(halted) = run(&cfg, &deps) else {
+            panic!("the rollback halts over the operator's edit")
+        };
+        let merge = git_out(&repo_path, &["rev-parse", "HEAD"]);
+        let operator = driver.operator.lock().unwrap().clone();
+        assert_ne!(merge, operator, "the merge landed before the re-gate");
+        for wanted in [
+            &merge,
+            "work.rs",
+            "git stash",
+            "rigger release",
+            "git stash pop",
+        ] {
+            assert!(halted.0.contains(wanted), "{wanted}: {halted}");
+        }
+        let work = Path::new(&repo_path).join("work.rs");
+        assert_eq!(std::fs::read_to_string(&work).unwrap(), "operator\n");
+        run_git(&repo_path, &["stash", "-q"]);
+        let rs = run(&cfg, &deps).expect("the resumed drive completes the rollback");
+        assert_ne!(rs.units["unit-a"].status, ledger::Status::Integrated);
+        assert_eq!(git_out(&repo_path, &["rev-parse", "HEAD"]), operator);
+        assert!(!work.exists(), "the rolled-back merge's file is gone");
+        assert!(!git_out(&repo_path, &["stash", "list"]).is_empty());
+    }
+
     #[test]
     fn the_post_merge_re_gate_runs_in_its_own_scratch_worktree_never_the_repo() {
         // Spec 103, criterion 7 (POST-MERGE GATES RUN ON THE LANDED TREE): the second of two
@@ -49319,6 +50354,7 @@ stage "implement" adjudicator "adj" failed
             repo: repo_path.clone(),
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -49526,6 +50562,7 @@ stage "implement" adjudicator "adj" failed
             repo: repo_path.clone(),
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -49722,6 +50759,7 @@ stage "implement" adjudicator "adj" failed
             planted: std::sync::atomic::AtomicBool::new(false),
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -49782,6 +50820,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(repo),
             repo: repo.to_string(),
             ..stub_deps(store, &driver, Vec::new())
         };
@@ -49911,6 +50950,7 @@ stage "implement" adjudicator "adj" failed
             let driver = LocksItsTree::new(&inner, review_lens_ids::<Vec<_>>(&["lens"]).remove(0));
             let store = Store::open(":memory:").unwrap();
             let deps = Deps {
+                run_branch: branch_of(&repo_path),
                 repo: repo_path.clone(),
                 log,
                 ..stub_deps(&store, &driver, Vec::new())
@@ -49941,6 +50981,7 @@ stage "implement" adjudicator "adj" failed
             let driver = LocksItsTree::new(&inner, spawn_id("plan-critique", ROLE_ADVERSARY, 0));
             let store = Store::open(":memory:").unwrap();
             let deps = Deps {
+                run_branch: branch_of(&repo_path),
                 repo: repo_path.clone(),
                 grounder: Some(&grep),
                 log,
@@ -49990,6 +51031,7 @@ stage "implement" adjudicator "adj" failed
             };
             let store = Store::open(":memory:").unwrap();
             let deps = Deps {
+                run_branch: branch_of(&repo_path),
                 repo: repo_path.clone(),
                 log,
                 ..stub_deps(&store, &driver, Vec::new())
@@ -50285,7 +51327,7 @@ stage "implement" adjudicator "adj" failed
     #[test]
     fn a_fault_met_again_after_a_release_reads_the_same_first_line() {
         let probe = |guard: &str, error: &str| {
-            probe_fault_halt(gate::ProbeFault {
+            probe_fault_halt(gate::ProbeFault::Guard {
                 guard: guard.into(),
                 error: error.into(),
             })
@@ -50618,6 +51660,7 @@ stage "implement" adjudicator "adj" failed
                 ..Stub::new()
             };
             let deps = Deps {
+                run_branch: branch_of(&repo_path),
                 repo: repo_path.clone(),
                 ..stub_deps(&store, &driver, Vec::new())
             };
@@ -50753,6 +51796,7 @@ stage "implement" adjudicator "adj" failed
         let store = Store::open(":memory:").unwrap();
         let driver = Stub::new();
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -50863,6 +51907,7 @@ stage "implement" adjudicator "adj" failed
             let store = Store::open(":memory:").unwrap();
             let driver = Stub::new();
             let deps = Deps {
+                run_branch: branch_of(repo.path().to_str().unwrap()),
                 repo: repo.path().to_str().unwrap().to_string(),
                 ..stub_deps(&store, &driver, Vec::new())
             };
@@ -50958,6 +52003,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -51376,6 +52422,7 @@ stage "implement" adjudicator "adj" failed
                 ..Stub::new()
             };
             let deps = Deps {
+                run_branch: branch_of(&repo_path),
                 repo: repo_path.clone(),
                 ..stub_deps(&store, &driver, Vec::new())
             };
@@ -51673,6 +52720,7 @@ stage "implement" adjudicator "adj" failed
         let unit_dir = unit_worktree_dir(&scratch, "unit-a");
         let (hook, cfg, driver) = refusing_every_attempt(repo.path());
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -51837,6 +52885,7 @@ stage "implement" adjudicator "adj" failed
         let store = Store::open(":memory:").unwrap();
         let (_hook, cfg, driver) = refusing_every_attempt(repo.path());
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -51852,6 +52901,7 @@ stage "implement" adjudicator "adj" failed
             fail_containing: "\"cause\":\"git-refused\"",
         };
         let faulty = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&failing, &driver, Vec::new())
         };
@@ -51923,6 +52973,7 @@ stage "implement" adjudicator "adj" failed
         let store = Store::open(":memory:").unwrap();
         let (hook, cfg, driver) = refusing_every_attempt(repo.path());
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -52096,6 +53147,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -52173,6 +53225,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -52367,6 +53420,7 @@ stage "implement" adjudicator "adj" failed
         cfg: &Config,
     ) -> Result<RunState, Error> {
         let deps = Deps {
+            run_branch: branch_of(repo_path),
             repo: repo_path.to_string(),
             ..stub_deps(store, driver, Vec::new())
         };
@@ -52849,6 +53903,7 @@ stage "implement" adjudicator "adj" failed
         cfg.workflow.stages.insert("unit-b".into(), mk("unit-b"));
 
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -53031,6 +54086,7 @@ stage "implement" adjudicator "adj" failed
         );
 
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -53209,11 +54265,13 @@ stage "implement" adjudicator "adj" failed
                 Ok(gate::GateResult {
                     pass: false,
                     evidence: self.evidence.clone(),
+                    ..Default::default()
                 })
             } else {
                 Ok(gate::GateResult {
                     pass: true,
                     evidence: "PASS".into(),
+                    ..Default::default()
                 })
             }
         }
@@ -53328,23 +54386,294 @@ stage "implement" adjudicator "adj" failed
             ),
             "the pass's earlier verdicts stay and the faulted gate records none"
         );
+        assert_held_on_the_fault_uncharged(&events, &probe_fault().to_string());
+    }
+
+    /// That the log `events` of a run whose step ended on the probe fault `fault` charged no
+    /// attempt, wrote no lesson, infra mark or deferred failure, and holds the run for the
+    /// orchestrator naming the fault.
+    fn assert_held_on_the_fault_uncharged(events: &[Event], fault: &str) {
         assert_eq!(
             [
-                count_of_type(&events, ledger::TYPE_UNIT_FAILED),
-                count_of_type(&events, ledger::TYPE_UNIT_ESCALATED),
-                count_of_type(&events, contextgraph::TYPE_LESSON_LEARNED),
-                count_of_type(&events, TYPE_DEFERRED_GATE_FAILED),
-                status_mark_keys(&events, "infra-retry").len(),
-                status_mark_keys(&events, "infra-halt").len(),
+                count_of_type(events, ledger::TYPE_UNIT_FAILED),
+                count_of_type(events, ledger::TYPE_UNIT_ESCALATED),
+                count_of_type(events, contextgraph::TYPE_LESSON_LEARNED),
+                count_of_type(events, TYPE_DEFERRED_GATE_FAILED),
+                status_mark_keys(events, "infra-retry").len(),
+                status_mark_keys(events, "infra-halt").len(),
             ],
             [0; 6],
             "a probe fault charges no attempt and writes no lesson, infra mark or deferred failure"
         );
         assert_eq!(
-            holds_in(&events),
-            [conductor_fault_hold(&probe_fault().to_string())],
+            holds_in(events),
+            [conductor_fault_hold(fault)],
             "the halt holds the run for the orchestrator, naming the fault"
         );
+    }
+
+    /// A gate runner that runs each gate through [`ExecRunner`] over its own build budget in
+    /// place of the run's, so a test hands it a slot directory no slot of which can be locked
+    /// without touching the machine-wide one every test shares.
+    struct OverBudget(BuildBudget);
+
+    impl gate::Runner for OverBudget {
+        fn run(
+            &self,
+            g: &Gate,
+            dir: &str,
+            target: &str,
+            gate_scratch: &str,
+            build_cache_dir: &str,
+            build_cache_guard: &str,
+            store_fence: &str,
+            build_env: &gate::BuildEnv,
+            _budget: &BuildBudget,
+        ) -> Result<gate::GateResult, gate::ProbeFault> {
+            gate::Runner::run(
+                &ExecRunner,
+                g,
+                dir,
+                target,
+                gate_scratch,
+                build_cache_dir,
+                build_cache_guard,
+                store_fence,
+                build_env,
+                &self.0,
+            )
+        }
+    }
+
+    /// A build budget no slot of which can ever be locked is an infrastructure fault, not a red
+    /// gate: the step ends on the probe fault naming the slot, the gate records no verdict, and
+    /// the run holds for the orchestrator with no attempt charged.
+    #[test]
+    fn a_budget_no_slot_can_satisfy_holds_the_run_and_charges_no_attempt() {
+        let slots = tempfile::tempdir().unwrap();
+        let slot = slots.path().join("slot-0.lock");
+        std::fs::create_dir(&slot).unwrap();
+        let open_error = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(&slot)
+            .unwrap_err();
+        let fault = format!(
+            "build budget slot {}: {open_error}; fix the path, then relaunch",
+            slot.display()
+        );
+        let runner = OverBudget(BuildBudget::new(1, slots.path().to_path_buf()));
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            gates: &runner,
+            ..stub_deps(&st, &driver, Vec::new())
+        };
+        let halt = run_isolated(&verify_only_cfg(vec![("g1", gate_def("true"))]), &deps)
+            .map(|_| ())
+            .map_err(|e| e.0);
+        drop(deps);
+        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert_eq!(
+            (
+                halt,
+                events.iter().filter(|e| is_gate_verdict_row(e)).count()
+            ),
+            (Err(fault.clone()), 0),
+            "the unlockable budget ends the step on its fault and the gate records no verdict"
+        );
+        assert_held_on_the_fault_uncharged(&events, &fault);
+    }
+
+    /// A gate runner that passes after corrupting the index of the tree it gates, so what the
+    /// gate left there can no longer be read, keeping the tree and what that read answers.
+    #[derive(Default)]
+    struct IndexCorrupting(std::sync::Mutex<Option<(String, String)>>);
+
+    impl gate::Runner for IndexCorrupting {
+        fn run(
+            &self,
+            _g: &Gate,
+            dir: &str,
+            _target: &str,
+            _gate_scratch: &str,
+            _build_cache_dir: &str,
+            _build_cache_guard: &str,
+            _store_fence: &str,
+            _build_env: &gate::BuildEnv,
+            _budget: &BuildBudget,
+        ) -> Result<gate::GateResult, gate::ProbeFault> {
+            let index = crate::test_support::git_out(dir, &["rev-parse", "--git-path", "index"]);
+            std::fs::write(Path::new(dir).join(index), "not an index\n").unwrap();
+            let read = crate::worktree::tracked_changes(dir)
+                .unwrap_err()
+                .to_string();
+            *self.0.lock().unwrap() = Some((dir.to_string(), read));
+            Ok(gate::GateResult {
+                pass: true,
+                evidence: "PASS".into(),
+                ..Default::default()
+            })
+        }
+    }
+
+    /// A tree its gate left unreadable is an infrastructure fault, not the unit's change: GIVEN a
+    /// passing gate that corrupts the index of the worktree it gates, THEN the step ends on the
+    /// read's fault, naming the tree and then git's error, the gate records no verdict, and the
+    /// run holds for the orchestrator with no attempt charged.
+    #[test]
+    fn a_tree_unreadable_after_its_gate_holds_the_run_and_charges_no_attempt() {
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let runner = IndexCorrupting::default();
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            gates: &runner,
+            run_branch: branch_of(&repo_path),
+            repo: repo_path.clone(),
+            ..stub_deps(&st, &driver, Vec::new())
+        };
+        let halt = run_isolated(&verify_only_cfg(vec![("g1", gate_def("true"))]), &deps)
+            .map(|_| ())
+            .map_err(|e| e.0);
+        drop(deps);
+        let (dir, fault) = runner.0.lock().unwrap().clone().expect("the gate ran");
+        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert_eq!(
+            (
+                halt,
+                events.iter().filter(|e| is_gate_verdict_row(e)).count()
+            ),
+            (Err(fault.clone()), 0),
+            "the unreadable tree ends the step on its fault and the gate records no verdict"
+        );
+        assert_held_on_the_fault_uncharged(&events, &fault);
+        assert_eq!(
+            (fault.lines().next(), fault.lines().count() > 1),
+            (
+                Some(format!("worktree: reading the tracked changes of {dir} failed").as_str()),
+                true
+            ),
+            "the fault names the tree, then git's error: {fault}"
+        );
+    }
+
+    /// A gate runner whose every run passes (`Noted(true)`, evidence `PASS`) or fails with
+    /// product evidence (`Noted(false)`), with a note saying the build budget was not enforced
+    /// for a reason that names an infrastructure error.
+    struct Noted(bool);
+
+    /// [`Noted`]'s failing evidence and its note.
+    const NOTED_EVIDENCE: &str = "FAIL\nassertion failed: left == right";
+    const NOTED_NOTE: &str = "build budget not enforced: slot directory /budget/slots could not \
+                              be created: No space left on device (os error 28); ";
+
+    impl gate::Runner for Noted {
+        fn run(
+            &self,
+            _g: &Gate,
+            _dir: &str,
+            _target: &str,
+            _gate_scratch: &str,
+            _build_cache_dir: &str,
+            _build_cache_guard: &str,
+            _store_fence: &str,
+            _build_env: &gate::BuildEnv,
+            _budget: &BuildBudget,
+        ) -> Result<gate::GateResult, gate::ProbeFault> {
+            Ok(gate::GateResult {
+                pass: self.0,
+                evidence: if self.0 { "PASS" } else { NOTED_EVIDENCE }.into(),
+                note: NOTED_NOTE.into(),
+            })
+        }
+    }
+
+    /// A gate run outside an unenforced build budget records the note before its evidence, and
+    /// the note never decides the failure's class: a product red whose note names an
+    /// infrastructure error is charged to the unit and never rerun as infra.
+    #[test]
+    fn a_gates_note_is_recorded_beside_its_evidence_and_never_classified() {
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            gates: &Noted(false),
+            ..stub_deps(&st, &driver, Vec::new())
+        };
+        let _ = run_isolated(&verify_only_cfg(vec![("g1", gate_def("false"))]), &deps);
+        drop(deps);
+        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .find(|e| is_gate_verdict_row(e))
+                .map(verdict_evidence),
+            Some(format!("{NOTED_NOTE}{NOTED_EVIDENCE}")),
+            "the verdict records the note, then the evidence"
+        );
+        assert_eq!(
+            (
+                count_of_type(&events, ledger::TYPE_UNIT_FAILED) > 0,
+                status_mark_keys(&events, "infra-retry").len(),
+                status_mark_keys(&events, "infra-halt").len(),
+            ),
+            (true, 0, 0),
+            "the product red is charged and never rerun as infra"
+        );
+    }
+
+    /// The phase-boundary gate records its run's note before its evidence, as an inline gate
+    /// does.
+    #[test]
+    fn a_deferred_gates_note_is_recorded_beside_its_evidence() {
+        let (_rs, events) = deferred_gate_run("true", &Noted(true));
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| is_gate_verdict_row(e))
+                .filter_map(|e| serde_json::from_slice::<GateVerdictData>(&e.data).ok())
+                .filter(|v| v.gate == "deferred")
+                .map(|v| v.evidence)
+                .collect::<Vec<_>>(),
+            [format!("{NOTED_NOTE}PASS")],
+            "the deferred verdict records the note, then the evidence"
+        );
+    }
+
+    /// A passing regenerate command's run records its note on the regeneration commit's row, as
+    /// a gate's run records its note beside its evidence.
+    #[test]
+    fn a_regenerate_commands_note_is_recorded_on_its_commit_row() {
+        let (repo, wt, cfg) = regenerable_worktree();
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            gates: &Noted(true),
+            run_branch: branch_of(repo.path().to_str().unwrap()),
+            repo: repo.path().to_str().unwrap().to_string(),
+            ..stub_deps(&store, &driver, Vec::new())
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+        ctx.regenerate_and_record(&wt, "regen-unit", 1, &["regen.txt".to_string()], |sha| {
+            format!("noted-{sha}")
+        })
+        .unwrap();
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let notes: Vec<Value> = events
+            .iter()
+            .filter(|e| e.type_ == ledger::TYPE_UNIT_STATUS)
+            .map(|e| serde_json::from_slice::<Value>(&e.data).unwrap())
+            .filter(|row| row["status"] == STATUS_INTEGRATE_REGENERATE_COMMIT)
+            .map(|row| row["evidence"]["note"].clone())
+            .collect();
+        assert_eq!(
+            notes,
+            [json!(NOTED_NOTE)],
+            "the regeneration commit's row records the command's note"
+        );
+        wt.remove().unwrap();
     }
 
     crate::test_cases! {
@@ -53571,6 +54900,7 @@ stage "implement" adjudicator "adj" failed
                 store: &st,
                 driver: &driver,
                 gates: &runner,
+                run_branch: None,
                 repo: String::new(),
                 grounder: None,
                 graph: None,
@@ -53623,6 +54953,7 @@ stage "implement" adjudicator "adj" failed
                 store: &st,
                 driver: &driver,
                 gates: &runner,
+                run_branch: None,
                 repo: String::new(),
                 grounder: None,
                 graph: None,
@@ -53658,6 +54989,7 @@ stage "implement" adjudicator "adj" failed
                 store: &st,
                 driver: &driver,
                 gates: &runner,
+                run_branch: None,
                 repo: String::new(),
                 grounder: None,
                 graph: None,
@@ -53734,6 +55066,7 @@ stage "implement" adjudicator "adj" failed
             store: &st,
             driver: &driver,
             gates: &runner,
+            run_branch: None,
             repo: String::new(),
             grounder: None,
             graph: None,
@@ -53849,6 +55182,7 @@ stage "implement" adjudicator "adj" failed
             store: &st,
             driver: &driver,
             gates: &runner,
+            run_branch: None,
             repo: String::new(),
             grounder: None,
             graph: None,
@@ -53990,6 +55324,7 @@ stage "implement" adjudicator "adj" failed
                 store: &st,
                 driver: &driver,
                 gates: &runner,
+                run_branch: None,
                 repo: String::new(),
                 grounder: None,
                 graph: None,
@@ -54031,6 +55366,7 @@ stage "implement" adjudicator "adj" failed
                 store: &st,
                 driver: &driver,
                 gates: &runner,
+                run_branch: None,
                 repo: String::new(),
                 grounder: None,
                 graph: None,
@@ -54106,6 +55442,7 @@ stage "implement" adjudicator "adj" failed
                 store: &st,
                 driver: &driver,
                 gates: &runner,
+                run_branch: None,
                 repo: String::new(),
                 grounder: None,
                 graph: None,
@@ -54185,6 +55522,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -54256,6 +55594,7 @@ stage "implement" adjudicator "adj" failed
                 } else {
                     "tree clean".into()
                 },
+                ..Default::default()
             })
         }
     }
@@ -54300,6 +55639,7 @@ stage "implement" adjudicator "adj" failed
             store: &st,
             driver: &driver,
             gates: &runner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path,
             grounder: None,
             graph: None,
@@ -54373,6 +55713,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -54476,6 +55817,7 @@ stage "implement" adjudicator "adj" failed
         };
         let st = Store::open(":memory:").unwrap();
         let deps = Deps {
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -54625,6 +55967,7 @@ stage "implement" adjudicator "adj" failed
             st.append(STREAM, ExpectedRevision::Any, &[round_start("u", 0, base)])
                 .unwrap();
             let deps = Deps {
+                run_branch: branch_of(&repo_path),
                 repo: repo_path.clone(),
                 ..stub_deps(&st, &driver, Vec::new())
             };
@@ -54691,6 +56034,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -54781,6 +56125,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -54860,6 +56205,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -54969,6 +56315,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };
@@ -55049,6 +56396,7 @@ stage "implement" adjudicator "adj" failed
         let repo = temp_git_project_with_commit();
         let st = Store::open(":memory:").unwrap();
         let deps = Deps {
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&st, driver, Vec::new())
         };
@@ -55287,6 +56635,7 @@ stage "implement" adjudicator "adj" failed
         let repo = temp_git_project_with_commit();
         let st = Store::open(":memory:").unwrap();
         let deps = Deps {
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -55498,6 +56847,7 @@ stage "implement" adjudicator "adj" failed
         )
         .unwrap();
         let deps = Deps {
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -55587,6 +56937,7 @@ stage "implement" adjudicator "adj" failed
             .unwrap();
         }
         let deps = Deps {
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -55925,6 +57276,7 @@ stage "implement" adjudicator "adj" failed
             ..Stub::new()
         };
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -55969,7 +57321,7 @@ stage "implement" adjudicator "adj" failed
 
         // The unit's durable checkpoint branch survives with its work, for the human.
         assert!(
-            crate::worktree::Worktree::branch_has_work(&repo_path, &unit_branch("s")),
+            crate::worktree::Worktree::branch_has_work(&repo_path, &unit_branch("s")).unwrap(),
             "the escalated unit's work must remain on its own branch for a human to inspect"
         );
     }
@@ -57168,6 +58520,7 @@ stage "implement" adjudicator "adj" failed
             store: &st,
             driver: &d1,
             gates: &ExecRunner,
+            run_branch: None,
             repo: String::new(),
             grounder: Some(&grep),
             graph: None,
@@ -57194,6 +58547,7 @@ stage "implement" adjudicator "adj" failed
             store: &st,
             driver: &d2,
             gates: &ExecRunner,
+            run_branch: None,
             repo: String::new(),
             grounder: Some(&grep),
             graph: None,
@@ -57723,6 +59077,7 @@ stage "implement" adjudicator "adj" failed
         );
         let st = Store::open(":memory:").unwrap();
         let deps = Deps {
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -57832,6 +59187,7 @@ stage "implement" adjudicator "adj" failed
         );
         let st = Store::open(":memory:").unwrap();
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -57929,6 +59285,7 @@ stage "implement" adjudicator "adj" failed
         };
         let st = Store::open(":memory:").unwrap();
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -58039,6 +59396,7 @@ stage "implement" adjudicator "adj" failed
             &refused_decision(),
         );
         let deps = Deps {
+            run_branch: branch_of(repo.path().to_str().unwrap()),
             repo: repo.path().to_str().unwrap().to_string(),
             ..stub_deps(&st, &driver, Vec::new())
         };
@@ -59086,6 +60444,7 @@ stage "implement" adjudicator "adj" failed
             store: &st,
             driver: &driver,
             gates: &ExecRunner,
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             grounder: Some(&grep),
             graph: None,
@@ -59134,6 +60493,7 @@ stage "implement" adjudicator "adj" failed
         let store = Store::open(":memory:").unwrap();
         let driver = Stub::new();
         let deps = Deps {
+            run_branch: branch_of(&repo_path),
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
         };

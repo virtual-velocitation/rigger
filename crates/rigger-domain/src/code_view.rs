@@ -1,13 +1,15 @@
 //! The code-side interfaces: a stamped view of the tree's facts ([`CodeView`]), the source the
 //! tree is read from ([`TreeSource`]), the extraction and grouping passes a store is given
-//! ([`Extract`], [`Group`]), the filter a reader applies ([`ViewFilter`]) and the in-memory view
-//! ([`FactsView`]). A store holds no language knowledge: extraction and grouping are passed in.
+//! ([`Extract`], [`Group`]), the lines a reader reads a doc span from ([`SourceLines`]), the
+//! filter a reader applies ([`ViewFilter`]) and the in-memory view ([`FactsView`]). A store holds
+//! no language knowledge: extraction and grouping are passed in.
 
 use crate::code_facts::{FileFacts, Half, MentionKind, ModuleDecl, Scope, Stamp, Tip};
 use crate::resolve::ProofCall;
 use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// A file in a view, without its facts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -166,6 +168,9 @@ pub struct Head {
     pub behind: Option<String>,
     /// The worktree the view is compared with: the one it describes.
     pub worktree: PathBuf,
+    /// The extractor the store was opened with, the one a doc read takes a span's text from
+    /// ([`Extract::doc_text`]); none for a head no extractor read.
+    pub extract: Option<Arc<dyn Extract>>,
 }
 
 /// Opens the code view of the head for a reader (7.3). The composition root implements it. A
@@ -294,6 +299,15 @@ pub trait Extract: Send + Sync {
     fn doc_text(&self, _lang: &str, raw: &str) -> String {
         trimmed_lines(raw)
     }
+}
+
+/// The lines of the files a reader's worktree holds, which a doc span is read from: the facts keep
+/// a doc comment's span and never its text.
+pub trait SourceLines: Send + Sync {
+    /// The 1-based, inclusive lines `span` names of the file at `path`, as [`str::lines`] splits
+    /// them, joined by `\n`; none when the file cannot be opened, or the span starts at line 0,
+    /// ends before it starts or reaches past the file's last line.
+    fn lines(&self, path: &str, span: (u32, u32)) -> Option<String>;
 }
 
 /// `raw` split into lines as [`str::lines`] splits it, on `\n` with a trailing `\r` dropped and a
