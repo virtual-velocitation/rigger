@@ -87,7 +87,7 @@ fn csharp_stages_its_row() {
     let field = |name: &str, leaf: &str| in_def(1, name, leaf, Some(REF_KIND_FIELD), 3);
     // A call in `K.M` on line 3, written `name` of `leaf`.
     let call = |name: &str, leaf: &str| in_def(1, name, leaf, None, 3);
-    let cases: [Case; 286] = [
+    let cases: [Case; 289] = [
         (
             "a base list, a parameter's types, a member constant, an assigned member and a doc block",
             "/// <summary>A square.</summary>\n/// <remarks>Its <c>Side</c> is fixed.</remarks>\nclass Square : IShape {\n    const int SIDES = 4;\n    int Side;\n    void Draw(List<IShape> s) { var n = Square.SIDES; s.Side = 2; }\n}\n",
@@ -1758,6 +1758,24 @@ fn csharp_stages_its_row() {
             "a generic name of two type arguments split at its comma, the first a generic name of two type arguments, each included",
             in_m!("F(p is Md<Mg<C, D>, A> & s is null);"),
             vec![ty("Md"), ty("C"), ty("D"), ty("Mg"), ty("A")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, named for a pattern keyword, none, its type arguments each a mention",
+            in_m!("F(p is nameof<A, B> & s is null);"),
+            vec![ty("A"), ty("B")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, its type arguments spelled `nameof` and `not`, each the type it names",
+            in_m!("F(p is Ke<nameof, not> & s is null);"),
+            vec![ty("Ke"), ty("nameof"), ty("not")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, its type arguments spelled `and` and `or`, each the type it names",
+            in_m!("F(p is Kf<and, or> & s is null);"),
+            vec![ty("Kf"), ty("and"), ty("or")],
             k_m(),
         ),
         (
