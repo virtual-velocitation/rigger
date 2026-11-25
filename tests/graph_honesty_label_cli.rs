@@ -633,7 +633,7 @@ fn a_workflow_node_of_a_differing_definition_describes_the_worktree() {
 /// named in `spill`'s signature.
 /// Its function `ready` is called on a body line of `start`, then on two of `begin`'s (source order
 /// again not name order), and by a `#[test]` function.
-const READERS: &str = "\
+pub const READERS: &str = "\
 /// The most widgets one bin holds.
 /// It bounds every bin.
 pub const LIMIT: usize = 3;
@@ -817,11 +817,12 @@ fn an_ambiguous_referrer_is_marked() {
 }
 
 /// GIVEN a built project holding [`READERS`], WHEN `rigger graph --lookup` reads the constant with
-/// no `--tests` option, under `--tests exclude` and under `--tests include`, THEN its `reads:` line
-/// names the two product functions alone unless tests are included. Under include it names the
-/// test readers after them too, in mention order, each marked `[test]`: the `#[cfg(test)]` twin
-/// under the product `helper`'s id, then the `#[test]` function; and an `imported by:` line names
-/// the test module whose `use` imports the constant, marked `[test]` too.
+/// no `--tests` option, under `--tests exclude`, under `--tests include` and under `--tests only`,
+/// THEN its `reads:` line names the two product functions alone unless tests are shown. Under
+/// include and only it names the test readers after them too, in mention order, each marked
+/// `[test]`: the `#[cfg(test)]` twin under the product `helper`'s id, then the `#[test]` function;
+/// and an `imported by:` line names the test module whose `use` imports the constant, marked
+/// `[test]` too.
 #[test]
 fn a_test_referrer_is_hidden_by_default() {
     let dir = temp_project();
@@ -849,10 +850,11 @@ fn a_test_referrer_is_hidden_by_default() {
         "## text",
     ];
     // (the options the lookup passes, the constant's block from its heading to the next section's)
-    let rows: [(&[&str], &[&str]); 3] = [
+    let rows: [(&[&str], &[&str]); 4] = [
         (&[], product),
         (&["--tests", "exclude"], product),
         (&["--tests", "include"], every),
+        (&["--tests", "only"], every),
     ];
     for (options, block) in rows {
         lookup_prints_blocks(root, options, &[("LIMIT", block)]);
