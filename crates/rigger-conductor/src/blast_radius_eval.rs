@@ -3,7 +3,7 @@
 //!
 //! This is a GATE, not a shipped surface: the whole module lives under `#[cfg(test)]` (it is
 //! declared `#[cfg(test)] mod` in `lib.rs`). It adds NO runtime API and NO new event - the
-//! RUNTIME wave-level parallelism-retention warn-metric derivable from `BlastRadiusComputed`
+//! RUNTIME wave-level parallelism-retention metric derivable from `BlastRadiusComputed`
 //! is unit 3's; unit 2 owns only the PRE-SHIP validation and its red-on-regression assertions,
 //! so `grounded_seed` and every production surface stay byte-for-byte unchanged.
 //!

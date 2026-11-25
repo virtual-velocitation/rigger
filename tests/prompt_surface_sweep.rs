@@ -349,7 +349,6 @@ const ALLOW_LIST: &[Allowed] = &[
             "# Rigger: no runs recorded yet (run `rigger run` to start a",
             "{:.1}% of grounded units stay co-schedulable (wave-paralleli",
             "; {} of {} grounded units name no code (an empty radius runs",
-            " - WARN: below the {:.1}% floor, the fleet is largely serial",
             "  first-pass yield   {:.1}% ({}/{} units clean on the first",
             "  escalation rate    {:.1}% ({}/{} units escalated to a huma",
             "  review             {} approved / {} rejected",
