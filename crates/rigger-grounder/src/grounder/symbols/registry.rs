@@ -1663,6 +1663,7 @@ mod tests {
 impl Kestrel { fn molt(&self) -> u32 { Self::grow(self) + self.grow() } }
 fn pile() -> Vec<u32> { vec![helper(QUOTA_CAP)] }
 use crate::store::Ledger as Book; fn drain() { Book::open(); String::new(); }
+fn route(v: Vec<Kestrel>) -> Vec<u32> { v.iter().map(Kestrel::grow).map(helper).collect() }
 ",
         ),
         ("rs", "fn whole() { helper(); }\nfn broken( {\n"),
@@ -1930,7 +1931,7 @@ def raw():
         // languages' rows merge clean.
         const PINNED: [(&str, &str, &str); 7] = [
             // Rust
-            ("rs", "rust-tags-v5", "f2a9e894cb91eb6e"),
+            ("rs", "rust-tags-v6", "b1ebbb16247e4505"),
             // C#
             ("cs", "csharp-tags-v5", "ff1a724ddef62a08"),
             // TypeScript
