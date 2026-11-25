@@ -131,16 +131,12 @@ fn rigger_status_first_line_and_needs_you_section_are_the_consoles_own_fold() {
     }
 }
 
-/// The dock's OTHER two needs-you arms - the budget halt and reject-recurrence, INCLUDING
-/// its resumed guard - proven through the same real `argv` -> `cmd_status` -> real-store round
-/// trip the escalated arm already gets above. Before this test, only the escalated arm was
-/// wired-proven through the real binary (sdet-u93c4-dock-budget-and-recurrence-arms-not-periphery-proven);
-/// the other two were proven only against hand-built in-memory `Event`s in `console.rs`'s own
-/// `mod tests`. Also pins the fix for adv-u93c4-c4-dock-resumed-unit-false-needs-you (dock's
-/// reject-recurrence arm now mirrors `blocker::classify`'s resumed guard) through the real
-/// binary, not only through `console.rs`'s own colocated unit test.
+/// The dock's OTHER needs-you arm - reject-recurrence, INCLUDING its resumed guard - proven
+/// through the same real `argv` -> `cmd_status` -> real-store round trip the escalated arm
+/// already gets above: the dock's reject-recurrence arm mirrors `blocker::classify`'s resumed
+/// guard through the real binary, not only through `console.rs`'s own colocated unit test.
 #[test]
-fn rigger_status_needs_you_covers_budget_halt_and_reject_recurrence_arms() {
+fn rigger_status_needs_you_covers_the_reject_recurrence_arm() {
     let proj = temp_store_project();
     let root = proj.path();
     let threshold = rigger::blocker::REJECT_RECURRENCE_DIAGNOSE_THRESHOLD;
@@ -163,10 +159,6 @@ fn rigger_status_needs_you_covers_budget_halt_and_reject_recurrence_arms() {
                 "UnitResumed",
                 r#"{"unit":"u-resumed","attempts_granted":2,"by":"operator"}"#,
             ),
-            // The run-level budget halt, seeded last so it is the CURRENT blocker
-            // (`blocker::budget_halt` reports only when no later unit-lifecycle event has
-            // superseded it).
-            ("BudgetExhausted", r#"{"budget":10,"spawns":10}"#),
         ],
     );
 
@@ -177,9 +169,9 @@ fn rigger_status_needs_you_covers_budget_halt_and_reject_recurrence_arms() {
     let want = rigger::console::fold(&events, 3).expect("console::fold over the real read-back");
     assert_eq!(
         want.dock.needs_you.len(),
-        2,
-        "fixture must exercise exactly the budget-halt and u-fail reject-recurrence arms, \
-         with u-resumed excluded: {:?}",
+        1,
+        "fixture must exercise exactly the u-fail reject-recurrence arm, with u-resumed \
+         excluded: {:?}",
         want.dock.needs_you
     );
 
@@ -194,13 +186,8 @@ fn rigger_status_needs_you_covers_budget_halt_and_reject_recurrence_arms() {
         );
     }
 
-    // Pin the two literal facts directly, independent of `want`: a regression in
-    // console::fold's own dock logic (not only in cmd_status's wiring of it) would also
-    // break these.
-    assert!(
-        out.contains("run: budget spent 10/10"),
-        "expected the budget-halt line; got:\n{out}"
-    );
+    // Pin the literal fact directly, independent of `want`: a regression in console::fold's
+    // own dock logic (not only in cmd_status's wiring of it) would also break it.
     assert!(
         out.contains(&format!(
             "u-fail: {threshold} failed attempts, the loop is still remediating - audit the \

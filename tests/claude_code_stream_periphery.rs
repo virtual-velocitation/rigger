@@ -1137,7 +1137,7 @@ fn a_concurrent_sibling_spawns_process_in_the_same_worktree_survives_a_wall_cloc
     // The gap `adv-u104stop-r2-stop-reaps-concurrent-sibling-worktree` named: a worktree-wide
     // sweep at wall-clock STOP would signal every process rooted in the spawn's worktree
     // dir, but that dir is shared, concurrently, by every lens of the same unit's review
-    // fan-out (`run_review_agents_concurrently`, up to `MAX_CONCURRENCY`), and
+    // fan-out (`run_review_agents_concurrently`, at the declared width), and
     // `reap::is_signal_eligible` matches purely on cwd containment - it has no notion of
     // which spawn owns a process. So THE STOP must never sweep the worktree at all
     // (`op-104-stop-no-sweep-at-wall-clock-stop`): it ends only the one child handle it

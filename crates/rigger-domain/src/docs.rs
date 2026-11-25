@@ -489,7 +489,7 @@ only.
 Design and Global constraints only - criteria checkboxes are the run's identity (editing one
 orphans the live run). Commit when no step is mid-flight, then `rigger emit DecisionMade` naming
 the spec file so in-flight reviewers see the change through the graph immediately. Still
-escalates? Restart fresh: durable branches carry the work, the budget resets.
+escalates? Restart fresh: durable branches carry the work.
 
 ## Quick reference: churn signature -> planning defect
 
@@ -824,7 +824,7 @@ way). The protocol, validated in production:
    in-flight reviewers ground through the knowledge graph and see it IMMEDIATELY, ahead of
    their worktrees picking up the text.
 4. If the run still escalates, restart FRESH under the amended spec: durable unit branches
-   carry the work forward, the budget resets, and the graph's findings steer the new attempts.
+   carry the work forward, and the graph's findings steer the new attempts.
 
 ## What good looks like, measured
 

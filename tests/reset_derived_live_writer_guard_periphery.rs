@@ -982,8 +982,7 @@ fn reset_derived_from_a_subdirectory_reads_the_marker_under_a_relative_rigger_tm
 /// RELATIVE `defaults.workdir` `rel-scratch`.
 const RELATIVE_WORKDIR_WORKFLOW: WorkflowFixture = WorkflowFixture {
     worker: UNISOLATED_WORKER,
-    body:
-        "defaults:\n  grounder: nop\n  budget: 60\n  max_wall_clock: 300\n  workdir: rel-scratch\n\
+    body: "defaults:\n  grounder: nop\n  max_wall_clock: 300\n  workdir: rel-scratch\n\
            stages:\n  a:\n    agent: worker\n    on_pass: none\n",
 };
 
@@ -991,8 +990,7 @@ const RELATIVE_WORKDIR_WORKFLOW: WorkflowFixture = WorkflowFixture {
 /// with the scratch root placed by the `~/` `defaults.workdir` `~/tilde-scratch`.
 const TILDE_WORKDIR_WORKFLOW: WorkflowFixture = WorkflowFixture {
     worker: UNISOLATED_WORKER,
-    body:
-        "defaults:\n  grounder: nop\n  budget: 60\n  max_wall_clock: 300\n  workdir: \"~/tilde-scratch\"\n\
+    body: "defaults:\n  grounder: nop\n  max_wall_clock: 300\n  workdir: \"~/tilde-scratch\"\n\
            stages:\n  a:\n    agent: worker\n    on_pass: none\n",
 };
 

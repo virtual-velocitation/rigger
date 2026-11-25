@@ -505,13 +505,15 @@ impl Runner for ExecRunner {
         // acquires a slot, so non-build work is never gated. A slot directory where no slot
         // can ever be locked is the [`ProbeFault::BudgetSlot`], before the command runs; one
         // whose slot directory cannot be created admits the command outside the budget, and the
-        // result's note says why.
+        // result's note says why. A command that waited for a slot says how long in the note,
+        // never in the evidence a failure is classified from.
         let slot = budget
             .acquire()
             .map_err(|e| ProbeFault::BudgetSlot(e.to_string()))?;
-        let note = match slot.unenforced() {
-            "" => String::new(),
-            why => format!("build budget not enforced: {why}; "),
+        let note = match (slot.unenforced(), slot.waited().as_millis()) {
+            ("", 0) => String::new(),
+            ("", ms) => format!("build slot waited {ms} ms; "),
+            (why, _) => format!("build budget not enforced: {why}; "),
         };
         // The shared gate build cache's exclusion protocol, PRODUCER half (spec 77 criterion 5,
         // BOUNDED SHARED CACHE; spec 125 criterion 10): a non-empty `build_cache_guard` names the
@@ -1423,6 +1425,54 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
                 (true, "PASS\nok".to_string(), String::new()),
             ],
             "only the run the budget could not bound notes it, and its evidence is the command's"
+        );
+    }
+
+    /// A gate that waits for the budget's only slot runs once it frees, and its note says how
+    /// long it waited, within the gate's own run, while its evidence is the command's own.
+    #[test]
+    fn a_gate_that_waits_for_a_build_slot_notes_the_wait_beside_its_evidence() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let budget = BuildBudget::new(1, dir.path().join("slots"));
+        let holder = budget.acquire().expect("the only slot is free");
+        let waiter = budget.clone();
+        let (calling_tx, calling) = std::sync::mpsc::channel();
+        let gate = std::thread::spawn(move || {
+            calling_tx.send(()).expect("the test waits for the call");
+            let call = std::time::Instant::now();
+            let ran = ExecRunner
+                .run(
+                    &gate_cmd("echo ok"),
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    &BuildEnv::default(),
+                    &waiter,
+                )
+                .map(|res| (res.pass, res.evidence, res.note))
+                .expect("a budget that admits the build runs the gate");
+            (ran, call.elapsed().as_millis())
+        });
+        calling.recv().expect("the gate thread calls the runner");
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        drop(holder);
+        let ((pass, evidence, note), call_ms) = gate.join().expect("the gate thread");
+        let waited_ms = note
+            .strip_prefix("build slot waited ")
+            .and_then(|rest| rest.strip_suffix(" ms; "))
+            .and_then(|ms| ms.parse::<u128>().ok());
+        assert_eq!(
+            (
+                pass,
+                evidence.as_str(),
+                waited_ms.map(|ms| ms > 0 && ms <= call_ms)
+            ),
+            (true, "PASS\nok", Some(true)),
+            "the note `{note}` names a wait within the gate's {call_ms} ms run, and the evidence \
+             is the command's"
         );
     }
 

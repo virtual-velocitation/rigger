@@ -28,9 +28,9 @@
 //! both asserted, so a regression toward stricter-than-configured serialization is caught
 //! exactly as loudly as a regression toward unbounded concurrency.
 //!
-//! Out of scope, already closed elsewhere: the scaffolded default and the sizing comment
-//! (`tests/cli.rs`'s `a_fresh_scaffolded_init_writes_max_parallel_units_and_validates_...`,
-//! criterion 2); crash-resume re-derivation of occupancy from the log is a `Stub`-parking
+//! Out of scope, already closed elsewhere: the scaffold declaring no width
+//! (`tests/cli.rs`'s `a_fresh_scaffolded_init_declares_no_width_and_validates_...`);
+//! crash-resume re-derivation of occupancy from the log is a `Stub`-parking
 //! scenario the synchronous `cli::Driver` here cannot even produce (only a stepwise/replay
 //! driver returns a parked error) and stays owned by the implementer's own
 //! `occupancy_survives_a_crash_resume_...` unit test, exactly as the spec's own Done-when says

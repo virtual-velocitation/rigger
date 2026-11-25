@@ -27,32 +27,10 @@ defaults:
   # first and a literal search is a deliberate, reported fallback.
   grep_guard: true
 
-  # The unit size cap: the planner's protocol and every DAG critique round state that a unit
-  # expected to add more than this many lines is too large, so each unit stays one reviewable
-  # change.
-  max_unit_added_lines: 3000
-
   # The agent that writes each unit's periphery tests at the build seam, after its implementer
   # is green and before the gates (.rigger/agents/sdet-author.md). Absent, no test author runs
   # and a unit's tests are only those its implementer wrote.
   test_author: sdet-author
-
-  # The spawn-budget circuit-breaker (§4.4, §8): the hard cap on agent spawns a
-  # single unattended run may make. When spawns reach it the breaker records
-  # BudgetExhausted and aborts the run, so a runaway loop (e.g. a unit a reviewer
-  # keeps rejecting) can never spawn unboundedly. NON-ZERO on purpose - 0 means
-  # unlimited, which is what let a 5-hour churn run never trip. Raise it for a big
-  # spec; never set it back to 0 for an unattended run.
-  # 2026-07-02: raised 60 -> 200 for the spec-05 campaign run. The count folds
-  # cumulatively from recorded SpawnRequested events (never resets per process), and
-  # 60 was consumed by one 12-implementer fan-out wave plus reviews, remediation,
-  # two zombie units (Gap 11), and several crashed-process retries. 200 bounds ten
-  # units' full review lifecycles; still a hard cap, never 0.
-  # 2026-07-03: raised 200 -> 400 for the spec-06 run. The unscoped stream (Gap 11)
-  # already holds exactly 200 spawns, so a new run under 200 halts before its first
-  # spawn. Spec 06 unit 1 scopes the fold per run, making this cumulative-count
-  # artifact obsolete; revisit the number after it lands.
-  budget: 540
 
   # The remediation depth (§4.4): how many attempts a failed unit gets before it
   # escalates to a human. This is the REFINEMENT-depth knob, NOT a review-rigor
@@ -61,7 +39,7 @@ defaults:
   # but DIMINISHING across iterations (the lenses go clean, only the adversary's
   # deep findings remain) and the default 3 is too few to converge; it loosens the
   # depth limit, never the review bar. Absent falls back to 3 (the historical
-  # default). Bounded by `budget` above, so it can never spin unboundedly.
+  # default). Past it the unit escalates, so a unit's attempts never run unbounded.
   max_retries: 6
 
   # The per-spawn wall-clock bound in SECONDS (spec 10, unit 3): the liveness ceiling
@@ -75,12 +53,11 @@ defaults:
   # can pin a tighter bound in its own frontmatter.
   max_wall_clock: 3600
 
-  # How many implement units build at once (spec 89, per-unit pipelining). Four is the most one
-  # driver process runs side by side (the conductor's fan-out pool). Each live unit owns a debug
+  # How many implement units build at once (spec 89, per-unit pipelining). Each live unit owns a debug
   # build cache of about 50 GB on this crate, so four hold about 200 GB, and a driver death makes
   # every live unit rebuild at once: `.cargo/config.toml` caps each cargo at four compiler jobs,
-  # which bounds that rebuild's memory. Gate commands still take turns on the machine-wide build
-  # slot (`build.max_concurrent` below). At a width of two, ready units waited behind the bound
+  # which bounds that rebuild's memory. Each unit's gates take one of the machine-wide build
+  # slots (`build.max_concurrent` below, one per unit). At a width of two, ready units waited behind the bound
   # for 23 of a run's 41 live hours (docs/evaluation/20261106-0135-050ed244.md).
   max_parallel_units: 4
 
@@ -129,7 +106,10 @@ build:
   # spec 91 retires the per-round `mutation` switch entirely (an explicit value of any
   # kind is now a validation error naming this spec): no per-round sweep; the sweep is the
   # `mutation` gate below, declared but unwired until #32 lands.
-  max_concurrent: 1         # serialize builds machine-wide: two concurrent cargo-mutants sweeps (~100G each) exhausted /home this session. Blunt cap (operator-binary boundary blocks a surgical mutation-only slot); revisit as a spec.
+  # One build slot per unit of `max_parallel_units`: each unit builds in its own target directory
+  # and `.cargo/config.toml` caps each cargo at four compiler jobs, so four gates are at most
+  # sixteen compiler processes. A gate that waits for a slot says how long in its note.
+  max_concurrent: 4
   # The variables rigger exports to every gate and agent spawn. CARGO_TARGET_DIR gives each site
   # its own build cache (a unit's cargo-target-<slug>, its reviewers' review-target-<slug>, the
   # guarded shared cache for a review worktree): cargo names a workspace member's artifacts by

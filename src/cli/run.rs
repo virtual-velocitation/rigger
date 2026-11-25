@@ -1291,18 +1291,12 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     if let Some(line) = halted_line(&rs) {
         println!("{line}");
     }
-    // spec 17 criterion 4c: a silently-serializing fleet must WARN during a run, not only when the
-    // operator later runs `rigger stats`. Re-project this run's metrics from the log and, if the
-    // parallelism-retention floor was breached under structural grounding, log the SAME line the
-    // stats row shows (one authority) to stderr. Best-effort: a read hiccup never fails a run that
-    // already succeeded, and on the shipped non-symbols default retention is unmeasured so nothing
-    // prints and the default run output is unchanged.
+    // The run's parallelism retention, the SAME line the `rigger stats` row shows (one
+    // authority), whenever it was measured. Best-effort: a read hiccup never fails a run that
+    // already succeeded, and an unmeasured retention prints nothing.
     if let Ok((events, _)) = runscope::read::read_current_run(&store, conductor::STREAM) {
-        let m = metrics::project(&events);
-        if let Some(line) = parallelism_retention_line(&m) {
-            if m.parallelism_retention_warns() {
-                rigger::whole_line::say(format_args!("rigger: {line}"));
-            }
+        if let Some(line) = parallelism_retention_line(&metrics::project(&events)) {
+            rigger::whole_line::say(format_args!("rigger: {line}"));
         }
     }
     Ok(())
@@ -2179,11 +2173,10 @@ fn print_run_state(rs: &RunState, base: &str) {
 }
 
 /// The halt line a run entry prints after its run state (spec 115): `halted: <reason>` when the
-/// conductor returned a halt reason (the budget breaker's, else a plan-critique spec-defect
-/// stop's), `None` on any other stop.
+/// run stopped on a plan-critique spec defect ([`RunState::spec_defect_reason`]), `None` on any
+/// other stop.
 fn halted_line(rs: &RunState) -> Option<String> {
-    rs.budget_halt
-        .as_ref()
+    rs.spec_defect_reason()
         .map(|reason| format!("halted: {reason}"))
 }
 

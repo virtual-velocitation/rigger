@@ -204,20 +204,9 @@ pub struct RunState {
     /// conductor's DeferredGateFailed event; gates `done` so a
     /// deferred failure can never be reported as a finished run.
     pub deferred_gate_failed: bool,
-    /// The run's live HALT reason, or `None` on a clean fixpoint: the spawn-budget breaker's
-    /// when it stopped this run process with ready work unscheduled (Gap 13) - e.g. `"budget
-    /// exhausted: 200/200 spawns"` - else a plan-critique spec-defect stop's (spec 112,
-    /// criterion 5: `"amend the spec and relaunch: ..."`). Unlike the other fields this is NOT
-    /// set by [`project`]: `conductor::run` stamps it after projecting, the budget half from
-    /// its IN-PROCESS breaker state and the spec-defect half from this fold
-    /// ([`RunState::spec_defect_reason`]), so every step of a stopped run reports the stop.
-    /// Folding the durable `BudgetExhausted` event would falsely re-report a halt the operator
-    /// has since resolved by raising the budget (a resume then schedules the work and never
-    /// trips), so `project` deliberately leaves this `None` and only the live run sets it.
-    pub budget_halt: Option<String>,
     /// Whether THIS run process's conductor pass PARKED a spawn - stopped at a request with
-    /// no result - so it reached no fixpoint. Like [`budget_halt`](RunState::budget_halt) it
-    /// is a fact of the live pass, never folded by [`project`]: a result recorded after the
+    /// no result - so it reached no fixpoint. It is a fact of the live pass, never folded by
+    /// [`project`]: a result recorded after the
     /// pass parked its spawn is in the log read back afterwards, yet the pass never folded it,
     /// so only this says the run still owes the work that result unlocks.
     pub parked: bool,
@@ -399,7 +388,7 @@ pub fn holds(run_events: &[Event]) -> Vec<HoldSpan> {
 }
 
 /// One of the signals `AttentionEntry::kind` carries: an escalation, a spec-defect stop
-/// ([`ATTENTION_SPEC_DEFECT`], spec 112), a budget halt, a reject recurrence, and a hold and its
+/// ([`ATTENTION_SPEC_DEFECT`], spec 112), a reject recurrence, and a hold and its
 /// release ([`ATTENTION_HELD`], [`ATTENTION_RELEASED`], spec 105). Closed vocabulary (never
 /// inferred downstream) - kept as `&str` constants rather than an enum so the wire value and the
 /// Rust match arm are the same literal, with no separate `as_str`/`parse` translation to drift out
@@ -416,18 +405,16 @@ pub const ATTENTION_RELEASED: &str = "released";
 /// the stopped unit in place of its [`ATTENTION_ESCALATED`] entry, its detail the stop's reason
 /// ([`AttentionEntry::escalation`]).
 pub const ATTENTION_SPEC_DEFECT: &str = "spec-defect";
-pub const ATTENTION_HALTED: &str = "halted";
 pub const ATTENTION_REJECT_RECURRENCE: &str = "reject-recurrence";
 
-/// The canonical kind order: held, escalated, spec-defect, halted, reject-recurrence, released.
+/// The canonical kind order: held, escalated, spec-defect, reject-recurrence, released.
 /// The console's dock sorts its entries by it (a STABLE sort, so entries of the SAME kind keep
 /// their lexical unit order). An unknown kind sorts last rather than panicking.
 pub fn attention_kind_rank(kind: &str) -> usize {
-    const ORDER: [&str; 6] = [
+    const ORDER: [&str; 5] = [
         ATTENTION_HELD,
         ATTENTION_ESCALATED,
         ATTENTION_SPEC_DEFECT,
-        ATTENTION_HALTED,
         ATTENTION_REJECT_RECURRENCE,
         ATTENTION_RELEASED,
     ];
@@ -658,10 +645,12 @@ pub const TYPE_SCOPE_CREEP: &str = "ScopeCreep";
 /// `conductor::TYPE_SPEC_DEFECT`, the single source of the string): an uncovered criterion the
 /// run flagged rather than deviating around (§4.4).
 pub const TYPE_SPEC_DEFECT: &str = "SpecDefect";
-/// The conductor's TaskAborted event (the conductor re-exports this as
-/// `conductor::TYPE_TASK_ABORTED`, the single source of the string): the run aborted, with
-/// un-integrated work dropped and integrated work kept (§4.4).
+/// The TaskAborted event of the retired spawn budget: nothing emits it, and a log written while
+/// the budget existed still carries it, as an episode no fold reads.
 pub const TYPE_TASK_ABORTED: &str = "TaskAborted";
+/// The BudgetExhausted event of the retired spawn budget: nothing emits it, and a log written
+/// while the budget existed still carries it, as an episode no fold reads.
+pub const TYPE_BUDGET_EXHAUSTED: &str = "BudgetExhausted";
 /// The conductor's DeferredGateFailed event (kept in sync with
 /// `conductor::TYPE_DEFERRED_GATE_FAILED`): a deferred gate that failed when it ran
 /// at the run's phase boundary. A deferred failure is surfaced truthfully - it gates

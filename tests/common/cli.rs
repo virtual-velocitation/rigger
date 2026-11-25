@@ -2468,7 +2468,7 @@ pub fn assert_stopped_at_the_grounder(output: &(String, String, bool), what: &st
 /// appended verbatim after the stage.
 pub fn write_workflow(root: &Path, block: &str) {
     let workflow = format!(
-        "defaults:\n  grounder: nop\n  budget: 60\n\
+        "defaults:\n  grounder: nop\n\
          stages:\n  a:\n    agent: worker\n    on_pass: none\n\
          {block}"
     );
@@ -2551,7 +2551,6 @@ pub const REVIEWLESS_GIT_UNIT_WORKFLOW: WorkflowFixture = WorkflowFixture {
     worker: "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nDo the unit.\n",
     body: r#"defaults:
   grounder: nop
-  budget: 60
 gates:
   ok: { run: "true", kind: core }
 stages:
@@ -2571,7 +2570,6 @@ pub const REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW: WorkflowFixture = WorkflowFix
     worker: ISOLATED_WORKER,
     body: r#"defaults:
   grounder: nop
-  budget: 60
   max_retries: 1
 gates:
   red: { run: "false", kind: core }
@@ -2833,6 +2831,33 @@ pub fn unit_started(fakebin: &Path) -> PathBuf {
 /// Let every [`HOLDING_WORKER_ARM`] implementer of the fake installed at `fakebin` go on.
 pub fn release_the_unit(fakebin: &Path) {
     std::fs::write(fakebin.join("bin").join("release"), "").unwrap();
+}
+
+/// The shell of a session whose first launch marks `started` beside the fake and waits for a
+/// `release` there ([`release_the_unit`]), then dies with no result: the launch a test ends its run
+/// at with [`a_run_interrupted_at_its_waiting_launch`]. Each later launch goes on past it.
+pub const FIRST_LAUNCH_WAITS_FOR_ITS_INTERRUPT: &str = r#"    if [ ! -e "$here/started" ]; then
+        : > "$here/started"
+        while [ ! -e "$here/release" ]; do sleep 0.05; done
+        exit 1
+    fi
+"#;
+
+/// `rigger run` in `cwd` under the scratch root `scratch` over the fake host answering from
+/// `arms`, interrupted as an operator's Ctrl-C interrupts a driver once a launch
+/// [`FIRST_LAUNCH_WAITS_FOR_ITS_INTERRUPT`] holds is live, its stranded session then released:
+/// every spawn before that launch is answered in the run's log, and that one is not.
+#[cfg(unix)]
+pub fn a_run_interrupted_at_its_waiting_launch(cwd: &Path, scratch: &Path, arms: &str) -> EndedRun {
+    let ended = a_run_ended_mid_units(cwd, &["run"], scratch, &[], arms, &["started"], |driver| {
+        assert!(
+            super::interrupt_pid(driver.id()),
+            "the interrupt reaches the driver"
+        );
+        driver.wait().unwrap();
+    });
+    release_the_unit(ended.fake.path());
+    ended
 }
 
 /// What `.rigger/step.lock` under `root` holds: the record a run's driver keeps of itself.

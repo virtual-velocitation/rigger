@@ -654,7 +654,7 @@ fn a_repo_run_that_starts_a_criterion_unit_reads_only_the_run_the_carry_over_and
         common::cli::write_scaffold(
             root,
             &[("worker", common::cli::UNISOLATED_WORKER)],
-            "defaults:\n  grounder: nop\n  budget: 60\n\
+            "defaults:\n  grounder: nop\n\
              stages:\n  implement:\n    agent: worker\n    strategy: fan-out\n    on_pass: none\n",
         );
         std::fs::write(

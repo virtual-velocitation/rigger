@@ -46,7 +46,7 @@ use std::sync::Mutex;
 
 use rigger_domain::agent::{
     failure_class, parked_spawn, store_fault, strip_failure_marker, AgentDriver, AgentFailure,
-    AgentResult, Error, SpawnOpts, EMIT_REFUSED_MARKER,
+    AgentResult, Error, SpawnOpts,
 };
 use serde_json::Value;
 
@@ -186,7 +186,7 @@ impl<'a> HeldDriver<'a> {
     /// a read of the hold, since the host's own read decided it. Spends nothing: the relaunch it
     /// answers true for is spent by [`Self::try_spend_relaunch`].
     fn carries_across(&self, e: &Error, id: &str) -> bool {
-        if is_parked_or_refused(e, EMIT_REFUSED_MARKER) || is_store_fault(e) {
+        if is_parked_or_refused(e) || is_store_fault(e) {
             return false;
         }
         let Ok(slice) = self.run_slice() else {
@@ -225,7 +225,7 @@ impl<'a> HeldDriver<'a> {
     /// ([`spawn_store::record_result_unless_ended`]), never beside a result that ended the spawn.
     /// Best-effort: a failed read or write leaves `e` to reach the conductor unchanged.
     fn record_error(&self, e: &Error, id: &str) {
-        if is_parked_or_refused(e, EMIT_REFUSED_MARKER) || is_store_fault(e) {
+        if is_parked_or_refused(e) || is_store_fault(e) {
             return;
         }
         if is_interrupted(e)

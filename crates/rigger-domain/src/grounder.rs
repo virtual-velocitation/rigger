@@ -32,8 +32,8 @@ pub struct RankedRef {
 /// The two-view blast radius of a query (architecture 5.5.1, spec 16 unit 1). Blast-radius has
 /// OPPOSITE error costs for its two consumers, so it delivers TWO views over the same query:
 ///
-/// - `precise` - the ranked, capped view (definers ranked above referencers) that seeds an
-///   agent's prompt. A spurious extra file here merely wastes a little context, so precision
+/// - `precise` - the ranked view (definers ranked above referencers) that seeds an agent's
+///   prompt. A spurious extra file here merely wastes a little context, so precision
 ///   is what it optimizes for.
 /// - `safe` - the uncapped SAFE view the conductor schedules and routes review tiers by; what it
 ///   holds is stated once, in `docs/architecture-addendum-context-management.md` section 2.4.
@@ -46,7 +46,7 @@ pub struct RankedRef {
 /// [`radii_conflict`]: crate::metrics::radii_conflict
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BlastRadius {
-    /// The precise / ranked view: definer files first, then referencer files, capped at `k`.
+    /// The precise / ranked view: definer files first, then referencer files.
     pub precise: Vec<String>,
     /// The safe view, uncapped and always holding `precise` (addendum 2.4 states the rest).
     pub safe: Vec<String>,
@@ -78,23 +78,22 @@ pub struct Grounded<T> {
 pub trait Grounder: Send + Sync {
     fn ground(&self, query: &str, k: usize) -> Vec<Ref>;
 
-    /// The prompt seed of `query`: at most `k` distinct files an agent is grounded on. The
-    /// DEFAULT - the one a grep / nop grounder inherits - is the distinct files of its own
-    /// `ground(query, k)`, in ground order. The `symbols` grounder overrides it to start from the
-    /// code the query names, resolved to the files that define it.
-    fn seed(&self, query: &str, k: usize) -> Vec<String> {
-        distinct_files(self.ground(query, k))
+    /// The prompt seed of `query`: the distinct files an agent is grounded on. The DEFAULT - the
+    /// one a grep / nop grounder inherits - is the distinct files of every hit of its own
+    /// `ground`, in ground order. The `symbols` grounder overrides it to start from the code the
+    /// query names, resolved to the files that define it.
+    fn seed(&self, query: &str) -> Vec<String> {
+        distinct_files(self.ground(query, usize::MAX))
     }
 
     /// The two-view blast radius of `query` (architecture 5.5.1, spec 16). The DEFAULT impl - the
-    /// one a grep / nop grounder inherits - returns this grounder's OWN top-`k` radius
-    /// (the distinct files it grounds, in ground order) as BOTH views. So a non-symbols grounder's
-    /// blast radius is EXACTLY its grep/top-k radius: `precise == safe`, no extra work. This is what keeps unit 3's symbols-inactive `grounded_seed`
-    /// (which reads `precise`) byte-for-byte unchanged - it is the same `ground(query, k)` file set
-    /// it produces today. Only the `symbols` grounder overrides this to union the structural
+    /// one a grep / nop grounder inherits - returns this grounder's OWN radius (the distinct files
+    /// of every hit it grounds, in ground order) as BOTH views. So a non-symbols grounder's blast
+    /// radius is EXACTLY its grep radius, the same file set as its [`Self::seed`]: `precise ==
+    /// safe`, no extra work. Only the `symbols` grounder overrides this to union the structural
     /// cross-reference graph with an uncapped grep.
-    fn blast_radius(&self, query: &str, k: usize) -> BlastRadius {
-        let files = distinct_files(self.ground(query, k));
+    fn blast_radius(&self, query: &str) -> BlastRadius {
+        let files = distinct_files(self.ground(query, usize::MAX));
         BlastRadius {
             precise: files.clone(),
             safe: files,
@@ -112,10 +111,10 @@ pub trait Grounder: Send + Sync {
     /// structural cross-reference index) stamps EMPTY, so the conductor emits NO audit event and
     /// drives NO retention metric on that path. Only the `symbols` grounder overrides this to a
     /// non-empty `<tree-id>/<grammar-tags-version>` stamp.
-    fn blast_radius_stamped(&self, query: &str, k: usize) -> StampedRadius {
+    fn blast_radius_stamped(&self, query: &str) -> StampedRadius {
         StampedRadius {
-            seed: self.seed(query, k),
-            radius: self.blast_radius(query, k),
+            seed: self.seed(query),
+            radius: self.blast_radius(query),
             stamp: String::new(),
         }
     }
@@ -131,10 +130,9 @@ pub trait Grounder: Send + Sync {
         &self,
         head: Result<&crate::code_view::Head, &str>,
         query: &str,
-        k: usize,
     ) -> StampedRadius {
         let _ = head;
-        self.blast_radius_stamped(query, k)
+        self.blast_radius_stamped(query)
     }
 
     /// [`Self::ground`] with the honesty label (spec 6.1) its answer travels with: the tree the

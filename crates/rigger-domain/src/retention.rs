@@ -115,7 +115,7 @@ pub const EPISODIC_TYPES: [&str; 21] = [
     crate::ledger::TYPE_MANUAL_REVIEW,
     crate::ledger::TYPE_DEFERRED_GATE_FAILED,
     crate::ledger::TYPE_TASK_ABORTED,
-    crate::blocker::TYPE_BUDGET_EXHAUSTED,
+    crate::ledger::TYPE_BUDGET_EXHAUSTED,
     crate::progress::TYPE_AGENT_PROGRESS,
     crate::progress::TYPE_SPAWN_LAUNCHED,
     crate::progress::TYPE_STOP_FAILURE,

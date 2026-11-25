@@ -151,7 +151,7 @@ flowchart TB
     COND["conductor<br/>(execute the DAG . sole state writer)"]
     LEDGER["ledger / projector<br/>(durable run state)"]
     GATES["gate engine<br/>(run . ratchet . autonomy)"]
-    SAFE["safety<br/>(budget . remediate . escalate)"]
+    SAFE["safety<br/>(remediate . escalate)"]
     LOADER --> COND
     COND --- LEDGER & GATES & SAFE
   end
@@ -334,8 +334,7 @@ just entries in a project's `gates:` map. Rigger ships **zero** gates.
 A fixed pipeline bakes one team's process into the tool. Rigger's `conductor::run`
 (`crates/rigger-conductor/src/conductor.rs`) instead executes whatever DAG the workflow YAML declares: it
 topo-sorts the stages, runs the ready set wave by wave (independent stages concurrently),
-defers the coverage gate past a `produces` planner stage, trips the budget breaker before
-each wave, and projects the final `RunState`. The canonical pipeline above is simply the
+defers the coverage gate past a `produces` planner stage, and projects the final `RunState`. The canonical pipeline above is simply the
 *default* workflow shipped as an example.
 
 **Review and integration are per UNIT, inside each unit's lifecycle.** Every implementer
@@ -440,7 +439,7 @@ human.
 
 ### 4.4 Safety rails and recovery
 
-`checkBudget` (token/time circuit-breaker -> pause), `remediate` (bounded retry with
+`remediate` (bounded retry with
 re-grounding -> escalate after N), `flagSpecDefect` (halt + amend the spec, don't
 deviate), `abortTask` (discard un-integrated worktrees, keep integrated). Never silent,
 never infinite.
@@ -1049,7 +1048,6 @@ structurally.
 | An unreadable secret file or config | Surfaces LOUDLY; never a silent fall-through to the sqlite default that would fracture the run's store |
 | Server backend unreachable | Fail fast at startup with a clear (redacted) error; the `sqlite` default never has this failure mode |
 | Gate command itself errors (not just fails) | Gate engine wraps the run; a throwing command -> `{pass:false, evidence:"gate errored: ..."}`; never crashes the loop |
-| Budget exhausted mid-run | `checkBudget` circuit-breaker pauses; resume by replaying the ledger projection |
 
 ---
 
@@ -1140,7 +1138,7 @@ Where each responsibility lives, and the design move that keeps it project-agnos
 | `conductor` | executes the workflow DAG: planning, waves, the per-unit lifecycle, remediation, recovery | the pipeline is declared in YAML, never hardcoded |
 | `ledger` | per-unit run state | a pure fold over the event log - never a second source of truth |
 | `gate` | the verification library + the per-gate autonomy ratchet | a gate is any command that must exit 0; rigor is config |
-| `safety` | spawn-budget circuit breaker, bounded retry, escalation | every bound is config, never a constant |
+| `safety` | bounded retry, escalation | every bound is config, never a constant |
 | `grounder` | seeds each agent with exactly the code it needs | pluggable: `symbols` (structural; the default), `grep`, `nop` (explicit opt-outs) |
 | `eventstore` | the append-only log + the two backends + redaction | one trait; the backend is chosen by store resolution, not a recompile |
 | `contextgraph` + `community` + `concepts` | the knowledge graph: code + design + decisions, its derivations, and the directed-call traversal | a rebuildable bi-temporal projection of the log; derivations are event-sourced |

@@ -429,6 +429,29 @@ impl Config {
             "the `cache_dir:` line under `build:`",
             BUILD_KEY_RETIRED_WHY,
         )?;
+        // `defaults.budget` is retired: agent work is bounded where it is spent, so any value,
+        // `0` included, is refused at the line to delete.
+        reject_retired_key(
+            &wf.defaults
+                .budget
+                .map(|n| n.to_string())
+                .unwrap_or_default(),
+            "defaults.budget",
+            "the `budget:` line under `defaults:`",
+            "agent work is bounded by `max_retries` and the failure taxonomy's per-class retry \
+             limits",
+        )?;
+        // `defaults.max_unit_added_lines` is retired: unit size follows from one criterion per
+        // unit, so no line count caps it and any value is refused at the line to delete.
+        reject_retired_key(
+            &wf.defaults
+                .max_unit_added_lines
+                .map(|n| n.to_string())
+                .unwrap_or_default(),
+            "defaults.max_unit_added_lines",
+            "the `max_unit_added_lines:` line under `defaults:`",
+            "unit size follows from one criterion per unit",
+        )?;
         for id in self.agents.keys() {
             check_agent_id(id).map_err(|m| err(format!("agents {m}")))?;
         }
@@ -1560,7 +1583,7 @@ mod tests {
                 "an explicit defaults.max_retries must parse through",
             );
             assert_parsed(
-                "defaults:\n  budget: 60\n",
+                "defaults:\n  speculation_width: 2\n",
                 |w| w.defaults.max_retries,
                 0,
                 "an absent defaults.max_retries must default to 0 (the fall-back-to-3 sentinel)",
@@ -1591,7 +1614,7 @@ mod tests {
         /// placeholder of a declared `build.env` reads ([`crate::gate::BuildEnv::declared`]).
         /// Omitted (the common case)
         /// parses to `0` - unset, matching this config's own zero-as-unset convention
-        /// (`budget`, `max_retries`, `speculation_width`) - so a pre-existing workflow with no
+        /// (`max_retries`, `speculation_width`) - so a pre-existing workflow with no
         /// opinion on `build.jobs` is byte-for-byte back-compatible. An explicit positive value
         /// parses through untouched, and jobs is independent of wrapper - both may be set
         /// together without either suppressing the other's parse.
@@ -1613,8 +1636,7 @@ mod tests {
         /// Spec 65: `build.max_concurrent` is the machine-wide build budget's config plumbing
         /// ([`crate::budget::BuildBudget`] is the resolver that reads it). Omitted resolves to
         /// the documented default of 4 - NOT to a bare `u32::default()` of 0, which the `0`
-        /// value is separately reserved to mean (the `budget: 0` convention `defaults.budget`
-        /// already uses): an explicit `max_concurrent: 0` must parse distinctly from an absent
+        /// value is separately reserved to mean unlimited: an explicit `max_concurrent: 0` must parse distinctly from an absent
         /// key.
         build_config_parses_max_concurrent_defaulting_to_four_when_omitted: {
             assert_parsed(
@@ -2400,24 +2422,22 @@ agent: worker\n";
         );
     }
 
-    /// `defaults.grep_guard` and `defaults.max_unit_added_lines` each read as written, and a
-    /// workflow that does not write one declares no guard or no unit size cap, the same 0 a
-    /// declared 0 cap reads as; a row writing one key leaves the other at its absent value.
+    /// `defaults.grep_guard` reads as written, and a workflow that does not write it declares no
+    /// guard.
     #[test]
-    fn the_guard_and_cap_defaults_parse_and_are_off_when_absent() {
+    fn the_guard_default_parses_and_is_off_when_absent() {
         let rows = [
-            ("defaults:\n  grep_guard: true\n", (true, 0)),
-            ("defaults:\n  grep_guard: false\n", (false, 0)),
-            ("defaults:\n  max_unit_added_lines: 3000\n", (false, 3000)),
-            ("defaults:\n  max_unit_added_lines: 1\n", (false, 1)),
-            ("defaults:\n  max_unit_added_lines: 0\n", (false, 0)),
-            ("defaults:\n  budget: 10\n", (false, 0)),
+            ("defaults:\n  grep_guard: true\n", true),
+            ("defaults:\n  grep_guard: false\n", false),
+            ("defaults:\n  max_retries: 3\n", false),
         ];
-        let parsed: Vec<(bool, u32)> = rows
+        let parsed: Vec<bool> = rows
             .iter()
             .map(|(yaml, _)| {
-                let defaults = serde_yaml::from_str::<Workflow>(yaml).unwrap().defaults;
-                (defaults.grep_guard, defaults.max_unit_added_lines)
+                serde_yaml::from_str::<Workflow>(yaml)
+                    .unwrap()
+                    .defaults
+                    .grep_guard
             })
             .collect();
         assert_eq!(parsed, rows.map(|(_, declared)| declared));
@@ -2448,7 +2468,12 @@ agent: worker\n";
                 "ghost",
                 Err(GHOST_TEST_AUTHOR_REFUSAL.to_string()),
             ),
-            ("defaults:\n  budget: 10\n", &["sdet-author"], "", Ok(())),
+            (
+                "defaults:\n  max_retries: 3\n",
+                &["sdet-author"],
+                "",
+                Ok(()),
+            ),
             ("defaults:\n  test_author: \"\"\n", &[], "", Ok(())),
         ];
         for (yaml, defined, parsed, verdict) in rows {
@@ -2515,7 +2540,7 @@ class: product\n";
         // The common case: a workflow authors no failure_rules, so the taxonomy is the
         // shipped default (infra faults reran, everything else product) - preserving
         // spec-07 semantics and every existing gate test.
-        let wf: Workflow = serde_yaml::from_str("defaults:\n  budget: 10\n").unwrap();
+        let wf: Workflow = serde_yaml::from_str("defaults:\n  max_retries: 3\n").unwrap();
         assert!(wf.defaults.failure_rules.is_empty());
         let tax = wf.failure_taxonomy().unwrap();
         assert!(!tax.is_empty(), "the default taxonomy ships rules");
@@ -2650,7 +2675,7 @@ class: product\n";
     #[test]
     fn validate_rejects_the_retired_workflow_name_key_with_the_line_to_delete() {
         let workflow: Workflow = crate::config::parse_yaml_naming_unknown_keys(
-            "name: my-project\ndefaults:\n  budget: 10\n",
+            "name: my-project\n",
         )
         .expect("a workflow carrying the retired name key still parses, so validate can name it");
         let cfg = Config {
@@ -2665,6 +2690,40 @@ class: product\n";
             msg.contains("`name` is retired") && msg.contains("delete the `name:` line"),
             "the error must name the retired key and the line to delete: {msg:?}"
         );
+    }
+
+    /// Each retired `defaults` key is refused whatever value it carries, `0` included, naming
+    /// the key and the line to delete; a workflow without it passes.
+    #[test]
+    fn validate_refuses_each_retired_defaults_key_at_any_value() {
+        let budget = "the workflow key `defaults.budget` is retired (agent work is bounded by \
+             `max_retries` and the failure taxonomy's per-class retry limits): delete the \
+             `budget:` line under `defaults:` from your workflow.yml (config key: defaults.budget)";
+        let unit_cap = "the workflow key `defaults.max_unit_added_lines` is retired (unit size \
+             follows from one criterion per unit): delete the `max_unit_added_lines:` line under \
+             `defaults:` from your workflow.yml (config key: defaults.max_unit_added_lines)";
+        for (block, refusal) in [
+            ("defaults:\n  budget: 60\n", Some(budget)),
+            ("defaults:\n  budget: 0\n", Some(budget)),
+            ("defaults:\n  max_unit_added_lines: 3000\n", Some(unit_cap)),
+            ("defaults:\n  max_unit_added_lines: 0\n", Some(unit_cap)),
+            ("defaults:\n  max_retries: 3\n", None),
+        ] {
+            let workflow: Workflow = crate::config::parse_yaml_naming_unknown_keys(block)
+                .unwrap_or_else(|e| panic!("{block:?}: a retired key still parses: {e}"));
+            let cfg = Config {
+                workflow,
+                ..Default::default()
+            };
+            assert_eq!(
+                cfg.validate().map_err(|e| e.0),
+                match refusal {
+                    Some(refusal) => Err(refusal.to_string()),
+                    None => Ok(vec![]),
+                },
+                "{block:?}"
+            );
+        }
     }
 
     /// A synthetic workflow declaring the one gate `sweep`, requiring `requires`.
