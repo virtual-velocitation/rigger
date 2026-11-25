@@ -3,11 +3,13 @@
 //! worktree cannot be compared. Under it the lookup names each entity's referrers by kind, its test
 //! referrers only under `--tests include` or `only`, and marks `?` a referrer whose mention gave the entity
 //! no single edge. `--show` prints a node's doc and its referrers by kind as entries of its site,
-//! each referrer as the lookup prints it.
+//! each referrer as the lookup prints it. A reader an uncommitted edit adds is listed by a lookup
+//! from the worktree holding the edit, and by none from another worktree at the same head.
 
 use crate::common;
 use common::cli::{run_rigger, run_rigger_ok, temp_project};
 use common::fixtures::{git_commit_all, git_out, write_files, write_text};
+use common::git::linked_worktree;
 use rigger::contextgraph::REFERRER_LABELS;
 
 /// GIVEN a project whose source is committed and built, WHEN `rigger graph --around` reads it
@@ -832,6 +834,18 @@ fn an_ambiguous_referrer_is_marked() {
     lookup_prints_blocks(root, &[], &cases);
 }
 
+/// The lookup's block for [`READERS`]'s `LIMIT`, from its heading to the next section's, while
+/// tests are hidden: its `reads:` line names the two product functions alone.
+const LIMIT_READ_BY_PRODUCTS: &[&str] = &[
+    "### LIMIT",
+    "exact match: 1 entity",
+    "- src/lib.rs:3 src/lib.rs::LIMIT (constant)",
+    "  The most widgets one bin holds.",
+    "  reads: src/lib.rs:11 src/lib.rs::spill (function); src/lib.rs:16 src/lib.rs::fits (function)",
+    "",
+    "## text",
+];
+
 /// GIVEN a built project holding [`READERS`], WHEN `rigger graph --lookup` reads the constant with
 /// no `--tests` option, under `--tests exclude`, under `--tests include` and under `--tests only`,
 /// THEN its `reads:` line names the two product functions alone unless tests are shown. Under
@@ -846,15 +860,7 @@ fn a_test_referrer_is_hidden_by_default() {
     write_text(root, "src/lib.rs", READERS);
     git_commit_all(root, "source");
     run_rigger_ok(root, &["graph", "build"]);
-    let product: &[&str] = &[
-        "### LIMIT",
-        "exact match: 1 entity",
-        "- src/lib.rs:3 src/lib.rs::LIMIT (constant)",
-        "  The most widgets one bin holds.",
-        "  reads: src/lib.rs:11 src/lib.rs::spill (function); src/lib.rs:16 src/lib.rs::fits (function)",
-        "",
-        "## text",
-    ];
+    let product = LIMIT_READ_BY_PRODUCTS;
     let every: &[&str] = &[
         "### LIMIT",
         "exact match: 1 entity",
@@ -1004,6 +1010,39 @@ fn show_lists_each_referrer_as_the_lookup_does() {
             })
             .collect();
         assert_eq!(listed, entries, "{term} {options:?}:\n{lookup}");
+    }
+}
+
+/// GIVEN a built project holding [`READERS`] and two linked worktrees at its head, WHEN one
+/// worktree's uncommitted edit appends a function reading the constant and `rigger graph --lookup`
+/// reads the constant from that worktree and then from the other, THEN the editing worktree's
+/// `reads:` line names the new reader after the two product functions, at the line that reads
+/// it, and the other's names the two product functions alone.
+#[test]
+fn the_overlay_carries_new_references() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_text(root, "src/lib.rs", READERS);
+    git_commit_all(root, "source");
+    run_rigger_ok(root, &["graph", "build"]);
+    let trees = tempfile::tempdir().unwrap();
+    let [edited, other] =
+        ["edited", "other"].map(|name| linked_worktree(root, trees.path().join(name)));
+    let drain = "pub fn drain() -> usize {\n    LIMIT\n}\n";
+    write_text(&edited, "src/lib.rs", &format!("{READERS}{drain}"));
+    let carried: &[&str] = &[
+        "### LIMIT",
+        "exact match: 1 entity",
+        "- src/lib.rs:3 src/lib.rs::LIMIT (constant)",
+        "  The most widgets one bin holds.",
+        "  reads: src/lib.rs:11 src/lib.rs::spill (function); src/lib.rs:16 src/lib.rs::fits (function); src/lib.rs:56 src/lib.rs::drain (function)",
+        "",
+        "## text",
+    ];
+    // (the worktree the lookup reads from, the constant's block from its heading to the next
+    // section's)
+    for (worktree, block) in [(&edited, carried), (&other, LIMIT_READ_BY_PRODUCTS)] {
+        lookup_prints_blocks(worktree, &[], &[("LIMIT", block)]);
     }
 }
 
