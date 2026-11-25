@@ -8,6 +8,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use crate::code_facts::MentionKind;
 use crate::code_view::{Head, ViewFilter};
 use crate::eventstore::{Event, Position};
 
@@ -1081,6 +1082,26 @@ pub trait ContextGraph: Send + Sync {
         Ok(None)
     }
 
+    /// The doc comment of `node`, a code file or the production definition a code entity records
+    /// (a test definition reads none), when the file facts this graph was read
+    /// from hold its doc span and describe the caller's tree: the span's lines read from the
+    /// caller's worktree ([`crate::code_view::SourceLines`]) as the extractor the store was opened
+    /// with gives their text ([`crate::code_view::Extract::doc_text`]). `None` when the graph
+    /// read no such span, withholds its code facts or reads no doc, and when the span reaches past
+    /// the file's end or the file cannot be opened. The default answers `None`.
+    fn doc(&self, _node: &Node) -> Option<String> {
+        None
+    }
+
+    /// The product referrers of the code entity `id` (spec 117, READERS): one per product mention
+    /// whose own rule lists it under `id`, in path then mention order (the order a file's
+    /// extraction lists its mentions, which need not be line order), under every `tests` setting.
+    /// None when the graph withholds its code facts, and by default (a graph that holds no code, a
+    /// test double).
+    fn referrers(&self, _id: &str) -> Vec<Referrer> {
+        Vec::new()
+    }
+
     /// Every node of `kind` this graph holds, ordered by id: the names the combined lookup
     /// resolves a term against (`code-entity`) and the records it ranks as prose (`decision`,
     /// `lesson`, `finding`). A projection that holds no node of `kind` answers an empty set.
@@ -1536,6 +1557,50 @@ pub fn reference_candidate_kinds(ref_kind: &str) -> Vec<&'static str> {
     }
 }
 
+/// The label a referrer is listed under, by its mention's tag (spec 117, READERS): one row per
+/// tag, in the spec's order, a call carrying no tag (`None`, as an [`EdgeInferred::ref_kind`] is
+/// absent for one).
+pub const REFERRER_LABELS: [(Option<&str>, &str); 8] = [
+    (None, "called by"),
+    (Some(REF_KIND_CONST), "reads"),
+    (Some(REF_KIND_TYPE), "type use"),
+    (Some(REF_KIND_IMPL), "implemented by"),
+    (Some(REF_KIND_FIELD), "field use"),
+    (Some(REF_KIND_VARIANT), "variant use"),
+    (Some(REF_KIND_USE), "imported by"),
+    (Some(REF_KIND_MODULE), "declared by"),
+];
+
+/// The label a referrer whose mention is of `kind` is listed under ([`REFERRER_LABELS`]); `None`
+/// for a tag the table holds no row for.
+pub fn referrer_label(kind: &MentionKind) -> Option<&'static str> {
+    let tag = match kind {
+        MentionKind::Call => None,
+        MentionKind::Tagged(tag) => Some(tag.as_str()),
+    };
+    REFERRER_LABELS
+        .iter()
+        .find(|(row, _)| *row == tag)
+        .map(|(_, label)| *label)
+}
+
+/// One referrer of a code entity (spec 117, READERS): a mention whose own rule lists it under the
+/// entity ([`crate::resolve::Resolver::referrers`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Referrer {
+    /// The id of the definition the mention sits in, or of its file when none encloses it.
+    pub site: String,
+    /// The kind of the definition that settles `site`, or [`KIND_FILE`] for a file.
+    pub kind: String,
+    /// The label it is listed under, by its mention's tag ([`referrer_label`]).
+    pub label: &'static str,
+    /// The mention's own line.
+    pub line: u32,
+    /// Whether the mention is test code, by its own mark, its file's scope or the test-module
+    /// closure: what the view filter hides a code edge by.
+    pub test: bool,
+}
+
 /// Whether a `rel` edge onto a node of kind `target_kind` declares a module (spec 117, MODULE
 /// ROOTS AT READ): a [`REL_CONTAINS`] onto a [`KIND_FILE`] node, the edge a `mod x;` reaches its
 /// file by. A declaration is not coupling, so no community or label degree counts it,
@@ -1896,6 +1961,47 @@ mod reference_candidate_kinds_rule {
     #[test]
     fn a_module_rows_candidates_are_newline_joined_on_the_log() {
         assert_eq!(MODULE_CANDIDATE_SEPARATOR, "\n");
+    }
+}
+
+/// Spec 117, READERS: the label a referrer is listed under, by its mention's tag.
+#[cfg(test)]
+mod referrer_label_rule {
+    use super::*;
+    use crate::code_facts::MentionKind;
+
+    /// Every tag has its label: the table holds one row per tag in the spec's order, a call
+    /// carrying no tag; each tag's mention reads its row's label, and a tag the table holds no
+    /// row for (a call's name spelled as a tag, the empty tag, a label) reads none.
+    #[test]
+    fn each_tag_has_its_label_in_the_readers_order_and_an_unlisted_tag_none() {
+        let listed = [
+            (None, "called by"),
+            (Some("const"), "reads"),
+            (Some("type"), "type use"),
+            (Some("impl"), "implemented by"),
+            (Some("field"), "field use"),
+            (Some("variant"), "variant use"),
+            (Some("use"), "imported by"),
+            (Some("module"), "declared by"),
+        ];
+        assert_eq!(
+            REFERRER_LABELS, listed,
+            "one row per tag, in the spec's order"
+        );
+        let kind = |tag: Option<&str>| {
+            tag.map_or(MentionKind::Call, |tag| MentionKind::Tagged(tag.into()))
+        };
+        assert_eq!(
+            listed.map(|(tag, _)| referrer_label(&kind(tag))),
+            listed.map(|(_, label)| Some(label)),
+            "each tag's mention reads its row's label"
+        );
+        assert_eq!(
+            [Some("call"), Some(""), Some("reads")].map(|tag| referrer_label(&kind(tag))),
+            [None, None, None],
+            "a tag the table holds no row for reads no label"
+        );
     }
 }
 

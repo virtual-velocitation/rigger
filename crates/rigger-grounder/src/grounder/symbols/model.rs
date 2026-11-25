@@ -183,7 +183,7 @@ pub struct SymRef {
     /// byte-identical-wire-form reason as `Def::is_test`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub is_test: bool,
-    /// Spec 117 (REFERENCES, CAPTURES): what kind of non-call reference this is, in the
+    /// Spec 117 (RUST REFERENCES, CAPTURES): what kind of non-call reference this is, in the
     /// `EdgeInferred` payload's own spelling (`contextgraph::REF_KIND_*`): in every language, the
     /// kind a tags query's `@reference.<kind>` suffix names (a type, an impl, a const read, a field
     /// or a use), and in Rust also a const read, a type reference or an imported leaf of a `use`
@@ -193,11 +193,15 @@ pub struct SymRef {
     /// Serde-defaulted and omitted when `None`, so a call serializes byte-identically to before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ref_kind: Option<String>,
-    /// Spec 117 (CAPTURES): the qualifier the reference was written with: a tags query's
-    /// `@qualifier.path` or `@qualifier.member` capture, else the text before the leaf of a
-    /// chained `@name` (`Ns` of `Ns.IShape`). `name` above stays the bare leaf. `None` for a
-    /// reference written bare. Serde-defaulted and omitted when `None`, so an unqualified
-    /// reference serializes byte-identically to before.
+    /// Spec 117 (CAPTURES, RUST REFERENCES): the qualifier the reference was written with: a tags
+    /// query's `@qualifier.path` or `@qualifier.member` capture, else the text before the leaf of
+    /// a chained `@name` (`Ns` of `Ns.IShape`), and for a Rust call the one the Rust rule reads
+    /// off the tree around its name (`Store` of `Store::open()`, `B` of `C::f()` under `use a::B
+    /// as C`, the enclosing impl's type or the trait of `self.file()`). `name` above stays the
+    /// bare leaf. `None` for a reference written bare and for a Rust call the rule qualifies by
+    /// nothing (`self.inner.open()`).
+    /// Serde-defaulted and omitted when `None`, so an unqualified reference serializes
+    /// byte-identically to before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub qualifier: Option<Qualifier>,
 }
@@ -231,10 +235,11 @@ pub struct FileSymbols {
     /// before this field existed.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub partial: bool,
-    /// Spec 117 (DOC FACTS): the file's doc span, the 1-based inclusive lines from the first to
-    /// the last of the inner doc lines a Rust file opens with
-    /// ([`crate::grounder::symbols::extract::extract`] sets it); `None` for a file opening with
-    /// none and for every other language. Serde-defaulted and omitted when `None`.
+    /// Spec 117 (DOC FACTS): the file's doc span, the 1-based inclusive lines from its first doc
+    /// line to its last - the lines the `@doc` capture of the first query match that tags nothing
+    /// covers (a Python module docstring), else, in Rust, the inner doc lines the file opens with
+    /// ([`crate::grounder::symbols::extract::extract`] sets it); `None` when it has none.
+    /// Serde-defaulted and omitted when `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub doc: Option<(u32, u32)>,
 }
@@ -255,7 +260,7 @@ impl FileSymbols {
 
 macro_rules! rust_tags_generation {
     () => {
-        "rust-tags-v2"
+        "rust-tags-v5"
     };
 }
 
@@ -267,19 +272,19 @@ macro_rules! csharp_tags_generation {
 
 macro_rules! ts_tags_generation {
     () => {
-        "typescript-tags-v5"
+        "typescript-tags-v6"
     };
 }
 
 macro_rules! tsx_tags_generation {
     () => {
-        "tsx-tags-v5"
+        "tsx-tags-v6"
     };
 }
 
 macro_rules! js_tags_generation {
     () => {
-        "javascript-tags-v5"
+        "javascript-tags-v6"
     };
 }
 
@@ -291,7 +296,7 @@ macro_rules! go_tags_generation {
 
 macro_rules! python_tags_generation {
     () => {
-        "python-tags-v1"
+        "python-tags-v2"
     };
 }
 

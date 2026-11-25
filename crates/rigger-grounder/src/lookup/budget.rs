@@ -17,7 +17,7 @@ pub(crate) const REPLY_LIMIT: usize = 48_000;
 pub(crate) const GRAPH_CHARS: usize = 24_000;
 /// The most entities one term's graph answer reads.
 pub(crate) const GRAPH_ENTITIES: usize = 8;
-/// The most callers, or callees, one entity lists.
+/// The most referrers under one label, or callees, one entity lists.
 pub(crate) const EDGES_SHOWN: usize = 10;
 /// The most matching lines the text section keeps from one file for one term.
 pub(crate) const TEXT_PER_FILE: usize = 5;
@@ -139,20 +139,20 @@ fn entities_counted(n: usize) -> String {
     format!("{n} {noun}")
 }
 
-/// One entity's lines: its site, then its callers, callees and referencing files.
+/// One entity's lines: its site, its doc's first line when that line holds any text, one line per
+/// label its referrers are listed under, then its callees.
 fn entity_block(entity: &Entity) -> String {
     let mut block = format!("- {}\n", site_line(&entity.site));
-    edge_line(&mut block, "called by", &entity.callers);
-    edge_line(&mut block, "calls", &entity.callees);
-    if !entity.referenced_in.is_empty() {
-        let shown = entity.referenced_in.len().min(EDGES_SHOWN);
-        let _ = write!(
-            block,
-            "  referenced in: {}",
-            entity.referenced_in[..shown].join(", ")
-        );
-        more(&mut block, entity.referenced_in.len() - shown);
+    if let Some(first) = (entity.doc.as_deref())
+        .and_then(|doc| doc.lines().next())
+        .filter(|line| !line.trim().is_empty())
+    {
+        let _ = writeln!(block, "  {first}");
     }
+    for (label, sites) in &entity.referrers {
+        edge_line(&mut block, label, sites);
+    }
+    edge_line(&mut block, "calls", &entity.callees);
     block
 }
 

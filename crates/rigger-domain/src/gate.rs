@@ -117,10 +117,14 @@ impl Autonomy {
 pub const PROMOTE_THRESHOLD: usize = 3;
 
 /// A gate's verdict with compact evidence.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct GateResult {
     pub pass: bool,
     pub evidence: String,
+    /// What the run's record says about how the gate ran, beside its verdict: empty, or one
+    /// clause ending `"; "` (a build budget the run could not enforce). Never part of
+    /// `evidence`, so a note never decides how a failure is classified.
+    pub note: String,
 }
 
 /// One run of a gate, for the ratchet's history.

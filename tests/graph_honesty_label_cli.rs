@@ -1,6 +1,6 @@
 //! The honesty label (6.1) heads every graph answer the CLI prints: the commit the answer
 //! describes, or the caller's worktree over it when the two differ, and what it withheld when the
-//! worktree cannot be compared.
+//! worktree cannot be compared. Under it the lookup names each entity's referrers by kind.
 
 use crate::common;
 use common::cli::{run_rigger, run_rigger_ok, temp_project};
@@ -623,4 +623,131 @@ fn a_workflow_node_of_a_differing_definition_describes_the_worktree() {
         !answer.iter().any(|l| l.contains("agent:worker")),
         "the snapshot's definition is not; stdout:\n{out}"
     );
+}
+
+/// A source file whose documented constant `LIMIT` is read by two product functions (`spill`
+/// before `fits`, so source order is not name order), by a `#[test]` function and by the
+/// `#[cfg(test)]` twin of the product `helper`, and whose type `Bin` is named in `spill`'s
+/// signature.
+/// Its function `ready` is called on a body line of `start`, then on two of `begin`'s (source order
+/// again not name order), and by a `#[test]` function.
+const READERS: &str = "\
+/// The most widgets one bin holds.
+/// It bounds every bin.
+pub const LIMIT: usize = 3;
+
+pub struct Bin {
+    pub count: usize,
+}
+
+pub fn spill(bin: &Bin) -> usize {
+    let over = bin.count;
+    over - LIMIT
+}
+
+pub fn fits(n: usize) -> bool {
+    let room = n;
+    room <= LIMIT
+}
+
+#[cfg(test)]
+fn helper() -> usize {
+    LIMIT
+}
+#[cfg(not(test))]
+fn helper() -> usize {
+    0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LIMIT;
+
+    #[test]
+    fn the_bound_holds() {
+        let n = LIMIT;
+    }
+}
+
+pub fn ready() -> bool {
+    true
+}
+
+pub fn start() -> bool {
+    ready()
+}
+
+pub fn begin() -> bool {
+    let first = ready();
+    first || ready()
+}
+
+#[test]
+fn it_starts() {
+    let up = ready();
+}
+";
+
+/// GIVEN a built project holding [`READERS`], WHEN `rigger graph --lookup` reads the constant and
+/// the type, THEN the lookup names each one's referrers by kind: the constant's doc's first line
+/// under its site line, then a `reads:` line naming the two product functions at the lines that
+/// read it, in mention order (line order here, since no reader sits in a macro's arguments), and
+/// neither test reader, though the `#[cfg(test)]` reader's id is the product `helper`'s; the type's
+/// `type use:` line names the function whose signature names it. Read the same way, the
+/// function's `called by:` line names each product call at the call's own line, once per call, in
+/// mention order, and not the `#[test]` function's call.
+#[test]
+fn the_lookup_names_referrers_by_kind() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_text(root, "src/lib.rs", READERS);
+    git_commit_all(root, "source");
+    run_rigger_ok(root, &["graph", "build"]);
+    // (the term, its block's lines from its heading to the next section's)
+    let cases: [(&str, &[&str]); 3] = [
+        (
+            "LIMIT",
+            &[
+                "### LIMIT",
+                "exact match: 1 entity",
+                "- src/lib.rs:3 src/lib.rs::LIMIT (constant)",
+                "  The most widgets one bin holds.",
+                "  reads: src/lib.rs:11 src/lib.rs::spill (function); src/lib.rs:16 src/lib.rs::fits (function)",
+                "",
+                "## text",
+            ],
+        ),
+        (
+            "Bin",
+            &[
+                "### Bin",
+                "exact match: 1 entity",
+                "- src/lib.rs:5 src/lib.rs::Bin (type)",
+                "  type use: src/lib.rs:9 src/lib.rs::spill (function)",
+                "",
+                "## text",
+            ],
+        ),
+        (
+            "ready",
+            &[
+                "### ready",
+                "exact match: 1 entity",
+                "- src/lib.rs:38 src/lib.rs::ready (function)",
+                "  called by: src/lib.rs:43 src/lib.rs::start (function); src/lib.rs:47 src/lib.rs::begin (function); src/lib.rs:48 src/lib.rs::begin (function)",
+                "",
+                "## text",
+            ],
+        ),
+    ];
+    for (term, block) in cases {
+        let (out, err, ok) = run_rigger(root, &["graph", "--lookup", term]);
+        assert!(ok, "{term} answers; stderr:\n{err}");
+        let heading = format!("### {term}");
+        let printed: Vec<&str> = (out.lines())
+            .skip_while(|l| *l != heading)
+            .take(block.len())
+            .collect();
+        assert_eq!(printed, block, "{term}:\n{out}");
+    }
 }

@@ -1708,6 +1708,7 @@ fn assert_winner_reviewed_aliases(panel: ReviewPanel, expected: &[&str]) {
         store: &store,
         driver: &driver,
         gates: &ExecRunner,
+        run_branch: common::fixtures::branch_of(&repo_path),
         repo: repo_path,
         grounder: None,
         graph: None,

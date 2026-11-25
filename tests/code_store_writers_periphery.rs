@@ -174,6 +174,7 @@ fn the_conductor_advances_the_store_after_a_landed_merge() {
             store: &store,
             driver: driver.as_ref(),
             gates: &ExecRunner,
+            run_branch: common::fixtures::branch_of(repo.to_str().unwrap()),
             repo: repo.to_str().unwrap().to_string(),
             grounder: None,
             graph: None,

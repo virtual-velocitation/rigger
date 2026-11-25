@@ -641,20 +641,27 @@ impl Subscription {
         let err_relay = Arc::clone(&err);
         let handle = std::thread::spawn(move || {
             while !stop_relay.load(Ordering::Relaxed) {
-                match self.recv_timeout(Duration::from_millis(50)) {
-                    Some(e) => {
+                let quiet = match self.rx.recv_timeout(Duration::from_millis(50)) {
+                    Ok(e) => {
                         if tx.send(f(e)).is_err() {
                             return;
                         }
+                        continue;
                     }
-                    None => {
-                        if let Some(msg) = self.err() {
-                            *err_relay.lock().unwrap() = Some(msg);
-                            return;
-                        }
-                        // a quiet timeout: the inner is still live; re-check stop
+                    Err(e) => e == std::sync::mpsc::RecvTimeoutError::Timeout,
+                };
+                let msg = self.err();
+                if quiet && msg.is_none() {
+                    continue; // the inner is still live; re-check stop
+                }
+                // The inner ended: relay what it sent before it ended, then its error.
+                while let Some(e) = self.try_recv() {
+                    if tx.send(f(e)).is_err() {
+                        return;
                     }
                 }
+                *err_relay.lock().unwrap() = msg;
+                return;
             }
         });
         Subscription::new(rx, err, stop, handle)
@@ -1111,6 +1118,51 @@ mod subscription_map_tests {
         assert!(mapped.recv_timeout(Duration::from_millis(200)).is_none());
         assert_eq!(mapped.err(), None);
         drop(mapped);
+    }
+
+    /// An event the inner subscription sends just before it fails is delivered before the
+    /// error: the relay, parked on the inner's error cell after a quiet timeout, finds the event
+    /// and the error together.
+    #[test]
+    fn an_event_sent_as_the_inner_fails_is_delivered_before_the_error() {
+        let (tx, rx) = channel();
+        let err = Arc::new(Mutex::new(None));
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_t = Arc::clone(&stop);
+        let idle = std::thread::spawn(move || {
+            while !stop_t.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        });
+        let cell = Arc::clone(&err);
+        let mut held = cell.lock().unwrap();
+        let mapped = Subscription::new(rx, err, stop, idle).map(|e| e);
+        std::thread::sleep(Duration::from_millis(300));
+        tx.send(Event::new("last", b"{}".to_vec())).unwrap();
+        *held = Some("gone".to_string());
+        drop(held);
+        let got = mapped
+            .recv_timeout(Duration::from_secs(10))
+            .map(|e| e.type_);
+        assert_eq!(got.as_deref(), Some("last"));
+        assert!(mapped.recv().is_none());
+        assert_eq!(mapped.err(), Some("gone".to_string()));
+    }
+
+    /// An inner subscription whose feeder ends without an error ends the mapped one once its
+    /// events are relayed.
+    #[test]
+    fn a_mapped_subscription_ends_once_its_inner_ends_without_an_error() {
+        let (tx, rx) = channel();
+        let feeder = std::thread::spawn(move || tx.send(Event::new("a", b"{}".to_vec())).unwrap());
+        let inner = Subscription::new(rx, Arc::default(), Arc::default(), feeder);
+        let mapped = inner.map(|e| e);
+        assert_eq!(mapped.recv().map(|e| e.type_).as_deref(), Some("a"));
+        assert!(matches!(
+            mapped.rx.recv_timeout(Duration::from_secs(10)),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected)
+        ));
+        assert_eq!(mapped.err(), None);
     }
 }
 

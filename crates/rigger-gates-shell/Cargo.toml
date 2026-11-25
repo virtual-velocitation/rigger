@@ -23,11 +23,6 @@ rigger-domain = { path = "../rigger-domain", default-features = false }
 rigger-process = { path = "../rigger-process", default-features = false }
 thiserror = "2"
 
-# Target-gated exactly as in the root manifest: the `wasm32` core lane never builds it.
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-# The shared build-cache guard's advisory lock: `flock(2)` on unix, `LockFileEx` on Windows.
-fs2 = "0.4"
-
 [dev-dependencies]
 tempfile = "3"
 

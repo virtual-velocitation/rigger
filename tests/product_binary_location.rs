@@ -145,7 +145,7 @@ fn no_suite_bakes_the_product_path_at_compile_time_except_the_one_authority() {
         if rel == "product_binary_location.rs" {
             return;
         }
-        if rel == "common/mod.rs" {
+        if rel == "common/product_binary.rs" {
             // The authority may DISCUSS the macro in prose; what is counted is the one
             // invocation it is allowed to make.
             authority_sites += source.matches(&invocation).count();
@@ -165,6 +165,6 @@ fn no_suite_bakes_the_product_path_at_compile_time_except_the_one_authority() {
     );
     assert_eq!(
         authority_sites, 1,
-        "the fallback belongs at exactly one site in tests/common/mod.rs"
+        "the fallback belongs at exactly one site in tests/common/product_binary.rs"
     );
 }

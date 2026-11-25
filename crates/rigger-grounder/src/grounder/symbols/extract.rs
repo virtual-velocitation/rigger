@@ -1,6 +1,7 @@
 //! Symbol extraction: the ONE function that touches tree-sitter (architecture 5.5.3). It
-//! runs an INJECTED grammar's `tags` query over a source string and lowers the uniform tags
-//! into the parser-free `FileSymbols` model. Everything downstream sees `FileSymbols` and
+//! runs an INJECTED grammar's `tags` query over a source string, and in Rust over each macro
+//! invocation's re-parsed token tree, and lowers the uniform tags into the parser-free
+//! `FileSymbols` model. Everything downstream sees `FileSymbols` and
 //! never the parser - so per-language support is a registration (unit 2), and a language
 //! whose query cannot tag a definition (its grammar gives it no name node, or the upstream query
 //! already holds that node as a reference) also adds a read-off here, selected by the language
@@ -213,6 +214,15 @@ impl<'s> Source<'s> {
     fn span(&self, range: &std::ops::Range<usize>) -> (u32, u32) {
         (self.line(range.start), self.last_line(range))
     }
+
+    /// The tree-sitter point of the byte at `at`: its 0-based line and its byte column in it.
+    fn point(&self, at: usize) -> tree_sitter::Point {
+        let row = line_of_byte(&self.line_starts, at) as usize;
+        tree_sitter::Point {
+            row,
+            column: at - self.line_starts[row],
+        }
+    }
 }
 
 /// THE ONE CONSTRUCTOR of a `Def` (spec 119, ONE EXTENT): every tagged, read-off and impl
@@ -225,7 +235,8 @@ impl<'s> Source<'s> {
 /// that resolve the rest: `path`
 /// and `parent` need every definition's range ([`def_paths`] decides containment over the whole
 /// set), as `is_test` does (`test_regions`),
-/// and the out-of-line module facts are read from the parsed tree once every definition is known
+/// and the out-of-line module facts are read from the tree it was parsed in once every definition
+/// is known
 /// (only a `Module`-kind definition ever carries them; see `Def::is_out_of_line_module`).
 fn def_of(
     source: &Source,
@@ -308,7 +319,8 @@ enum Capture {
     /// ([`CompiledTags::constructors`]), where it stays a call, so `new T()` is a call of `T`
     /// (spec 117, CAPTURES).
     Class(Option<&'static str>),
-    /// `@doc`: a doc comment of the match's definition, which gives it its doc span.
+    /// `@doc`: a doc comment or docstring of the match's definition, which gives it its doc span,
+    /// or of the file when the match tags nothing ([`CompiledTags::tags_in`]).
     Doc,
     /// `@qualifier.path` (true) or `@qualifier.member` (false): the node the match's reference is
     /// qualified by, a path or a member access, in place of the qualifier its name's text writes
@@ -494,30 +506,45 @@ impl CompiledTags {
 
     /// The tags the query yields over the tree rooted at `root`, parsed from `source`, in the
     /// order the tree-sitter tags convention yields them: a match whose captures hold a name and a
-    /// definition or reference makes a tag, unless its name node holds a parse error; of the
-    /// matches naming the same node, the one of the earliest pattern makes its tag; and a tag
-    /// is yielded once a later-matched name starts past its name's end, the rest in name order
-    /// when the matches run out. Within a match the last name capture names it, the last
-    /// definition or reference capture is the tagged node, a `@reference.class` one a call when
+    /// definition or reference makes a tag, unless its name node holds a parse error; a tag is
+    /// yielded once a later-matched name starts past its name's end, the rest in name order when
+    /// the matches run out; and of the matches naming the same node, the one of the earliest
+    /// pattern makes its tag, which stands in the first tag's place, so a match that comes after
+    /// that node's tag was yielded still replaces it when its pattern is earlier. Within a match
+    /// the last name capture names it, the last definition or reference capture is the tagged
+    /// node, a `@reference.class` one a call when
     /// that node's kind is one of the [`CompiledTags::constructors`], and its `@doc` captures,
     /// read as the matcher yields them, cover its doc ([`Tag::doc`]), for every language. A
     /// reference is named by the leaf its name splits to ([`CompiledTags::split_leaf`]), a name
     /// that is no chain making no tag, and qualified by the match's last `@qualifier.path` or
     /// `@qualifier.member` capture, else by the qualifier the split reads off its name's text.
-    fn tags_in(&self, root: tree_sitter::Node, source: &str) -> Vec<Tag> {
+    /// A match that tags nothing, no definition and no reference captured, makes no tag: its
+    /// `@doc` captures cover the file's doc, the first such match holding one giving it, which
+    /// the reading returns beside the tags (spec 117, DOC FACTS).
+    fn tags_in(
+        &self,
+        root: tree_sitter::Node,
+        source: &str,
+    ) -> (Vec<Tag>, Option<std::ops::Range<usize>>) {
         let mut cursor = tree_sitter::QueryCursor::new();
         let mut matches = cursor.matches(&self.query, root, source.as_bytes());
-        // The tags not yet yielded, in (name end, name start) order, each with the pattern that
-        // made it.
+        let key = |tag: &Tag| (tag.name_range.end, tag.name_range.start);
+        // The tags not yet yielded, in (name end, name start) order, and the tags yielded, in
+        // yield order, each with the pattern that made it, and where each yielded tag's key sits.
         let mut queue: std::collections::VecDeque<(Tag, usize)> = Default::default();
-        let mut tags = Vec::new();
+        let mut tags: Vec<(Tag, usize)> = Vec::new();
+        let mut yielded = std::collections::HashMap::new();
+        let mut file_doc = None;
         loop {
             while queue.len() > 1
                 && queue
                     .back()
                     .is_some_and(|(last, _)| queue[0].0.name_range.end < last.name_range.start)
             {
-                tags.extend(queue.pop_front().map(|(tag, _)| tag));
+                if let Some(next) = queue.pop_front() {
+                    yielded.insert(key(&next.0), tags.len());
+                    tags.push(next);
+                }
             }
             let Some(found) = matches.next() else {
                 break;
@@ -545,7 +572,11 @@ impl CompiledTags {
                     }
                 }
             }
-            let (Some(name), Some((node, role))) = (name, tagged) else {
+            let Some((node, role)) = tagged else {
+                file_doc = file_doc.or(doc);
+                continue;
+            };
+            let Some(name) = name else {
                 continue;
             };
             if name.has_error() {
@@ -580,24 +611,39 @@ impl CompiledTags {
                 doc,
                 qualifier,
             };
-            let key = |tag: &Tag| (tag.name_range.end, tag.name_range.start);
-            match queue.binary_search_by_key(&key(&tag), |(queued, _)| key(queued)) {
-                Ok(at) if queue[at].1 > found.pattern_index => {
-                    queue[at] = (tag, found.pattern_index);
+            // The tag already made for this name node, yielded or queued, else a new one queued.
+            let made = if let Some(&at) = yielded.get(&key(&tag)) {
+                &mut tags[at]
+            } else {
+                match queue.binary_search_by_key(&key(&tag), |(queued, _)| key(queued)) {
+                    Ok(at) => &mut queue[at],
+                    Err(at) => {
+                        queue.insert(at, (tag, found.pattern_index));
+                        continue;
+                    }
                 }
-                Ok(_) => {}
-                Err(at) => queue.insert(at, (tag, found.pattern_index)),
+            };
+            if made.1 > found.pattern_index {
+                *made = (tag, found.pattern_index);
             }
         }
-        tags.extend(queue.into_iter().map(|(tag, _)| tag));
-        tags
+        let tags = tags.into_iter().chain(queue).map(|(tag, _)| tag).collect();
+        (tags, file_doc)
     }
 }
 
 /// Extract one file's definitions and references by running the INJECTED grammar's compiled tag
-/// query over `source` (5.5.3). This is the ONLY function that touches tree-sitter; the caller
-/// supplies the compiled grammar and query (unit 2's registry decides WHICH), and everything it
-/// returns is the parser-free `FileSymbols`.
+/// query over `source` (5.5.3). This is the ONLY entry to tree-sitter: it parses `source` once
+/// and, in Rust, re-parses each macro invocation's token tree ([`reparse_invocations`]); the
+/// caller supplies the compiled grammar and query (unit 2's registry decides WHICH), and
+/// everything it returns is the parser-free `FileSymbols`.
+///
+/// Every pass below reads each tree in turn, the file's first and then each re-parse's in the
+/// order [`reparse_invocations`] gives them (spec 117, MACRO TOKEN TREES), keeping of a re-parse
+/// only what lies within the byte ranges it reads ([`kept`]); every byte position is the file's,
+/// so a re-parsed definition or reference takes its caller, container and test region by the
+/// same position rules as the file's own, and a re-parsed definition's own node, attributes and
+/// doc lines are read off the tree it came from.
 ///
 /// A tagged definition is named by its leaf ([`def_leaf`]), in `defs` and in its caller range
 /// alike, and as a caller by its path (`Def.path`, spec 119 criterion 8). A definition tag
@@ -622,26 +668,32 @@ impl CompiledTags {
 /// A reference tag is a reference of the kind its capture's suffix names ([`ref_kind_of`], spec
 /// 117), its `ref_kind` none for a call, a `@reference.class` tag on a constructor node kind
 /// staying a call ([`Capture::Class`]), named by the bare leaf its name splits to and carrying
-/// the qualifier it is written with ([`CompiledTags::split_leaf`]).
+/// the qualifier it is written with ([`CompiledTags::split_leaf`]). A Rust tag's name is that leaf
+/// already, so a Rust reference carries the qualifier the Rust rule reads off the tree around its
+/// name ([`rust_qualifier`], spec 117, RUST REFERENCES) instead, and one whose path's qualifier
+/// names the standard library or a primitive type stages nothing ([`excluded_qualifier`]).
 ///
 /// Rust's const reads, type references and the leaves a `use` imports are read off the tree too
 /// ([`rust_references`], spec 117): each is a reference tagged with its `ref_kind`, pushed after
-/// every call reference so it takes its caller and test region by the same position rules, an
+/// every call reference of every tree so it takes its caller and test region by the same
+/// position rules, an
 /// impl header's trait row taking the self type's path when exactly one non-test definition of
 /// the file has the self type's leaf, else the impl block's.
 ///
-/// Doc spans (spec 117, DOC FACTS): a definition's `@doc` capture gives it its span, in every
-/// language; in Rust, a definition with no capture takes its outer doc lines' ([`outer_doc`]) and
-/// the file takes its opening inner doc lines' ([`inner_doc`]). Every other file has none.
+/// Doc spans (spec 117, DOC FACTS): a definition's `@doc` capture gives it its span, and the
+/// first match that tags nothing and holds a capture gives the file its span, in every language;
+/// in Rust, a definition with no capture takes its outer doc lines' ([`outer_doc`]) and a file
+/// with no such match its opening inner doc lines' ([`inner_doc`]). Every other definition and
+/// file has none.
 ///
 /// A tag whose byte range cannot be sliced out of `source` (a defensive guard; the ranges the
 /// tags reading yields are valid UTF-8 boundaries in practice) is skipped rather than
 /// panicking, so a pathological file degrades to partial symbols, never a crash.
 pub fn extract(source: &str, lang: Lang, tags: &CompiledTags) -> Result<FileSymbols, String> {
-    // The one parse of `source`: the tags query runs over this tree, and the reads of what the
-    // tags cannot express (a tagged definition's own node, impl blocks, tuple fields, test
-    // attributes, out-of-line module declarations) read the same tree. This is the one function
-    // touching tree-sitter, so the single-parsing-authority invariant (5.5.3) holds. A
+    // The parse of `source`: the tags query runs over this tree and each token tree's re-parse,
+    // and the reads of what the tags cannot express (a tagged definition's own node, impl blocks,
+    // tuple fields, test attributes, out-of-line module declarations) read the same trees. This
+    // is the one entry to tree-sitter, so the single-parsing-authority invariant (5.5.3) holds. A
     // `Parser::set_language` or `parse` failure is defensive only: the query compiled against the
     // same language, so this path degrades to an `Err` rather than a panic without ever being
     // expected to fire in practice.
@@ -653,171 +705,245 @@ pub fn extract(source: &str, lang: Lang, tags: &CompiledTags) -> Result<FileSymb
         .parse(source, None)
         .ok_or_else(|| "symbols: parse: tree-sitter produced no syntax tree".to_string())?;
     let root = tree.root_node();
-    let tags = tags.tags_in(root, source);
     let text = Source::new(source);
+    let bytes = source.as_bytes();
+    let file_range = 0..source.len();
+    let whole = std::slice::from_ref(&file_range);
+    let structure = StructuralNodes::of(root, lang, whole);
+    let file_scope = Scope {
+        std_imports: std_imports(&structure.uses, bytes),
+        aliases: use_aliases(&structure.uses, bytes),
+        ..Scope::default()
+    };
+    // Spec 117 (MACRO TOKEN TREES): every macro invocation's token tree, re-parsed, of a Rust
+    // file alone, the one language whose `structure.references` are gathered; the file's tree is
+    // the first read and each re-parse a read after it.
+    let mut reparses = Vec::new();
+    reparse_invocations(
+        &mut parser,
+        &structure.references,
+        &file_scope,
+        &text,
+        &mut reparses,
+    );
+    let file_read = Read {
+        root,
+        keep: whole,
+        scope: &file_scope,
+        structure,
+    };
+    let reads: Vec<Read> = std::iter::once(file_read)
+        .chain(reparses.iter().map(|reparse| {
+            let root = reparse.tree.root_node();
+            Read {
+                root,
+                keep: &reparse.keep,
+                scope: &reparse.scope,
+                structure: StructuralNodes::of(root, lang, &reparse.keep),
+            }
+        }))
+        .collect();
     let mut defs = Vec::new();
     let mut refs = Vec::new();
     // Each definition's byte range (the whole construct, body included - the tag's node range,
     // see `enclosing_defs`) with its name and kind, and each reference's byte position. Collected
-    // in this single tag pass; the enclosing definition is resolved below so the reference order
-    // the emit pass depends on stays untouched.
+    // in the tag pass over every read; the enclosing definition is resolved below so the reference
+    // order the emit pass depends on stays untouched.
     let mut def_ranges: Vec<(std::ops::Range<usize>, String, Kind)> = Vec::new();
+    // The read each definition of `def_ranges` came from, at its index.
+    let mut def_reads: Vec<usize> = Vec::new();
     // The range of each definition THE NAME FILTER drops (`record_def`), in neither `defs` nor
-    // `def_ranges`, kept for `test_regions` alone.
-    let mut dropped: Vec<std::ops::Range<usize>> = Vec::new();
+    // `def_ranges`, with the read it came from, kept for `test_regions` alone.
+    let mut dropped: Vec<(std::ops::Range<usize>, usize)> = Vec::new();
     let mut ref_positions: Vec<usize> = Vec::new();
-    for tag in tags {
-        let Some(name) = source.get(tag.leaf.start..tag.leaf.end) else {
-            continue;
-        };
-        // 1-based line from the tag name's start row.
-        let line = tag.row as u32 + 1;
-        match tag.role {
-            TagRole::Definition(kind) => {
-                // THE LEAF, ahead of the filter and both pushes `record_def` makes, so the name a
-                // definition is filtered by, recorded under and ranked by as a caller is one.
-                let node = root.descendant_for_byte_range(tag.range.start, tag.range.end);
-                let at = defs.len();
-                dropped.extend(record_def(
-                    lang,
-                    &text,
-                    node,
-                    kind,
-                    (tag.range.clone(), def_leaf(node, name), line),
-                    &mut defs,
-                    &mut def_ranges,
-                ));
-                // Spec 117 (DOC FACTS): the `@doc` capture gives the definition just recorded its
-                // span; a definition the name filter drops was not recorded, so its capture gives
-                // none.
-                if let Some(def) = defs.get_mut(at) {
-                    def.doc = tag.doc.map(|doc| text.span(&doc));
+    let mut file_doc = None;
+    for (at_read, read) in reads.iter().enumerate() {
+        let (found, read_doc) = tags.tags_in(read.root, source);
+        // The file's doc is the file tree's: a token tree's re-parse is never the file's head.
+        if at_read == 0 {
+            file_doc = read_doc;
+        }
+        for tag in found.into_iter().filter(|tag| kept(read.keep, &tag.range)) {
+            let Some(name) = source.get(tag.leaf.start..tag.leaf.end) else {
+                continue;
+            };
+            // 1-based line from the tag name's start row.
+            let line = tag.row as u32 + 1;
+            match tag.role {
+                TagRole::Definition(kind) => {
+                    // THE LEAF, ahead of the filter and both pushes `record_def` makes, so the
+                    // name a definition is filtered by, recorded under and ranked by as a caller
+                    // is one.
+                    let node = read
+                        .root
+                        .descendant_for_byte_range(tag.range.start, tag.range.end);
+                    let at = defs.len();
+                    dropped.extend(
+                        record_def(
+                            lang,
+                            &text,
+                            node,
+                            kind,
+                            (tag.range.clone(), def_leaf(node, name), line),
+                            &mut defs,
+                            &mut def_ranges,
+                        )
+                        .map(|range| (range, at_read)),
+                    );
+                    // Spec 117 (DOC FACTS): the `@doc` capture gives the definition just recorded
+                    // its span; a definition the name filter drops was not recorded, so its
+                    // capture gives none.
+                    if let Some(def) = defs.get_mut(at) {
+                        def.doc = tag.doc.map(|doc| text.span(&doc));
+                    }
+                }
+                TagRole::Reference(ref_kind) => {
+                    // A Rust reference is qualified by the Rust rule, off its name node: the Rust
+                    // query's names are leaves, so its tags carry no qualifier. One whose path's
+                    // qualifier names the standard library or a primitive type stages nothing.
+                    let qualifier = match lang {
+                        Lang::Rust => {
+                            let leaf = read
+                                .root
+                                .descendant_for_byte_range(tag.leaf.start, tag.leaf.end);
+                            if leaf.is_some_and(|leaf| excluded_qualifier(leaf, bytes, read.scope))
+                            {
+                                continue;
+                            }
+                            leaf.and_then(|leaf| rust_qualifier(leaf, bytes, read.scope))
+                        }
+                        _ => tag.qualifier,
+                    };
+                    ref_positions.push(tag.range.start);
+                    refs.push(SymRef {
+                        name: name.to_string(),
+                        line,
+                        enclosing: None,
+                        is_test: false,
+                        ref_kind: ref_kind.map(str::to_string),
+                        qualifier,
+                    });
                 }
             }
-            TagRole::Reference(ref_kind) => {
-                ref_positions.push(tag.range.start);
-                refs.push(SymRef {
-                    name: name.to_string(),
-                    line,
-                    enclosing: None,
-                    is_test: false,
-                    ref_kind: ref_kind.map(str::to_string),
-                    qualifier: tag.qualifier,
-                });
-            }
         }
+        def_reads.resize(def_ranges.len(), at_read);
     }
     // Every impl block is a definition of its own (gap 104), named by its header, with its trait
     // and self type recorded as references. Added before the attribution pass below, so those two
     // references attribute to the impl (the impl -> trait and impl -> type links) unless a
     // function encloses the impl, which then is their caller, while a reference inside one of its
     // methods still attributes to the method, the innermost function.
-    let structure = StructuralNodes::of(root, lang);
-    for block in impl_blocks(&structure.impls, source.as_bytes()) {
-        defs.push(def_of(
-            &text,
-            block.range.clone(),
-            Kind::Impl,
-            block.name.clone(),
-            block.line,
-        ));
-        def_ranges.push((block.range, block.name, Kind::Impl));
-        for (name, line, pos) in block.targets {
-            ref_positions.push(pos);
-            refs.push(SymRef {
-                name,
-                line,
-                ..SymRef::default()
-            });
+    for (at_read, read) in reads.iter().enumerate() {
+        for block in impl_blocks(&read.structure.impls, bytes) {
+            defs.push(def_of(
+                &text,
+                block.range.clone(),
+                Kind::Impl,
+                block.name.clone(),
+                block.line,
+            ));
+            def_ranges.push((block.range, block.name, Kind::Impl));
+            for (name, line, pos) in block.targets {
+                ref_positions.push(pos);
+                refs.push(SymRef {
+                    name,
+                    line,
+                    ..SymRef::default()
+                });
+            }
         }
+        def_reads.resize(def_ranges.len(), at_read);
     }
-    // Spec 117 (REFERENCES): Rust's tagged references, read off the parsed tree after every call
-    // reference, so each follows the untagged one of its name and site and the attribution and
-    // test-region passes below cover it; an impl header's trait row is noted to take its `from`
-    // once every definition's test status is known.
+    // Spec 117 (RUST REFERENCES): Rust's tagged references, read off the parsed trees after every
+    // call reference, so each follows the untagged one of its name and site and the attribution
+    // and test-region passes below cover it; an impl header's trait row is noted to take its
+    // `from` once every definition's test status is known.
     let mut impl_rows: Vec<(usize, std::ops::Range<usize>, String)> = Vec::new();
     if lang == Lang::Rust {
-        for tagged in rust_references(&structure, source.as_bytes()) {
-            if let Some((impl_range, self_leaf)) = tagged.impl_from {
-                impl_rows.push((refs.len(), impl_range, self_leaf));
+        for read in &reads {
+            for tagged in rust_references(&read.structure, bytes, read.scope) {
+                if let Some((impl_range, self_leaf)) = tagged.impl_from {
+                    impl_rows.push((refs.len(), impl_range, self_leaf));
+                }
+                ref_positions.push(tagged.pos);
+                refs.push(SymRef {
+                    name: tagged.name,
+                    line: tagged.line,
+                    ref_kind: Some(tagged.kind.to_string()),
+                    ..SymRef::default()
+                });
             }
-            ref_positions.push(tagged.pos);
-            refs.push(SymRef {
-                name: tagged.name,
-                line: tagged.line,
-                ref_kind: Some(tagged.kind.to_string()),
-                ..SymRef::default()
-            });
         }
     }
-    // The definitions the language's query cannot tag are read off the tree too (spec 116), each
+    // The definitions the language's query cannot tag are read off the trees too (spec 116), each
     // read-off giving the kind of what it finds, lowered over its own node as a tagged
     // definition's is; one whose leaf names nothing makes no definition, as a tagged one makes
     // none.
-    let read_offs = match lang {
-        Lang::Rust => vec![(Kind::Field, tuple_fields(root))],
-        Lang::Go => vec![
-            (Kind::Field, embedded_fields(root, source.as_bytes())),
-            (
-                Kind::Type,
-                named_by_field(root, source.as_bytes(), "type_alias", "name"),
-            ),
-        ],
-        Lang::CSharp => vec![
-            (
-                Kind::Method,
-                named_by_field(root, source.as_bytes(), "operator_declaration", "operator"),
-            ),
-            (Kind::Method, conversion_operators(root, source.as_bytes())),
-            (Kind::Method, indexers(root, source.as_bytes())),
-        ],
-        Lang::Js | Lang::Ts => vec![
-            (Kind::Field, class_fields(root, source.as_bytes())),
-            (Kind::Variant, enum_members(root, source.as_bytes())),
-            (Kind::Constant, js_bindings(root, source.as_bytes())),
-        ],
-        Lang::Python => vec![
-            (
-                Kind::Constant,
-                assigned_names(root, source.as_bytes(), true),
-            ),
-            (Kind::Field, class_body_names(root, source.as_bytes())),
-            (Kind::Type, type_aliases(root, source.as_bytes())),
-        ],
-    };
-    for (kind, found) in read_offs {
-        for found in found {
-            let node = root.descendant_for_byte_range(found.0.start, found.0.end);
-            dropped.extend(record_def(
-                lang,
-                &text,
-                node,
-                kind,
-                found,
-                &mut defs,
-                &mut def_ranges,
-            ));
+    for (at_read, read) in reads.iter().enumerate() {
+        let root = read.root;
+        let read_offs = match lang {
+            Lang::Rust => vec![(Kind::Field, tuple_fields(root))],
+            Lang::Go => vec![
+                (Kind::Field, embedded_fields(root, bytes)),
+                (
+                    Kind::Type,
+                    named_by_field(root, bytes, "type_alias", "name"),
+                ),
+            ],
+            Lang::CSharp => vec![
+                (
+                    Kind::Method,
+                    named_by_field(root, bytes, "operator_declaration", "operator"),
+                ),
+                (Kind::Method, conversion_operators(root, bytes)),
+                (Kind::Method, indexers(root, bytes)),
+            ],
+            Lang::Js | Lang::Ts => vec![
+                (Kind::Field, class_fields(root, bytes)),
+                (Kind::Variant, enum_members(root, bytes)),
+                (Kind::Constant, js_bindings(root, bytes)),
+            ],
+            Lang::Python => vec![
+                (Kind::Constant, assigned_names(root, bytes, true)),
+                (Kind::Field, class_body_names(root, bytes)),
+                (Kind::Type, type_aliases(root, bytes)),
+            ],
+        };
+        for (kind, found) in read_offs {
+            for found in found.into_iter().filter(|found| kept(read.keep, &found.0)) {
+                let node = root.descendant_for_byte_range(found.0.start, found.0.end);
+                dropped.extend(
+                    record_def(lang, &text, node, kind, found, &mut defs, &mut def_ranges)
+                        .map(|range| (range, at_read)),
+                );
+            }
         }
+        def_reads.resize(def_ranges.len(), at_read);
     }
-    // Spec 117 (DOC FACTS): in Rust, a definition no `@doc` capture gave a span, an impl block's
-    // and a read-off's included, takes the one its outer doc lines give it ([`outer_doc`]), and
-    // the file takes the one its opening inner doc lines give it ([`inner_doc`]).
+    // The root of the tree each definition came from, at its index.
+    let def_roots: Vec<tree_sitter::Node> = def_reads.iter().map(|&at| reads[at].root).collect();
+    // Spec 117 (DOC FACTS): the file takes the span of the first match that tags nothing and holds
+    // a `@doc` capture ([`CompiledTags::tags_in`]). In Rust, a definition no `@doc` capture gave a
+    // span, an impl block's and a read-off's included, takes the one its outer doc lines give it
+    // ([`outer_doc`]), and a file no such match gave one takes the one its opening inner doc lines
+    // give it ([`inner_doc`]).
+    let file_doc = file_doc.map(|doc| text.span(&doc));
     let doc = if lang == Lang::Rust {
-        for (d, (range, _, _)) in defs.iter_mut().zip(&def_ranges) {
+        for ((d, (range, _, _)), &def_root) in defs.iter_mut().zip(&def_ranges).zip(&def_roots) {
             d.doc = d
                 .doc
-                .or_else(|| outer_doc(root, range, source.as_bytes()).map(|doc| text.span(&doc)));
+                .or_else(|| outer_doc(def_root, range, bytes).map(|doc| text.span(&doc)));
         }
-        inner_doc(root, source.as_bytes()).map(|doc| text.span(&doc))
+        file_doc.or_else(|| inner_doc(root, bytes).map(|doc| text.span(&doc)))
     } else {
-        None
+        file_doc
     };
     // Spec 119 (IDS FOLLOW THE LANGUAGE'S PATH; CONTAINS IS STRUCTURE): each definition's id path
     // and parent, decided over every definition's range at once, so a container recorded after
     // what it holds still prefixes and parents it.
     for (d, (path, parent)) in defs
         .iter_mut()
-        .zip(def_paths(root, source.as_bytes(), &def_ranges))
+        .zip(def_paths(&def_roots, bytes, &def_ranges))
     {
         d.path = path;
         d.parent = parent;
@@ -841,26 +967,32 @@ pub fn extract(source: &str, lang: Lang, tags: &CompiledTags) -> Result<FileSymb
     // Byte-range based, so it is exact regardless of which line a construct starts
     // or ends on; computed AFTER every def's range is known, so a def's own containment check can
     // see siblings and ancestors alike whatever order the tags happened to arrive in.
-    // `test_regions` walks the parsed tree's `attribute_item` nodes structurally instead of
+    // `test_regions` walks the parsed trees' `attribute_item` nodes structurally instead of
     // re-deriving attribute/comment boundaries from characters.
-    let regions = test_regions(
-        source.as_bytes(),
-        root,
-        &def_ranges,
-        &dropped,
-        &structure.gated,
-    );
+    let attributed: Vec<_> = def_ranges
+        .iter()
+        .map(|(range, _, _)| range.clone())
+        .zip(def_roots.iter().copied())
+        .chain(
+            dropped
+                .iter()
+                .map(|(range, at)| (range.clone(), reads[*at].root)),
+        )
+        .collect();
+    let gated: Vec<_> = reads
+        .iter()
+        .flat_map(|read| read.structure.gated.iter().copied())
+        .collect();
+    let regions = test_regions(bytes, root, &attributed, &gated);
     if !regions.is_empty() {
         for (d, (range, _, _)) in defs.iter_mut().zip(def_ranges.iter()) {
-            d.is_test = regions
-                .iter()
-                .any(|r| r.start <= range.start && range.end <= r.end);
+            d.is_test = regions.iter().any(|r| within(range, r));
         }
         for (r, &pos) in refs.iter_mut().zip(ref_positions.iter()) {
             r.is_test = regions.iter().any(|region| region.contains(&pos));
         }
     }
-    // Spec 117 (REFERENCES): an impl header's trait row comes from the self type's path when
+    // Spec 117 (RUST REFERENCES): an impl header's trait row comes from the self type's path when
     // exactly one surviving (non-test) definition of the file has the self type's leaf, else from
     // the impl's own path.
     for (at, impl_range, self_leaf) in impl_rows {
@@ -886,20 +1018,23 @@ pub fn extract(source: &str, lang: Lang, tags: &CompiledTags) -> Result<FileSymb
     // ([`out_of_line_path_override`]) - the SAME reason as `is_out_of_line_module` itself: only
     // this file's own parsed tree carries the attribute, so the events/index layer that resolves
     // it needs it carried on the definition, not re-derived from source it no longer has.
-    for (d, (range, _, _)) in defs.iter_mut().zip(def_ranges.iter()) {
+    // A declaration re-parsed out of a token tree is read off its own re-parse, its enclosing
+    // inline modules those holding its invocation ([`Scope::modules`]) and then those of its own.
+    for ((d, (range, _, _)), &at) in defs.iter_mut().zip(def_ranges.iter()).zip(&def_reads) {
         if d.kind == Kind::Module {
-            if let Some(n) = root.descendant_for_byte_range(range.start, range.end) {
+            let read = &reads[at];
+            if let Some(n) = read.root.descendant_for_byte_range(range.start, range.end) {
                 d.is_out_of_line_module =
                     n.kind() == "mod_item" && n.child_by_field_name("body").is_none();
                 if d.is_out_of_line_module {
-                    d.path_override = out_of_line_path_override(n, source.as_bytes());
+                    d.path_override = out_of_line_path_override(n, bytes);
                     // Round 9 (`op-u86-c1-path-attribute-contract-is-rustc-s-and-unresolvable-
                     // never-excludes`): which enclosing INLINE modules, if any, this declaration
                     // sits nested inside - the events/index layer's module candidates need this
                     // to compute the correct directory, `#[path]` override or convention alike
                     // (`Def::enclosing_inline_module_path`'s doc).
                     d.enclosing_inline_module_path =
-                        enclosing_inline_module_path(n, source.as_bytes());
+                        enclosing_inline_module_path(n, bytes, &read.scope.modules);
                 }
             }
         }
@@ -908,9 +1043,9 @@ pub fn extract(source: &str, lang: Lang, tags: &CompiledTags) -> Result<FileSymb
     // `adv-u2c2-partial-marker-unimplemented`): whether this parse hit an ERROR node anywhere -
     // `has_error()` on `tree`'s root is true iff the tree contains a syntax-error or missing-token
     // node, the tree-sitter-native signal that the grammar could not fully parse `source`. Read off
-    // the SAME `tree` `test_regions`/the out-of-line-module walk above already parsed (never a
-    // second parse), so a malformed file's `defs`/`refs` are carried exactly as far as the parse
-    // reached, tagged as partial rather than silently presented as complete.
+    // the file's own `tree` alone (a token tree's re-parse holding an error is read by its
+    // fallback, never a fault of the file), so a malformed file's `defs`/`refs` are carried exactly
+    // as far as the parse reached, tagged as partial rather than silently presented as complete.
     let partial = root.has_error();
     Ok(FileSymbols {
         lang,
@@ -922,23 +1057,27 @@ pub fn extract(source: &str, lang: Lang, tags: &CompiledTags) -> Result<FileSymb
 }
 
 /// The node kinds an attribute can gate that yield no definition of their own, so
-/// [`test_regions`] reads each one's attribute stack itself: an extern block, a `use` and the two
+/// [`test_regions`] reads each one's attribute stack itself: an extern block, a `use`, the two
 /// statement kinds, a `let` and an expression statement (spec 117: a reference inside a
-/// `#[cfg(test)] use ..;` or a `#[cfg(test)]` statement is test code).
-const GATED_NON_DEFINITIONS: [&str; 4] = [
+/// `#[cfg(test)] use ..;` or a `#[cfg(test)]` statement is test code), and a macro invocation
+/// (spec 117, MACRO TOKEN TREES: what an item-level `#[cfg(test)] thread_local! { .. }`'s token
+/// tree re-parses to is test code).
+const GATED_NON_DEFINITIONS: [&str; 5] = [
     "foreign_mod_item",
     "use_declaration",
     "let_declaration",
     "expression_statement",
+    "macro_invocation",
 ];
 
 /// THE TEST REGIONS (spec 116): the byte ranges of every TEST-ATTRIBUTED range in the file
 /// `source` parsed to `root`, one whose own `#[test]`/`#[cfg(..test..)]` attribute stack sits
-/// directly above it ([`preceded_by_test_attribute`]): each definition of `def_ranges` and each
-/// one THE NAME FILTER dropped (`dropped`, a `#[cfg(test)] const _: () = { .. }`'s among them);
-/// each `gated` node, the file's [`GATED_NON_DEFINITIONS`] ([`StructuralNodes`]) - an extern
-/// block, a container that yields no definition, and a `use` or a statement (spec 117), which a
-/// reference sits in; and
+/// directly above it ([`preceded_by_test_attribute`]): each range of `attributed`, every
+/// definition's and each one THE NAME FILTER dropped (a `#[cfg(test)] const _: () = { .. }`'s
+/// among them), read off the root of the tree it came from beside it (the file's, or a token
+/// tree's re-parse); each `gated` node, every read tree's [`GATED_NON_DEFINITIONS`]
+/// ([`StructuralNodes`]) - an extern block, a container that yields no definition, a `use` or a
+/// statement (spec 117), which a reference sits in, and a macro invocation; and
 /// the whole file, `0..source.len()`, when the root opens with an inner `#![cfg(test)]`
 /// ([`opens_with_inner_test_attribute`]). A definition NESTED inside one of these ranges (a
 /// plain helper with no attribute of its own, living inside a `#[cfg(test)] mod tests { .. }`) is
@@ -948,16 +1087,13 @@ const GATED_NON_DEFINITIONS: [&str; 4] = [
 fn test_regions(
     source: &[u8],
     root: tree_sitter::Node,
-    def_ranges: &[(std::ops::Range<usize>, String, Kind)],
-    dropped: &[std::ops::Range<usize>],
+    attributed: &[(std::ops::Range<usize>, tree_sitter::Node)],
     gated: &[tree_sitter::Node],
 ) -> Vec<std::ops::Range<usize>> {
-    let mut regions: Vec<_> = def_ranges
+    let mut regions: Vec<_> = attributed
         .iter()
-        .map(|(range, _, _)| range)
-        .chain(dropped)
-        .filter(|range| preceded_by_test_attribute(source, root, range))
-        .cloned()
+        .filter(|(range, tree)| preceded_by_test_attribute(source, *tree, range))
+        .map(|(range, _)| range.clone())
         .collect();
     regions.extend(
         gated
@@ -1082,10 +1218,12 @@ fn impl_blocks(impls: &[tree_sitter::Node], source: &[u8]) -> Vec<ImplBlock> {
 }
 
 /// The nodes the structural reads of one parsed tree start from, gathered in ONE WALK of it, each
-/// list in source order: every `use_declaration` and every `impl_item` ([`rust_references`],
+/// list in source order and holding only nodes within the byte ranges the tree is read over
+/// ([`kept`]): every `use_declaration` and every `impl_item` ([`rust_references`],
 /// [`impl_blocks`]), every [`GATED_NON_DEFINITIONS`] node ([`test_regions`]), and, for Rust, every
-/// node [`rust_references`] reads - each one outside an [`OPAQUE_KINDS`] subtree, a
-/// `use_declaration` read whole by its leaves and never descended.
+/// node [`rust_references`] reads, a macro invocation among them ([`reparse_invocations`]) - each
+/// one outside an [`OPAQUE_KINDS`] subtree, a `use_declaration` read whole by its leaves and never
+/// descended.
 struct StructuralNodes<'t> {
     uses: Vec<tree_sitter::Node<'t>>,
     impls: Vec<tree_sitter::Node<'t>>,
@@ -1094,8 +1232,9 @@ struct StructuralNodes<'t> {
 }
 
 impl<'t> StructuralNodes<'t> {
-    /// The one preorder walk of the tree under `root`, `root` included, by a single cursor.
-    fn of(root: tree_sitter::Node<'t>, lang: Lang) -> Self {
+    /// The one preorder walk of the tree under `root`, `root` included, by a single cursor,
+    /// gathering the nodes within `keep`.
+    fn of(root: tree_sitter::Node<'t>, lang: Lang, keep: &[std::ops::Range<usize>]) -> Self {
         let mut nodes = StructuralNodes {
             uses: Vec::new(),
             impls: Vec::new(),
@@ -1109,17 +1248,18 @@ impl<'t> StructuralNodes<'t> {
         loop {
             let node = cursor.node();
             let kind = node.kind();
+            let read = kept(keep, &node.byte_range());
             match kind {
-                "use_declaration" => nodes.uses.push(node),
-                "impl_item" => nodes.impls.push(node),
+                "use_declaration" if read => nodes.uses.push(node),
+                "impl_item" if read => nodes.impls.push(node),
                 _ => {}
             }
-            if GATED_NON_DEFINITIONS.contains(&kind) {
+            if read && GATED_NON_DEFINITIONS.contains(&kind) {
                 nodes.gated.push(node);
             }
             if lang == Lang::Rust && unread_from.is_none() {
                 let opaque = OPAQUE_KINDS.contains(&kind);
-                if !opaque {
+                if read && !opaque {
                     nodes.references.push(node);
                 }
                 if opaque || kind == "use_declaration" {
@@ -1144,6 +1284,277 @@ impl<'t> StructuralNodes<'t> {
             }
         }
     }
+}
+
+/// The context one read tree's references stage with ([`rust_references`], [`rust_qualifier`]):
+/// the names the FILE imports from the standard library ([`std_imports`]) and the aliases its
+/// `use` declarations bind ([`use_aliases`]) and, for a token tree's re-parse (spec 117, MACRO
+/// TOKEN TREES), its invocation's: the names of the generic parameters enclosing it
+/// ([`enclosing_generics`]), the type or trait `Self` and `self` name there ([`self_qualifier`])
+/// and the inline modules holding it, outermost first ([`inline_modules`]). The file's own read
+/// has the first two alone.
+#[derive(Clone, Default)]
+struct Scope {
+    std_imports: Vec<String>,
+    aliases: Vec<(String, String)>,
+    generics: Vec<String>,
+    owner: Option<String>,
+    modules: Vec<String>,
+}
+
+impl Scope {
+    /// The scope the token tree of `invocation`, a macro invocation in a tree read with this
+    /// scope, is re-parsed with: the file's standard-library imports and aliases, the generic
+    /// parameters enclosing `invocation` and then this scope's, the owner `Self` names at
+    /// `invocation`, and this scope's inline modules followed by those holding `invocation`.
+    fn at(&self, invocation: tree_sitter::Node, source: &[u8]) -> Scope {
+        Scope {
+            std_imports: self.std_imports.clone(),
+            aliases: self.aliases.clone(),
+            generics: enclosing_generics(invocation, source)
+                .map(str::to_string)
+                .chain(self.generics.iter().cloned())
+                .collect(),
+            owner: self_qualifier(invocation, source, self),
+            modules: self
+                .modules
+                .iter()
+                .cloned()
+                .chain(inline_modules(invocation, source))
+                .collect(),
+        }
+    }
+}
+
+/// One parse of a macro invocation's token tree ([`reparse_invocations`]): its tree, the byte
+/// ranges of the tree that are read ([`kept`]: its tokens, and in an items parse the `;` served
+/// after them, which a last item it ends holds; the rest is the wrapper the parse put around the
+/// tokens), and the scope of its invocation.
+struct Reparse {
+    tree: tree_sitter::Tree,
+    keep: Vec<std::ops::Range<usize>>,
+    scope: Scope,
+}
+
+/// One tree [`extract`]'s passes read - the file's, or a [`Reparse`]'s - with the byte ranges of
+/// it they read, the scope its references stage with and its [`StructuralNodes`] within them.
+struct Read<'t> {
+    root: tree_sitter::Node<'t>,
+    keep: &'t [std::ops::Range<usize>],
+    scope: &'t Scope,
+    structure: StructuralNodes<'t>,
+}
+
+/// The wrapper a token run's span ([`read_tokens`]) is first re-parsed in, a call's argument
+/// list: the bytes served in place of the two before it and the two after it.
+const ARGUMENT_LIST: (&[u8], &[u8]) = (b"f(", b");");
+
+/// The wrapper a token run's span is re-parsed in second, as items: nothing before it and a `;`
+/// served in place of the byte after it, which ends a last item written without its own
+/// (`thread_local!(static X: u8 = 0)`) and is an empty statement after one that ends already.
+const ITEMS: (&[u8], &[u8]) = (b"", b";");
+
+/// MACRO TOKEN TREES (spec 117): the parses of the token tree of every macro invocation among
+/// `nodes` (a read tree's [`StructuralNodes::references`]), read with `scope`, into `out`: for
+/// each invocation in order, each parse [`read_tokens`] gives of its tokens, with the scope
+/// [`Scope::at`] gives it, followed by the parses of the invocations nested in it, recursively.
+/// A `macro_rules!` body is a template, no macro invocation, so it is never re-parsed.
+fn reparse_invocations(
+    parser: &mut tree_sitter::Parser,
+    nodes: &[tree_sitter::Node],
+    scope: &Scope,
+    source: &Source,
+    out: &mut Vec<Reparse>,
+) {
+    for &invocation in nodes.iter().filter(|n| n.kind() == "macro_invocation") {
+        let Some(token_tree) = invocation.child(invocation.child_count().saturating_sub(1)) else {
+            continue;
+        };
+        let inner = scope.at(invocation, source.text.as_bytes());
+        let mut parses = Vec::new();
+        read_tokens(parser, &inner_tokens(token_tree), source, &mut parses);
+        for (tree, keep) in parses {
+            let mut nested = Vec::new();
+            let structure = StructuralNodes::of(tree.root_node(), Lang::Rust, &keep);
+            reparse_invocations(parser, &structure.references, &inner, source, &mut nested);
+            out.push(Reparse {
+                tree,
+                keep,
+                scope: inner.clone(),
+            });
+            out.extend(nested);
+        }
+    }
+}
+
+/// The tokens of `token_tree` inside its two delimiters, comments among them.
+fn inner_tokens(token_tree: tree_sitter::Node) -> Vec<tree_sitter::Node> {
+    let mut cursor = token_tree.walk();
+    let tokens: Vec<_> = token_tree.children(&mut cursor).collect();
+    tokens
+        .get(1..tokens.len().saturating_sub(1))
+        .map(<[_]>::to_vec)
+        .unwrap_or_default()
+}
+
+/// THE TOKEN READ (spec 117, MACRO TOKEN TREES): the parses of `tokens`, a run of one token
+/// tree's tokens, into `out`, each with the byte ranges of it that are read. None for a run of
+/// comments alone or of none. Else the run's span, from its first token to its last that is no
+/// comment ([`is_comment`]: a line comment would swallow the bytes served after it), re-parsed
+/// as a call's argument list ([`ARGUMENT_LIST`]) when that parse holds no error, read over the
+/// span; else as items ([`ITEMS`]) when that one holds none, read over the span and the `;`
+/// served after it, which a last item it ends holds; else,
+/// when the run holds a `,` or `:` that no subtree of the argument-list parse within
+/// the span holding no error ([`error_free_within`]) holds beyond itself, the reads of each run
+/// between those (the `,` of `pair::<A, B>(x)` cuts nothing); else that parse read over each
+/// such subtree, but those overlapping a token tree of the run none of them holds, and the
+/// reads of each such token tree's own tokens (`json!({"k": f(x)})` gives the call `f`).
+fn read_tokens(
+    parser: &mut tree_sitter::Parser,
+    tokens: &[tree_sitter::Node],
+    source: &Source,
+    out: &mut Vec<(tree_sitter::Tree, Vec<std::ops::Range<usize>>)>,
+) {
+    let Some(span) = tokens
+        .first()
+        .zip(tokens.iter().rfind(|token| !is_comment(**token)))
+        .map(|(first, last)| first.start_byte()..last.end_byte())
+    else {
+        return;
+    };
+    let clean = |tree: &tree_sitter::Tree| !tree.root_node().has_error();
+    let args = reparse(parser, source, &span, ARGUMENT_LIST);
+    if let Some(args) = args.as_ref().filter(|tree| clean(tree)) {
+        out.push((args.clone(), vec![span]));
+        return;
+    }
+    if let Some(items) = reparse(parser, source, &span, ITEMS).filter(clean) {
+        let read = span.start..span.end + ITEMS.1.len();
+        out.push((items, vec![read]));
+        return;
+    }
+    let Some(args) = args else {
+        return;
+    };
+    let mut keep = Vec::new();
+    error_free_within(args.root_node(), &span, &mut keep);
+    let cut = |token: &tree_sitter::Node| {
+        let range = token.byte_range();
+        matches!(token.kind(), "," | ":") && !keep.iter().any(|read| strictly_within(&range, read))
+    };
+    let runs: Vec<_> = tokens.split(cut).collect();
+    if runs.len() > 1 {
+        for run in runs {
+            read_tokens(parser, run, source, out);
+        }
+        return;
+    }
+    let broken: Vec<_> = tokens
+        .iter()
+        .filter(|token| token.kind() == "token_tree" && !kept(&keep, &token.byte_range()))
+        .collect();
+    keep.retain(|range| {
+        !broken
+            .iter()
+            .any(|tree| range.start < tree.end_byte() && tree.start_byte() < range.end)
+    });
+    out.push((args, keep));
+    for tree in broken {
+        read_tokens(parser, &inner_tokens(*tree), source, out);
+    }
+}
+
+/// `span` of `source` re-parsed IN PLACE, every node at its file byte, line and column: the
+/// parser reads `wrapper`'s opening bytes in place of the ones before `span`, the file's own over
+/// `span`, and the closing bytes in place of the ones after it. `None` when `span` starts too
+/// early to hold the opening, or the parser yields no tree.
+fn reparse(
+    parser: &mut tree_sitter::Parser,
+    source: &Source,
+    span: &std::ops::Range<usize>,
+    (open, close): (&'static [u8], &'static [u8]),
+) -> Option<tree_sitter::Tree> {
+    let start = span.start.checked_sub(open.len())?;
+    let end = span.end + close.len();
+    let ranges: Vec<_> = [(start, span.start), (span.start, span.end), (span.end, end)]
+        .into_iter()
+        .filter(|(from, to)| from < to)
+        .map(|(from, to)| tree_sitter::Range {
+            start_byte: from,
+            end_byte: to,
+            start_point: source.point(from),
+            end_point: source.point(to),
+        })
+        .collect();
+    parser.set_included_ranges(&ranges).ok()?;
+    let text = source.text.as_bytes();
+    let mut chunk = |at: usize, _: tree_sitter::Point| -> &[u8] {
+        if at < span.start {
+            at.checked_sub(start)
+                .and_then(|i| open.get(i..))
+                .unwrap_or_default()
+        } else if at < span.end {
+            &text[at..span.end]
+        } else {
+            close.get(at - span.end..).unwrap_or_default()
+        }
+    };
+    parser.parse_with_options(&mut chunk, None, None)
+}
+
+/// The byte ranges of the subtrees of `node` within `span` holding no error, outermost first,
+/// into `keep`: `node`'s own when it is one, else those of each of its children.
+fn error_free_within(
+    node: tree_sitter::Node,
+    span: &std::ops::Range<usize>,
+    keep: &mut Vec<std::ops::Range<usize>>,
+) {
+    if !node.has_error() && within(&node.byte_range(), span) {
+        keep.push(node.byte_range());
+        return;
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        error_free_within(child, span, keep);
+    }
+}
+
+/// Whether the byte range `inner` lies within `outer`, ends included.
+fn within(inner: &std::ops::Range<usize>, outer: &std::ops::Range<usize>) -> bool {
+    outer.start <= inner.start && inner.end <= outer.end
+}
+
+/// Whether the byte range `inner` lies within `outer` and is not `outer` itself.
+fn strictly_within(inner: &std::ops::Range<usize>, outer: &std::ops::Range<usize>) -> bool {
+    inner != outer && within(inner, outer)
+}
+
+/// Whether the byte range `range` lies within one of `keep`'s: whether a read keeps what spans it.
+fn kept(keep: &[std::ops::Range<usize>], range: &std::ops::Range<usize>) -> bool {
+    keep.iter().any(|read| within(range, read))
+}
+
+/// The names the `use` declarations `uses` bind from the standard library
+/// ([`UseLeaf::roots_at_std`]), an alias by its alias name: a file's [`Scope::std_imports`].
+fn std_imports(uses: &[tree_sitter::Node], source: &[u8]) -> Vec<String> {
+    uses.iter()
+        .flat_map(|&decl| use_leaves(decl, source))
+        .filter(|leaf| leaf.roots_at_std())
+        .map(|leaf| leaf.bound)
+        .collect()
+}
+
+/// The aliases the `use` declarations `uses` bind, each with the name it imports (`use a::B as
+/// C` gives `(C, B)`): a file's [`Scope::aliases`], which [`rust_qualifier`] writes an alias
+/// qualifier by.
+fn use_aliases(uses: &[tree_sitter::Node], source: &[u8]) -> Vec<(String, String)> {
+    uses.iter()
+        .flat_map(|&decl| use_leaves(decl, source))
+        .filter_map(|leaf| {
+            let imported = leaf.node.utf8_text(source).ok()?;
+            (leaf.bound != imported).then(|| (leaf.bound, imported.to_string()))
+        })
+        .collect()
 }
 
 /// THE RUST PRELUDE (spec 117): the names a Rust file reaches with no `use` that no tagged
@@ -1201,19 +1612,27 @@ pub const RUST_PRELUDE: [&str; 43] = [
 const STD_ROOTS: [&str; 3] = ["std", "core", "alloc"];
 
 /// Whether the root segment `segment` names the standard library ([`STD_ROOTS`]): the one test
-/// both a `use` leaf ([`UseLeaf::roots_at_std`]) and a path's leaf ([`excluded`]) read.
+/// both a `use` leaf ([`UseLeaf::roots_at_std`]) and a path ([`std_named`]) read.
 fn is_std_root(segment: &str) -> bool {
     STD_ROOTS.contains(&segment)
 }
 
-/// Rust's primitive types: a const qualified by one (`u32::MAX`) stages nothing.
+/// Rust's primitive types: a const or a call on a path rooted at one (`u32::MAX`, `u32::from`)
+/// stages nothing.
 const PRIMITIVE_TYPES: [&str; 17] = [
     "u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16", "i32", "i64", "i128", "isize", "f32",
     "f64", "bool", "char", "str",
 ];
 
-/// The grammar node kinds whose subtree holds no reference (spec 117): a macro's token tree (a
-/// `macro_rules!` body among them), an attribute and a visibility path.
+/// Whether the root segment `segment` is a primitive type ([`PRIMITIVE_TYPES`]): the one test
+/// both a const read ([`rust_references`]) and a call's path ([`excluded_qualifier`]) read.
+fn is_primitive(segment: &str) -> bool {
+    PRIMITIVE_TYPES.contains(&segment)
+}
+
+/// The grammar node kinds whose subtree the reference walk never enters (spec 117): a macro's
+/// token tree, read by re-parse instead ([`reparse_invocations`]), a `macro_rules!` body, never
+/// re-parsed, an attribute and a visibility path.
 const OPAQUE_KINDS: [&str; 4] = [
     "token_tree",
     "attribute_item",
@@ -1267,7 +1686,7 @@ impl UseLeaf<'_> {
     }
 }
 
-/// RUST'S TAGGED REFERENCES (spec 117, REFERENCES), every one in the file the walk `structure`
+/// RUST'S TAGGED REFERENCES (spec 117, RUST REFERENCES), every one in the file the walk `structure`
 /// gathered ([`StructuralNodes`]), in source order. A
 /// CONST READ is an `identifier` in expression position, or the final identifier of a whole
 /// expression path (never a prefix, a pattern or a call's head), spelled `^[A-Z][A-Z0-9_]*$`. A
@@ -1276,18 +1695,14 @@ impl UseLeaf<'_> {
 /// begins with an uppercase letter; a struct literal or pattern named `Path::Name` whose path ends
 /// in an uppercase identifier stages that identifier in place of `Name`. A USE is each imported
 /// leaf of a `use` ([`use_leaves`]). An impl header's trait is one `type` row of its own,
-/// carrying the impl's range and its self type's leaf. A macro's token tree, an attribute, a
-/// `macro_rules!` body and a visibility path stage nothing, and no name [`excluded`] stages.
-fn rust_references(structure: &StructuralNodes, source: &[u8]) -> Vec<TaggedRef> {
+/// carrying the impl's range and its self type's leaf. An attribute, a `macro_rules!` body and a
+/// visibility path stage nothing, a macro's token tree stages what its re-parse reads
+/// ([`reparse_invocations`]), and no name [`excluded`] under `scope` stages.
+fn rust_references(structure: &StructuralNodes, source: &[u8], scope: &Scope) -> Vec<TaggedRef> {
     let uses: Vec<UseLeaf> = structure
         .uses
         .iter()
         .flat_map(|&decl| use_leaves(decl, source))
-        .collect();
-    let std_imports: Vec<&str> = uses
-        .iter()
-        .filter(|u| u.roots_at_std())
-        .map(|u| u.bound.as_str())
         .collect();
     let impls = &structure.impls;
     let headers: Vec<usize> = impls
@@ -1310,7 +1725,7 @@ fn rust_references(structure: &StructuralNodes, source: &[u8]) -> Vec<TaggedRef>
         let Ok(name) = node.utf8_text(source) else {
             return;
         };
-        if !excluded(name, root_seg, node, source, &std_imports) {
+        if !excluded(name, root_seg, node, source, scope) {
             out.push(TaggedRef {
                 name: name.to_string(),
                 line: node.start_position().row as u32 + 1,
@@ -1365,9 +1780,7 @@ fn rust_references(structure: &StructuralNodes, source: &[u8]) -> Vec<TaggedRef>
                         stage(last, REF_KIND_TYPE, root_seg.as_deref(), None);
                     }
                 }
-                let primitive = root_seg
-                    .as_deref()
-                    .is_some_and(|r| PRIMITIVE_TYPES.contains(&r));
+                let primitive = root_seg.as_deref().is_some_and(is_primitive);
                 if let Some(name) = node.child_by_field_name("name") {
                     if !primitive && is_read(node) && is_const_spelled(name, source) {
                         stage(name, REF_KIND_CONST, root_seg.as_deref(), None);
@@ -1404,37 +1817,169 @@ fn rust_references(structure: &StructuralNodes, source: &[u8]) -> Vec<TaggedRef>
 }
 
 /// Whether the leaf `name`, read at `node` under a path whose root segment is `root_seg`, stages
-/// no tagged reference (spec 117): `Self`, a [`RUST_PRELUDE`] name, a leaf the file imports from
-/// the standard library (`std_imports`, an alias by its alias name), a path rooted at the
-/// standard library ([`is_std_root`]) or at such an imported leaf, and a generic or const generic
-/// parameter of an item enclosing `node`.
+/// no tagged reference (spec 117): `Self`, a name of the standard library ([`std_named`]), and a
+/// generic or const generic parameter of an item enclosing `node` ([`names_enclosing_generic`]).
 fn excluded(
     name: &str,
     root_seg: Option<&str>,
     node: tree_sitter::Node,
     source: &[u8],
-    std_imports: &[&str],
+    scope: &Scope,
 ) -> bool {
     name == "Self"
-        || RUST_PRELUDE.contains(&name)
-        || std_imports.contains(&name)
-        || root_seg.is_some_and(|r| is_std_root(r) || std_imports.contains(&r))
-        || names_enclosing_generic(name, node, source)
+        || std_named(name, root_seg, scope)
+        || names_enclosing_generic(name, node, source, scope)
 }
 
-/// Whether `name` is a generic or const generic parameter of an item enclosing `node`: a
-/// `type_parameter` or `const_parameter` of any ancestor's `type_parameters`.
-fn names_enclosing_generic(name: &str, node: tree_sitter::Node, source: &[u8]) -> bool {
+/// Whether `name`, under a path whose root segment is `root_seg`, names the standard library
+/// (spec 117): a [`RUST_PRELUDE`] name, a leaf the file imports from the standard library
+/// ([`Scope::std_imports`], an alias by its alias name), or a path rooted at the standard library
+/// ([`is_std_root`]) or at such an imported leaf; the one test both [`excluded`] and
+/// [`excluded_qualifier`] read.
+fn std_named(name: &str, root_seg: Option<&str>, scope: &Scope) -> bool {
+    let imported = |leaf: &str| scope.std_imports.iter().any(|bound| bound == leaf);
+    RUST_PRELUDE.contains(&name)
+        || imported(name)
+        || root_seg.is_some_and(|r| is_std_root(r) || imported(r))
+}
+
+/// Whether `name` is a generic or const generic parameter of an item enclosing `node`: one of
+/// [`enclosing_generics`], or of the invocation a re-parsed `node` was read from
+/// ([`Scope::generics`]).
+fn names_enclosing_generic(
+    name: &str,
+    node: tree_sitter::Node,
+    source: &[u8],
+    scope: &Scope,
+) -> bool {
+    scope.generics.iter().any(|generic| generic == name)
+        || enclosing_generics(node, source).any(|generic| generic == name)
+}
+
+/// The names of the generic and const generic parameters of the items enclosing `node`, innermost
+/// first: the `type_parameter`s and `const_parameter`s of each ancestor's `type_parameters`.
+fn enclosing_generics<'a>(
+    node: tree_sitter::Node<'a>,
+    source: &'a [u8],
+) -> impl Iterator<Item = &'a str> {
     std::iter::successors(node.parent(), |n| n.parent())
         .filter_map(|n| n.child_by_field_name("type_parameters"))
-        .any(|params| {
+        .flat_map(move |params| {
             let mut cursor = params.walk();
-            let found = params
+            let names: Vec<&str> = params
                 .named_children(&mut cursor)
                 .filter_map(|p| p.child_by_field_name("name"))
-                .any(|n| n.utf8_text(source).is_ok_and(|t| t == name));
-            found
+                .filter_map(|n| n.utf8_text(source).ok())
+                .collect();
+            names
         })
+}
+
+/// RUST'S QUALIFIER (spec 117, RUST REFERENCES): the qualifier a Rust reference is written
+/// with, read off the parent of `leaf`, its name node. A scoped path's name is qualified, as a
+/// path, by the segment before it ([`path_qualifier`]); a member's name whose receiver node is
+/// exactly `self` is qualified, as a member access, by the type or trait `self` names there
+/// ([`self_qualifier`]). A qualifier [`excluded`] holds - a generic parameter of an item
+/// enclosing `leaf`, or a `Self` or `self` whose self type names the standard library - is none,
+/// an alias the file's `use` binds is written as the name it imports ([`Scope::aliases`]), and
+/// every other name is unqualified: a lowercase segment, a `crate`, `self` or `super` path, and
+/// any other receiver (`self.inner.open()`). A re-parsed `leaf` reads `Self`, `self`, the
+/// enclosing generics and the aliases through its invocation's `scope` too. A path whose
+/// qualifier names the standard library never reaches here ([`excluded_qualifier`]).
+fn rust_qualifier(leaf: tree_sitter::Node, source: &[u8], scope: &Scope) -> Option<Qualifier> {
+    let parent = leaf.parent()?;
+    let (name, path) = match parent.kind() {
+        "scoped_identifier" => (
+            path_qualifier(parent.child_by_field_name("path")?, source, scope)?,
+            true,
+        ),
+        "field_expression"
+            if parent
+                .child_by_field_name("value")
+                .is_some_and(|receiver| receiver.kind() == "self") =>
+        {
+            (self_qualifier(leaf, source, scope)?, false)
+        }
+        _ => return None,
+    };
+    if excluded(&name, None, leaf, source, scope) {
+        return None;
+    }
+    let name = scope
+        .aliases
+        .iter()
+        .find(|(alias, _)| *alias == name)
+        .map_or(name, |(_, imported)| imported.clone());
+    Some(Qualifier { name, path })
+}
+
+/// AN EXCLUDED QUALIFIER (spec 117, RUST REFERENCES): whether `leaf`, a reference's name node,
+/// is the name of a scoped path that stages no mention - one whose qualifier as written
+/// ([`qualifier_segment`], before any alias is read) names the standard library ([`std_named`])
+/// or whose root segment ([`root_segment`]) does or is a primitive type ([`is_primitive`]),
+/// whatever the case of its other segments (`Vec::new`, `std::fs::read`, `u32::from`). A `Self`
+/// and an enclosing generic parameter are no such qualifier: their call stages, unqualified by
+/// [`rust_qualifier`].
+fn excluded_qualifier(leaf: tree_sitter::Node, source: &[u8], scope: &Scope) -> bool {
+    let Some(path) = leaf
+        .parent()
+        .filter(|parent| parent.kind() == "scoped_identifier")
+        .and_then(|parent| parent.child_by_field_name("path"))
+    else {
+        return false;
+    };
+    let root = root_segment(path, source);
+    let root = root.as_deref();
+    root.is_some_and(is_primitive)
+        || qualifier_segment(path)
+            .and_then(|segment| segment.utf8_text(source).ok())
+            .is_some_and(|written| std_named(written, root, scope))
+}
+
+/// The qualifier the `path` of a scoped path writes before its name ([`rust_qualifier`]): its
+/// segment ([`qualifier_segment`]) when that begins uppercase (`Memo::<K>::new` and
+/// `a::Memo::<K>::new` give `Memo`, `Memo::<K>::Inner::<J>::new` gives `Inner`, `<T as Tr>::f`
+/// gives `Tr`), and `Self` by the type or trait it names there ([`self_qualifier`]); `None` for a
+/// lowercase segment, a `crate`, `self` or `super` path and a bracketed type naming no trait
+/// (`<T>::f`).
+fn path_qualifier(path: tree_sitter::Node, source: &[u8], scope: &Scope) -> Option<String> {
+    let segment = qualifier_segment(path)?;
+    match segment.utf8_text(source).ok()? {
+        "Self" => self_qualifier(path, source, scope),
+        text => begins_upper(segment, source).then(|| text.to_string()),
+    }
+}
+
+/// The segment the `path` of a scoped path writes last before its name: its final segment
+/// ([`final_identifier`]), a turbofish's generic type by its type's final segment or a bare type
+/// name ([`base_type_identifier`]), and a qualified-self path's trait; `None` for a `crate`,
+/// `self` or `super` path and a bracketed type naming no trait.
+fn qualifier_segment(path: tree_sitter::Node) -> Option<tree_sitter::Node> {
+    match path.kind() {
+        "generic_type" => final_identifier(path).or_else(|| base_type_identifier(path)),
+        "bracketed_type" => {
+            base_type_identifier(path.named_child(0)?.child_by_field_name("alias")?)
+        }
+        _ => final_identifier(path),
+    }
+}
+
+/// The type or trait `Self` and a `self` receiver name at `node`: the self type's identifier of
+/// the innermost impl or trait enclosing `node` when that is an impl ([`base_type_identifier`],
+/// its generics, path and reference stripped), else that trait's name; outside every impl and
+/// trait of `node`'s tree, the one its invocation's `scope` names ([`Scope::owner`], `None` in the
+/// file's own read); `None` for a self type naming no single type (`impl Tr for [u8]`).
+fn self_qualifier(node: tree_sitter::Node, source: &[u8], scope: &Scope) -> Option<String> {
+    let Some(owner) = std::iter::successors(node.parent(), |n| n.parent())
+        .find(|n| matches!(n.kind(), "impl_item" | "trait_item"))
+    else {
+        return scope.owner.clone();
+    };
+    let named = match owner.kind() {
+        "impl_item" => base_type_identifier(owner.child_by_field_name("type")?)?,
+        _ => owner.child_by_field_name("name")?,
+    };
+    Some(named.utf8_text(source).ok()?.to_string())
 }
 
 /// Whether `node`, an `identifier` or a whole `scoped_identifier`, is an expression READ (spec
@@ -1493,7 +2038,9 @@ fn begins_upper(node: tree_sitter::Node, source: &[u8]) -> bool {
 }
 
 /// The final segment of a Rust path node: an `identifier` itself, a `scoped_identifier`'s
-/// `name`, a `generic_type`'s type's; `None` for a `crate`, `self` or `super` path.
+/// `name`, a `generic_type`'s type's; `None` for a `crate`, `self` or `super` path and for any
+/// other node, a bare type name (`type_identifier`, which [`base_type_identifier`] reads) among
+/// them.
 fn final_identifier(path: tree_sitter::Node) -> Option<tree_sitter::Node> {
     match path.kind() {
         "identifier" => Some(path),
@@ -2018,14 +2565,21 @@ fn collapsed(node: tree_sitter::Node, source: &[u8]) -> Option<String> {
 /// path its `CONTAINS` comes from: its container's path, but that a named value takes its
 /// container's parent, being one definition with it, and a Go method the path of its receiver
 /// base type when a definition of the file sits there; `None` at file level.
+///
+/// Each definition's node is read off the tree it was found in, `roots` holding one per
+/// definition; every range is the file's, so a definition re-parsed from a macro's token tree
+/// (spec 117, MACRO TOKEN TREES) takes its container from the file's definitions around it.
 fn def_paths(
-    root: tree_sitter::Node,
+    roots: &[tree_sitter::Node],
     source: &[u8],
     def_ranges: &[(std::ops::Range<usize>, String, Kind)],
 ) -> Vec<(String, Option<String>)> {
     let nodes: Vec<_> = def_ranges
         .iter()
-        .map(|(range, _, _)| outermost_node(root, range).filter(|n| n.byte_range() == *range))
+        .zip(roots)
+        .map(|((range, _, _), &root)| {
+            outermost_node(root, range).filter(|n| n.byte_range() == *range)
+        })
         .collect();
     let spans: Vec<_> = def_ranges
         .iter()
@@ -2100,10 +2654,7 @@ fn container_of(spans: &[std::ops::Range<usize>], i: usize) -> Option<usize> {
     spans
         .iter()
         .enumerate()
-        .filter(|(_, span)| {
-            let holds = |at: &usize| (span.start..=span.end).contains(at);
-            *span != inner && holds(&inner.start) && holds(&inner.end)
-        })
+        .filter(|(_, span)| strictly_within(inner, span))
         .filter(|(_, span)| spans.iter().filter(|other| other == span).count() == 1)
         .min_by_key(|(_, span)| span.len())
         .map(|(j, _)| j)
@@ -2360,34 +2911,33 @@ fn out_of_line_path_override(node: tree_sitter::Node, source: &[u8]) -> Option<S
 }
 
 /// Round 9 (`op-u86-c1-path-attribute-contract-is-rustc-s-and-unresolvable-never-excludes`): the
-/// `/`-joined chain of every ancestor `mod_item` of `node` that is INLINE (carries a `body`
-/// field, `mod outer { .. }`, as opposed to the out-of-line `mod outer;`), outermost first.
-/// Walks `node.parent()` to the file's root, skipping every non-`mod_item` ancestor (a
-/// `declaration_list` wrapper, in particular) and every OUT-OF-LINE ancestor `mod_item`
-/// encountered along the way (an out-of-line declaration has no `body` of its own in THIS
-/// file's tree at all, so it can never be an ancestor here, defensive only). `None` when `node`
-/// sits directly at the file's own top level (no inline-module ancestor found), the
-/// overwhelmingly common case, and the one every pre-round-9 fixture exercised.
-fn enclosing_inline_module_path(node: tree_sitter::Node, source: &[u8]) -> Option<String> {
-    let mut chain = Vec::new();
-    let mut current = node.parent();
-    while let Some(n) = current {
-        if n.kind() == "mod_item" && n.child_by_field_name("body").is_some() {
-            if let Some(name) = n
-                .child_by_field_name("name")
-                .and_then(|nm| nm.utf8_text(source).ok())
-            {
-                chain.push(name.to_string());
-            }
-        }
-        current = n.parent();
-    }
-    if chain.is_empty() {
-        None
-    } else {
-        chain.reverse();
-        Some(chain.join("/"))
-    }
+/// `/`-joined chain of the inline modules holding `node`, outermost first: `outer`, those holding
+/// the macro invocation a re-parsed `node` was read from ([`Scope::modules`], empty in the file's
+/// own read), followed by those of `node`'s own tree ([`inline_modules`]). `None` when the chain
+/// is empty, `node` sitting at the file's own top level: the overwhelmingly common case.
+fn enclosing_inline_module_path(
+    node: tree_sitter::Node,
+    source: &[u8],
+    outer: &[String],
+) -> Option<String> {
+    let chain: Vec<String> = outer
+        .iter()
+        .cloned()
+        .chain(inline_modules(node, source))
+        .collect();
+    (!chain.is_empty()).then(|| chain.join("/"))
+}
+
+/// The names of the INLINE modules holding `node` in its tree (each ancestor `mod_item` carrying a
+/// `body`, `mod outer { .. }`; an out-of-line `mod outer;` holds nothing), outermost first.
+fn inline_modules(node: tree_sitter::Node, source: &[u8]) -> Vec<String> {
+    let mut chain: Vec<String> = std::iter::successors(node.parent(), |n| n.parent())
+        .filter(|n| n.kind() == "mod_item" && n.child_by_field_name("body").is_some())
+        .filter_map(|n| n.child_by_field_name("name")?.utf8_text(source).ok())
+        .map(str::to_string)
+        .collect();
+    chain.reverse();
+    chain
 }
 
 /// Whether a parsed `attribute_item` node is a `#[path = "value"]` key-value attribute - the ONLY
@@ -3696,6 +4246,36 @@ fn b() {
         assert_eq!(crate::symbol_index::defs_by_line(&fs), vec![(1, "m", kind)]);
     }
 
+    /// OF THE MATCHES NAMING ONE NODE, THE EARLIEST PATTERN MAKES ITS TAG, ONE YIELDED ALREADY
+    /// INCLUDED: `f`'s plain pattern and its body pattern name one node, and the body pattern's
+    /// match comes past the reference `T` its parameter names, so `f`'s tag is yielded before it.
+    /// `f` is one definition, of the kind of whichever pattern each row's query puts first.
+    #[test]
+    fn the_earliest_pattern_names_a_node_whose_tag_was_yielded() {
+        let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
+        let plain = "(function_item name: (identifier) @name) @definition.function";
+        let body = "(function_item name: (identifier) @name body: (block (call_expression))) \
+                    @definition.constant";
+        let rows = [
+            ("the body pattern first", [body, plain], Kind::Constant),
+            ("the plain pattern first", [plain, body], Kind::Function),
+        ];
+        for (what, [first, second], kind) in rows {
+            let query = format!("{first}\n{second}\n(type_identifier) @name @reference.type");
+            let fs = extract(
+                "fn f(x: T) { g() }\n",
+                Lang::Rust,
+                &compiled(&language, &query),
+            )
+            .unwrap();
+            assert_eq!(
+                crate::symbol_index::defs_by_line(&fs),
+                vec![(1, "f", kind)],
+                "{what}"
+            );
+        }
+    }
+
     /// The symbols the Rust grammar extracts from `src`.
     fn rust_symbols(src: &str) -> FileSymbols {
         let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
@@ -4119,6 +4699,333 @@ fn product() {}
         }
     }
 
+    /// RUST WRITES THE QUALIFIER (spec 117, RUST REFERENCES): a Rust call is qualified by the
+    /// path segment before its leaf when that segment starts uppercase, generics and turbofish
+    /// stripped, by the trait of a qualified-self path, and by `Self`'s enclosing impl's self
+    /// type, generics stripped, or inside a trait body the trait; a call whose receiver is exactly
+    /// `self` is a member access qualified by that same type or trait. A lowercase segment, a
+    /// `self` or `super` path, a bracketed type naming no trait, any other receiver, an enclosing
+    /// generic parameter (a blanket impl's self type among them), a self type naming no single
+    /// type and a `Self` outside every impl and trait write none, and an impl header's trait and
+    /// self type rows stay unqualified.
+    #[test]
+    fn rust_writes_the_qualifier() {
+        let path = |name: &str| Some(qualifier(name, true));
+        let member = |name: &str| Some(qualifier(name, false));
+        // (the source, its call references' names and qualifiers in order)
+        type Row = (&'static str, Vec<(&'static str, Option<Qualifier>)>);
+        let table: [Row; 21] = [
+            ("fn f() { Store::open(); }\n", vec![("open", path("Store"))]),
+            (
+                "impl<T> Store<T> { fn f() { Self::new(); } }\n",
+                vec![("new", path("Store")), ("Store", None)],
+            ),
+            (
+                "trait CodeView { fn file(&self); fn modules(&self) { self.file(); } }\n",
+                vec![("file", member("CodeView"))],
+            ),
+            (
+                "impl Store { fn f(&self) { self.inner.open(); } }\n",
+                vec![("open", None), ("Store", None)],
+            ),
+            (
+                "fn f() { paths::module_dir(); }\n",
+                vec![("module_dir", None)],
+            ),
+            (
+                "fn f() { Memo::<K>::new(); }\n",
+                vec![("new", path("Memo"))],
+            ),
+            (
+                "fn f() { a::Memo::<K>::new(); }\n",
+                vec![("new", path("Memo"))],
+            ),
+            (
+                "fn f() { crate::a::Memo::<K>::new(); }\n",
+                vec![("new", path("Memo"))],
+            ),
+            (
+                "fn f() { Memo::<K>::Inner::<J>::new(); }\n",
+                vec![("new", path("Inner"))],
+            ),
+            (
+                "fn f() { Store::open::<u8>(); }\n",
+                vec![("open", path("Store"))],
+            ),
+            (
+                "fn f() { crate::store::Store::open(); }\n",
+                vec![("open", path("Store"))],
+            ),
+            (
+                "fn f() { <Store as CodeView>::file(); }\n",
+                vec![("file", path("CodeView"))],
+            ),
+            ("fn f() { <Store>::open(); }\n", vec![("open", None)]),
+            (
+                "fn f() { self::helper(); super::helper(); }\n",
+                vec![("helper", None), ("helper", None)],
+            ),
+            (
+                "impl Store { fn f(&self, store: Store) { self.open(); store.open(); } }\n",
+                vec![("open", member("Store")), ("open", None), ("Store", None)],
+            ),
+            (
+                "impl CodeView for Store { fn f(&self) { Self::open(); self.file(); } }\n",
+                vec![
+                    ("open", path("Store")),
+                    ("file", member("Store")),
+                    ("CodeView", None),
+                    ("Store", None),
+                ],
+            ),
+            (
+                "trait CodeView { fn new() -> Self; fn make() { Self::new(); } }\n",
+                vec![("new", path("CodeView"))],
+            ),
+            (
+                "fn f<T: Default>() { T::default(); }\n",
+                vec![("default", None)],
+            ),
+            (
+                "impl<T> CodeView for T { fn f(&self) { Self::open(); self.file(); } }\n",
+                vec![
+                    ("open", None),
+                    ("file", None),
+                    ("CodeView", None),
+                    ("T", None),
+                ],
+            ),
+            (
+                "impl CodeView for [u8] { fn f(&self) { Self::open(); self.file(); } }\n",
+                vec![("open", None), ("file", None), ("CodeView", None)],
+            ),
+            ("fn f() { Self::new(); }\n", vec![("new", None)]),
+        ];
+        for (source, expected) in table {
+            let symbols = crate::symbol_index::extracted("rs", source);
+            let found: Vec<(&str, Option<Qualifier>)> = symbols
+                .calls()
+                .map(|r| (r.name.as_str(), r.qualifier.clone()))
+                .collect();
+            assert_eq!(found, expected, "{source:?}");
+        }
+    }
+
+    /// AN EXCLUDED QUALIFIER STAGES NOTHING (spec 117, RUST REFERENCES): a call whose path's
+    /// written qualifier is a prelude name, a standard-library import or alias, or whose path is
+    /// rooted at the standard library, at such an import or at a primitive type, stages no
+    /// mention, a macro's token tree and a qualified-self path's trait alike, while the macro's
+    /// own call stages. An alias qualifier is written as the name it imports, exclusion read on
+    /// the alias as written first; a `Self` or `self` whose self type is excluded and an enclosing
+    /// generic parameter stage the call unqualified; a qualifier no exclusion holds (a
+    /// qualified-self path's trait over a primitive or standard-library self type among them), an
+    /// unaliased import, a module's `self` import, a path with no written segment and a call with
+    /// no path stage as before.
+    #[test]
+    fn an_excluded_qualifier_stages_nothing() {
+        let cases = [
+            (
+                "a standard-library import's qualifier stages no call",
+                "use std::io::Cursor;\nfn a(x: u8) {\n    Cursor::new(x);\n}\n",
+                "2 def Function a to 4",
+            ),
+            (
+                "a standard-library import's qualifier in a token tree stages no call, the macro's \
+                 call stages",
+                "\
+use std::io::Cursor;
+fn b(c: Cursor<Vec<u8>>, v: Vec<u8>) {
+    assert_eq!(c, Cursor::new(v));
+}
+",
+                "\
+2 def Function b to 4
+3 ref call assert_eq b",
+            ),
+            (
+                "an alias qualifier is written as the name it imports",
+                "use a::B as C;\nfn g() {\n    C::f();\n}\n",
+                "\
+1 ref use B -
+2 def Function g to 4
+3 ref call f g q B::
+3 ref type C g",
+            ),
+            (
+                "an alias qualifier in a token tree is written as the name it imports",
+                "use a::B as C;\nfn g() {\n    vec![C::f()];\n}\n",
+                "\
+1 ref use B -
+2 def Function g to 4
+3 ref call f g q B::
+3 ref call vec g
+3 ref type C g",
+            ),
+            (
+                "an alias's Self and self are written as the name it imports",
+                "\
+use a::B as C;
+impl C {
+    fn g(&self) {
+        Self::f();
+        self.h();
+    }
+}
+",
+                "\
+1 ref use B -
+2 def Impl impl C to 7
+2 ref call C impl C
+3 def Method C::g to 6 in impl C
+4 ref call f C::g q B::
+5 ref call h C::g q B.",
+            ),
+            (
+                "a prelude qualifier stages no call, a turbofish's alike",
+                "\
+fn h() {
+    Vec::new();
+    String::from(\"x\");
+    Vec::<u8>::with_capacity(1);
+}
+",
+                "1 def Function h to 5",
+            ),
+            (
+                "a standard-library alias's qualifier stages no call: exclusion reads the alias \
+                 as written",
+                "use std::io::Cursor as Cur;\nfn a(x: u8) {\n    Cur::new(x);\n}\n",
+                "2 def Function a to 4",
+            ),
+            (
+                "an alias of a prelude name is written as the name it imports: exclusion reads \
+                 the alias as written",
+                "use a::Vec as V;\nfn v() {\n    V::new();\n}\n",
+                "\
+2 def Function v to 4
+3 ref call new v q Vec::
+3 ref type V v",
+            ),
+            (
+                "a standard-library-rooted path stages no call, whatever the case of its segments",
+                "\
+fn r(p: &str) {
+    std::fs::read(p);
+    ::core::mem::drop(p);
+    std::io::Cursor::new(p);
+}
+",
+                "1 def Function r to 5",
+            ),
+            (
+                "a path rooted at a standard-library import stages no call",
+                "use std::io;\nfn o() {\n    io::stdout();\n    io::Cursor::new(1);\n}\n",
+                "2 def Function o to 5",
+            ),
+            (
+                "a path rooted at a primitive type stages no call",
+                "fn p(x: u8) {\n    u32::from(x);\n    char::from(x);\n}\n",
+                "1 def Function p to 4",
+            ),
+            (
+                "a qualified-self path is qualified by its trait, a primitive or standard-library \
+                 self type excluding nothing",
+                "\
+use std::io::Cursor;
+fn t(x: u8) {
+    <u32 as Local>::f(x);
+    <Cursor as Local>::f(x);
+}
+",
+                "\
+2 def Function t to 5
+3 ref call f t q Local::
+3 ref type Local t
+4 ref call f t q Local::
+4 ref type Local t",
+            ),
+            (
+                "a qualified-self path whose trait is excluded stages no call",
+                "fn d<T: Default>() {\n    <T as Default>::default();\n}\n",
+                "1 def Function d to 3",
+            ),
+            (
+                "a module's self import is written as the module, renamed or not",
+                "\
+use a::B::{self};
+use c::D::{self as M};
+fn g() {
+    B::f();
+    M::f();
+}
+",
+                "\
+1 ref use B -
+2 ref use D -
+3 def Function g to 6
+4 ref call f g q B::
+4 ref type B g
+5 ref call f g q D::
+5 ref type M g",
+            ),
+            (
+                "a Self and a self whose self type is excluded stage the call unqualified",
+                "\
+impl Local for Vec<u8> {
+    fn f(&self) {
+        Self::new();
+        self.len();
+    }
+}
+",
+                "\
+1 def Impl impl Local for Vec<u8> to 6
+1 ref call Local impl Local for Vec<u8>
+1 ref call Vec impl Local for Vec<u8>
+1 ref type Local impl Local for Vec<u8>
+2 def Method <Vec<u8> as Local>::f to 5 in impl Local for Vec<u8>
+3 ref call new <Vec<u8> as Local>::f
+4 ref call len <Vec<u8> as Local>::f",
+            ),
+            (
+                "an enclosing generic parameter stages the call unqualified",
+                "fn d<T: Default>() {\n    T::default();\n}\n",
+                "\
+1 def Function d to 3
+2 ref call default d",
+            ),
+            (
+                "a qualifier no exclusion holds stages as before beside a standard-library import",
+                "use std::io::Cursor;\nfn s() {\n    Store::open();\n}\n",
+                "\
+2 def Function s to 4
+3 ref call open s q Store::
+3 ref type Store s",
+            ),
+            (
+                "an unaliased import's qualifier is written as itself",
+                "use a::B;\nfn g() {\n    B::f();\n}\n",
+                "\
+1 ref use B -
+2 def Function g to 4
+3 ref call f g q B::
+3 ref type B g",
+            ),
+            (
+                "a path with no written segment and a call with no path stage unqualified",
+                "fn q() {\n    ::f();\n    crate::g();\n    h();\n}\n",
+                "\
+1 def Function q to 5
+2 ref call f q
+3 ref call g q
+4 ref call h q",
+            ),
+        ];
+        for (why, src, expected) in cases {
+            assert_eq!(read_lines(src), expected, "{why}");
+        }
+    }
+
     #[test]
     fn malformed_tags_query_surfaces_as_err_not_panic() {
         let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
@@ -4477,7 +5384,7 @@ class K
         assert_eq!(paths, ["a", "b"], "adjacent definitions sit side by side");
     }
 
-    /// Spec 117 criterion 6, REFERENCES: `extract` tags a Rust const read, a type reference and
+    /// Spec 117, RUST REFERENCES: `extract` tags a Rust const read, a type reference and
     /// each imported leaf of a `use` with its `ref_kind`, after the call references it already
     /// records, and every name the spec excludes stages nothing. Each case is a source and the
     /// tagged references it extracts, whole ([`crate::symbol_index::assert_tagged_refs`]).
@@ -4653,10 +5560,10 @@ impl Clone for Kestrel {}
 9 type Kestrel impl core::ops::Add<Kestrel> for Kestrel",
             ),
             // No pattern, call or macro head, path segment, alias, closure parameter, lifetime,
-            // label, attribute, visibility path, token tree or `macro_rules!` pattern stages a
-            // const read, nor a name not spelled as a const; a match guard, a digit-bearing const
-            // and a whole path's final identifier do, and an uppercase segment before it is a
-            // type.
+            // label, attribute, visibility path or `macro_rules!` pattern stages a const read, nor
+            // a name not spelled as a const; a macro's token tree, a match guard, a digit-bearing
+            // const and a whole path's final identifier do, and an uppercase segment before it is
+            // a type.
             (
                 "no non-read or opaque position stages a const read",
                 "\
@@ -4676,6 +5583,7 @@ extern crate foo as ALIAS_CAP;
 ",
                 "\
 3 type Kestrel f
+4 const TOKEN_CAP f
 8 const GUARD_CAP f
 9 const V2_CAP f
 10 type CONST_TY f
@@ -4765,7 +5673,7 @@ use beta::{{self}};
         }
     }
 
-    /// Spec 117 criterion 6: a tagged reference under its own `#[cfg(test)]` attribute - a
+    /// Spec 117, RUST REFERENCES: a tagged reference under its own `#[cfg(test)]` attribute - a
     /// top-level `use`, a `use` in a function body, a `let` and an expression statement - is test
     /// code, so no `ref_kind` event leaves the file for it.
     #[test]
@@ -4805,7 +5713,7 @@ pub fn f() -> u8 {
         );
     }
 
-    /// Spec 117 criterion 6: the tagged references follow the call references in `refs`, in
+    /// Spec 117, RUST REFERENCES: the tagged references follow the call references in `refs`, in
     /// source order, and one inside a test region, an impl header's trait row included, is
     /// marked test code like any reference there.
     #[test]
@@ -4839,7 +5747,480 @@ pub fn f() -> u8 {
         );
     }
 
-    /// Spec 117 criterion 6: the tagged reference pass reads Rust alone, so a TypeScript type
+    /// The definitions and references of a Rust `src`, one line each, ordered by line and then
+    /// text: `<line> def <kind> <path> to <end line>`, with ` in <parent>`, ` test`, ` doc
+    /// <first>-<last>`, ` out-of-line`, ` under <enclosing inline module path>` and ` at <path
+    /// override>` when set; and `<line> ref <ref kind, or call> <name> <caller, or ->`, with ` q
+    /// <qualifier><:: or .>` and ` test` when set.
+    fn read_lines(src: &str) -> String {
+        let fs = crate::symbol_index::extracted("rs", src);
+        let defs = fs.defs.iter().map(|d| {
+            let tail: String = [
+                d.parent.as_ref().map(|p| format!(" in {p}")),
+                d.is_test.then(|| " test".to_owned()),
+                d.doc.map(|(first, last)| format!(" doc {first}-{last}")),
+                d.is_out_of_line_module.then(|| " out-of-line".to_owned()),
+                d.enclosing_inline_module_path
+                    .as_ref()
+                    .map(|e| format!(" under {e}")),
+                d.path_override.as_ref().map(|o| format!(" at {o}")),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+            let line = format!(
+                "{} def {:?} {} to {}{tail}",
+                d.line, d.kind, d.path, d.end_line
+            );
+            (d.line, line)
+        });
+        let refs = fs.refs.iter().map(|r| {
+            let tail: String = [
+                r.qualifier
+                    .as_ref()
+                    .map(|q| format!(" q {}{}", q.name, if q.path { "::" } else { "." })),
+                r.is_test.then(|| " test".to_owned()),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+            let line = format!(
+                "{} ref {} {} {}{tail}",
+                r.line,
+                r.ref_kind.as_deref().unwrap_or("call"),
+                r.name,
+                r.enclosing.as_deref().unwrap_or("-"),
+            );
+            (r.line, line)
+        });
+        let mut lines: Vec<(u32, String)> = defs.chain(refs).collect();
+        lines.sort();
+        lines
+            .into_iter()
+            .map(|(_, line)| line)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Spec 117, MACRO TOKEN TREES: a macro invocation's token tree is re-parsed and read like
+    /// the code around it - a call inside `vec![..]`, a constant inside `assert_eq!(..)`, a call
+    /// inside `json!({"k": f(x)})` and a `static` inside `thread_local!` yield a call, a const, a
+    /// call and a definition at their lines, the `static` in braces or parentheses, with or
+    /// without the `;` after its last declaration and with or without a line comment after that -
+    /// and a `macro_rules!` body yields nothing. A
+    /// re-parsed definition takes its doc, path, parent, test flag and inline module path as the
+    /// same item written outside a macro does, and a re-parsed reference stages with the
+    /// invocation's generic parameters, `Self`, `self` and test region; where a row writes a
+    /// plain twin beside a macro line, the two read alike.
+    #[test]
+    fn macro_token_trees_are_read() {
+        let cases = [
+            (
+                "a call inside vec![..] is a call at its line",
+                "fn a() {\n    let v = vec![g(1), h(2)];\n}\n",
+                "\
+1 def Function a to 3
+2 ref call g a
+2 ref call h a
+2 ref call vec a",
+            ),
+            (
+                "a constant inside assert_eq!(..) is a const read at its line",
+                "fn b(c: u32) {\n    assert_eq!(c, LIMIT);\n}\n",
+                "\
+1 def Function b to 3
+2 ref call assert_eq b
+2 ref const LIMIT b",
+            ),
+            (
+                "a call inside json!({..}) is a call though neither parse accepts the token tree",
+                "fn d(x: u8) {\n    let j = json!({\"k\": f(x), \"m\": [g(x)]});\n}\n",
+                "\
+1 def Function d to 3
+2 ref call f d
+2 ref call g d
+2 ref call json d",
+            ),
+            (
+                "a call after a top-level separator neither parse accepts is a call",
+                "fn s() {\n    m!(\"k\": f(1));\n}\n",
+                "\
+1 def Function s to 3
+2 ref call f s
+2 ref call m s",
+            ),
+            (
+                "a static inside thread_local! is a definition at its line, as its plain twin is",
+                "\
+use std::cell::RefCell;
+thread_local! {
+    /// The slot.
+    static SLOT: RefCell<u32> = RefCell::new(0);
+}
+/// The plain.
+static PLAIN: RefCell<u32> = RefCell::new(0);
+",
+                "\
+2 ref call thread_local -
+4 def Static SLOT to 4 doc 3-3
+7 def Static PLAIN to 7 doc 6-6",
+            ),
+            (
+                "a static inside thread_local!(..) is a definition at its line, as its plain twin \
+                 is, and no read of a constant of its name",
+                "\
+use std::cell::Cell;
+const X: u8 = 1;
+fn f() {
+    thread_local!(static X: u8 = 0);
+    static Y: u8 = 0;
+}
+thread_local!(static FOO: Cell<u32> = const { Cell::new(1) });
+static PLAIN: Cell<u32> = const { Cell::new(1) };
+",
+                "\
+2 def Constant X to 2
+3 def Function f to 6
+4 def Static f::X to 4 in f
+4 ref call thread_local f
+5 def Static f::Y to 5 in f
+7 def Static FOO to 7
+7 ref call thread_local -
+8 def Static PLAIN to 8",
+            ),
+            (
+                "a last static thread_local! holds without its `;` is a definition at its line, as \
+                 its plain twin is",
+                "\
+thread_local! {
+    static A: u8 = g();
+    pub static B: u8 = h()
+}
+pub static C: u8 = h();
+",
+                "\
+1 ref call thread_local -
+2 def Static A to 2
+2 ref call g A
+3 def Static B to 3
+3 ref call h B
+5 def Static C to 5
+5 ref call h C",
+            ),
+            (
+                "a last static before a line comment in thread_local! is a definition at its line, \
+                 as its plain twin is",
+                "\
+thread_local! {
+    static A: u8 = g();
+    static B: u8 = h() // the last
+}
+thread_local!(static D: u8 = h() // the last
+);
+static C: u8 = h(); // the last
+",
+                "\
+1 ref call thread_local -
+2 def Static A to 2
+2 ref call g A
+3 def Static B to 3
+3 ref call h B
+5 def Static D to 5
+5 ref call h D
+5 ref call thread_local -
+7 def Static C to 7
+7 ref call h C",
+            ),
+            (
+                "a macro_rules! body is a template and yields nothing",
+                "macro_rules! mk {\n    ($e:expr) => { call_it($e) + CAP + vec![h(1)].len() };\n}\n",
+                "1 def Macro mk to 3",
+            ),
+            (
+                "a nested invocation is read too",
+                "fn n() {\n    outer!(inner!(deep(1)), K2);\n}\n",
+                "\
+1 def Function n to 3
+2 ref call deep n
+2 ref call inner n
+2 ref call outer n
+2 ref const K2 n",
+            ),
+            (
+                "a token tree's reference to an enclosing generic parameter stages nothing",
+                "\
+fn gen<T: Default>(w: Wrap<T>) {
+    let a = Wrap::<T>::new();
+    dbg!(Wrap::<T>::new());
+}
+",
+                "\
+1 def Function gen to 4
+1 ref type Wrap gen
+2 ref call new gen q Wrap::
+2 ref type Wrap gen
+3 ref call dbg gen
+3 ref call new gen q Wrap::
+3 ref type Wrap gen",
+            ),
+            (
+                "a token tree's Self and self are the invocation's impl type",
+                "\
+struct S;
+impl S {
+    fn a(&self) {
+        self.b();
+        Self::c();
+        dbg!(self.b(), Self::c());
+    }
+}
+",
+                "\
+1 def Type S to 1
+2 def Impl impl S to 8
+2 ref call S impl S
+3 def Method S::a to 7 in impl S
+4 ref call b S::a q S.
+5 ref call c S::a q S::
+6 ref call b S::a q S.
+6 ref call c S::a q S::
+6 ref call dbg S::a",
+            ),
+            (
+                "a re-parsed definition takes the invocation's path and parent",
+                "\
+mod outer {
+    fn host() {
+        thread_local! {
+            static CELL: u8 = 0;
+        }
+        static PLAIN: u8 = 0;
+    }
+}
+",
+                "\
+1 def Module outer to 8
+2 def Method outer::host to 7 in outer
+3 ref call thread_local outer::host
+4 def Static outer::host::CELL to 4 in outer::host
+6 def Static outer::host::PLAIN to 6 in outer::host",
+            ),
+            (
+                "a re-parsed item is test code under the invocation's or its own test attribute",
+                "\
+#[cfg(test)]
+thread_local! {
+    static T1: u8 = probe(1);
+}
+thread_local! {
+    #[cfg(test)]
+    static T2: u8 = 0;
+}
+items! {
+    #[cfg(test)]
+    use crate::fixture::Probe;
+}
+#[cfg(test)]
+mod tests {
+    fn t() {
+        vec![probe(2)];
+    }
+}
+",
+                "\
+2 ref call thread_local - test
+3 def Static T1 to 3 test
+3 ref call probe T1 test
+5 ref call thread_local -
+7 def Static T2 to 7 test
+9 ref call items -
+11 ref use Probe - test
+14 def Module tests to 18 test
+15 def Method tests::t to 17 in tests test
+16 ref call probe tests::t test
+16 ref call vec tests::t test",
+            ),
+            (
+                "a re-parsed reference is at its own line and column, the token tree's first line \
+                 and the lines after it alike",
+                "fn w() {\n    m!\n    (g(1));\n    n!(\n        h(2),\n        k(3)\n    );\n}\n",
+                "\
+1 def Function w to 8
+2 ref call m w
+3 ref call g w
+4 ref call n w
+5 ref call h w
+6 ref call k w",
+            ),
+            (
+                "an empty token tree yields nothing",
+                "fn e() {\n    m!();\n    n![];\n}\n",
+                "\
+1 def Function e to 4
+2 ref call m e
+3 ref call n e",
+            ),
+            (
+                "a re-parsed out-of-line module is placed under the invocation's inline module",
+                "\
+mod plat {
+    cfg_if! {
+        if #[cfg(unix)] {
+            mod sys;
+        }
+    }
+    mod plain;
+}
+",
+                "\
+1 def Module plat to 8
+2 ref call cfg_if plat
+3 ref call cfg plat
+4 def Module plat::sys to 4 in plat out-of-line under plat
+7 def Module plat::plain to 7 in plat out-of-line under plat",
+            ),
+        ];
+        for (case, src, expected) in cases {
+            assert_eq!(read_lines(src), expected, "{case}");
+        }
+    }
+
+    /// Spec 117, MACRO TOKEN TREES: a token run re-parses in place only where its wrapper's opening
+    /// bytes fit before it, the argument list's two at the file's first byte and none for items,
+    /// and is refused one byte short of that; the `;` the items wrapper serves after a run that
+    /// ends its last item already is an empty statement.
+    #[test]
+    fn a_token_run_re_parses_only_where_its_wrapper_opening_fits() {
+        let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&language).unwrap();
+        let call = "(source_file (expression_statement (call_expression function: (identifier) \
+                    arguments: (arguments (identifier)))))";
+        let item = "(source_file (function_item name: (identifier) parameters: (parameters) \
+                    body: (block)) (empty_statement))";
+        let cases = [
+            ("  x", 2..3, ARGUMENT_LIST, Some(call)),
+            ("  x", 1..3, ARGUMENT_LIST, None),
+            ("fn f(){}", 0..8, ITEMS, Some(item)),
+        ];
+        for (src, span, wrapper, expected) in cases {
+            let parsed = reparse(&mut parser, &Source::new(src), &span, wrapper);
+            assert_eq!(
+                parsed.map(|tree| tree.root_node().to_sexp()).as_deref(),
+                expected,
+                "{src:?} over {span:?}"
+            );
+        }
+    }
+
+    /// Spec 117, MACRO TOKEN TREES: the corners of the token read read as their plain twins do.
+    /// An invocation nested in another's token tree has no generic parameter, impl or inline
+    /// module around it in the tree it was re-parsed in, so its token tree stages with those of
+    /// its outer invocation ([`Scope::at`]); an impl re-parsed out of a token tree gives its
+    /// methods its self type's path, read off its re-parse ([`def_paths`]); and what a token tree
+    /// neither parse accepts holds inside a token tree its argument-list parse breaks is read
+    /// once, by that token tree's own read ([`read_tokens`]), never by the outer parse as well,
+    /// while one that parse holds whole is read inside it, as is a `,` or `:` it holds inside a
+    /// subtree with no error, a generic argument list's, which cuts nothing.
+    #[test]
+    fn a_token_tree_corner_reads_as_its_plain_twin() {
+        let cases = [
+            (
+                "a nested token tree's generic parameter stages nothing and its self is the impl's",
+                "\
+struct S;
+impl S {
+    fn a<T>(&self) {
+        outer!(inner!(self.b(), Wrap::<T>::new()));
+    }
+}
+",
+                "\
+1 def Type S to 1
+2 def Impl impl S to 6
+2 ref call S impl S
+3 def Method S::a to 5 in impl S
+4 ref call b S::a q S.
+4 ref call inner S::a
+4 ref call new S::a q Wrap::
+4 ref call outer S::a
+4 ref type Wrap S::a",
+            ),
+            (
+                "a nested token tree's out-of-line module is placed under the inline module",
+                "mod plat {\n    outer! {\n        inner! { mod sys; }\n    }\n}\n",
+                "\
+1 def Module plat to 5
+2 ref call outer plat
+3 def Module plat::sys to 3 in plat out-of-line under plat
+3 ref call inner plat",
+            ),
+            (
+                "a token tree's impl gives its method its self type's path",
+                "struct S;\nitems! {\n    impl S {\n        fn f() {}\n    }\n}\n",
+                "\
+1 def Type S to 1
+2 ref call items -
+3 def Impl impl S to 5
+3 ref call S impl S
+4 def Method S::f to 4 in impl S",
+            ),
+            (
+                "a struct inside a broken token tree is one definition with one field and one type read",
+                "fn z() {\n    m!({ \"k\": struct P(Q); });\n}\n",
+                "\
+1 def Function z to 3
+2 def Field z::P.0 to 2 in z::P
+2 def Type z::P to 2 in z
+2 ref call m z
+2 ref type Q z",
+            ),
+            (
+                "a token tree the broken argument-list parse holds whole is read inside it",
+                "fn y() {\n    m!(S { x: K } +);\n}\n",
+                "\
+1 def Function y to 3
+2 ref call m y
+2 ref const K y
+2 ref type S y",
+            ),
+            (
+                "a separator inside a subtree the broken argument-list parse holds whole cuts nothing",
+                "\
+fn p() {
+    m!(\"k\": pair::<A, B>(x));
+    m!(x => Wrap::<A, B>::new(), y => h(1));
+    pair::<A, B>(x);
+    Wrap::<A, B>::new();
+}
+",
+                "\
+1 def Function p to 6
+2 ref call m p
+2 ref call pair p
+2 ref type A p
+2 ref type B p
+3 ref call h p
+3 ref call m p
+3 ref call new p q Wrap::
+3 ref type A p
+3 ref type B p
+3 ref type Wrap p
+4 ref call pair p
+4 ref type A p
+4 ref type B p
+5 ref call new p q Wrap::
+5 ref type A p
+5 ref type B p
+5 ref type Wrap p",
+            ),
+        ];
+        for (case, src, expected) in cases {
+            assert_eq!(read_lines(src), expected, "{case}");
+        }
+    }
+
+    /// Spec 117, RUST REFERENCES: the tagged reference pass reads Rust alone, so a TypeScript type
     /// name, a `type_identifier` in its grammar too, stages no row of its own: its one row is the
     /// type reference the TypeScript query's `@reference.type` capture tags (spec 117, CAPTURES).
     #[test]
@@ -4852,7 +6233,7 @@ pub fn f() -> u8 {
         );
     }
 
-    /// Spec 117 criterion 6: no name of [`RUST_PRELUDE`] stages a row, imported by a `use` or
+    /// Spec 117, RUST REFERENCES: no name of [`RUST_PRELUDE`] stages a row, imported by a `use` or
     /// named as a type, and the constant holds exactly the pinned names.
     #[test]
     fn every_rust_prelude_name_is_never_tagged() {
@@ -4904,14 +6285,16 @@ pub fn f() -> u8 {
     /// `/**/` and `/***/` is no doc line, while a raw string value is one; and under a fixture
     /// query a `@doc` capture in a definition's match gives that definition the captured span,
     /// over the rule's, while a capture in the match of a definition the extraction drops gives no
-    /// other definition a span.
+    /// other definition a span, and a capture in a match that tags nothing gives the file its
+    /// span, the first such match's, over the rule's.
     #[test]
     fn rust_doc_spans_are_extracted() {
         let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
         let fixture = compiled(
             &language,
             "((line_comment)* @doc . (function_item name: (identifier) @name) @definition.function)\n\
-             ((line_comment)* @doc . (const_item name: (identifier) @name) @definition.constant)\n",
+             ((line_comment)* @doc . (const_item name: (identifier) @name) @definition.constant)\n\
+             ((block_comment) @doc)\n",
         );
         // (case, whether the fixture query reads the source - else the registered one does -, the
         // source, its file span, each definition's span)
@@ -5028,6 +6411,20 @@ pub fn f() -> u8 {
                 "fn f() {}\n// Gone.\nconst _: u8 = 0;\n",
                 None,
                 vec![("f", None)],
+            ),
+            (
+                "a capture in a match that tags nothing wins over the rule",
+                true,
+                "/* Licence. */\n//! The crate.\nstruct S;\n",
+                Some((1, 1)),
+                vec![],
+            ),
+            (
+                "the first match that tags nothing gives the file its span",
+                true,
+                "/* One. */\n/* Two. */\nstruct S;\n",
+                Some((1, 1)),
+                vec![],
             ),
         ];
         for (case, under_fixture, src, file, defs) in rows {

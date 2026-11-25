@@ -16,9 +16,10 @@
 # takes stdin to its end and prints its answer. Either way the answer ends with the handover
 # line when the task carries the author handover contract (`launch-args.sh`'s `hand_over`).
 # Checked in, never written at test time, for the same reason as its sibling fixtures.
-: "${PROMPT_CAPTURE_DIR:?the test names the capture directory}"
 self=$(readlink "$0") || self=$0
 . "$(dirname "$self")/launch-args.sh"
+answer_version "$@"
+: "${PROMPT_CAPTURE_DIR:?the test names the capture directory}"
 record_launch "$PROMPT_CAPTURE_DIR/launches" "$@"
 if [ -d "$PROMPT_CAPTURE_DIR/writes" ]; then
     cp -R "$PROMPT_CAPTURE_DIR/writes/." .

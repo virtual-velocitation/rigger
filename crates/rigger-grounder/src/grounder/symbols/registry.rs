@@ -385,6 +385,108 @@ const TS_CONSTANT_VALUES: &str = "(as_expression) (satisfies_expression) (non_nu
 /// The close of the pattern [`CONSTANT_TAGS_OPEN`] opens.
 const CONSTANT_TAGS_CLOSE: &str = "]) @definition.constant";
 
+/// The opening of the qualified member call pattern (spec 117, OTHER LANGUAGES: a call's
+/// qualifier is a member, the capitalised name before `.f`), the first part of each JS-family
+/// query: a call of `Obj.f(..)` whose object is a capitalised identifier, or a member chain whose
+/// last property is capitalised, is a call of the leaf `f` written `Obj.f`, so `Square.make()` is
+/// the call `Square.make` and `Ns.Kit.make()` the call `Kit.make`. The upstream query's member
+/// call pattern names the same `f`, and both matches finish at the call's arguments, so the
+/// earlier pattern, this one, makes the tag. The TS and TSX queries guard it with
+/// [`TS_UNINSTANTIATED`], and [`MEMBER_CALL_TAGS_CLOSE`] ends it.
+const MEMBER_CALL_TAGS_OPEN: &str = "((call_expression";
+
+/// The TS and TSX queries' guard on the qualified member call: a call with type arguments,
+/// `Square.make<T>()`, is the upstream query's call of `make` alone, unqualified. A type
+/// argument is named after the callee and its match arrives first, so the callee's tag is
+/// yielded as soon as it is queued and a second match naming the callee would make a second tag;
+/// the upstream match is the one that names a generic callee. The JS grammar has no type
+/// arguments.
+const TS_UNINSTANTIATED: &str = "!type_arguments";
+
+/// The close of the pattern [`MEMBER_CALL_TAGS_OPEN`] opens.
+const MEMBER_CALL_TAGS_CLOSE: &str = r#"
+  function: (member_expression
+    object: [(identifier) @qualifier.member
+      (member_expression property: (property_identifier) @qualifier.member)]
+    property: (property_identifier) @name)
+  arguments: (_)) @reference.call
+  (#match? @qualifier.member "^[A-Z]"))
+"#;
+
+/// The JS query's implementation patterns (spec 117, OTHER LANGUAGES: `extends`): the class a
+/// class extends, named by an identifier or a member, is an implementation reference, a member
+/// qualified by its whole object as a constructor's chain is, so `extends Ns.Base` names
+/// `Ns.Base`. Any other heritage expression (`extends mixin(Base)`) has no pattern.
+const JS_HERITAGE_TAGS: &str = r#"
+(class_heritage (identifier) @name) @reference.implementation
+(class_heritage
+  (member_expression object: (_) @qualifier.member property: (property_identifier) @name))
+  @reference.implementation
+"#;
+
+/// The TS and TSX queries' implementation patterns (spec 117, OTHER LANGUAGES: `implements`,
+/// `extends`): each type a class implements and each one an interface extends is an
+/// implementation reference, a generic one named without its type arguments; and the class a
+/// class extends is one as in [`JS_HERITAGE_TAGS`]. They stand before [`TS_TYPE_TAGS`], whose
+/// type pattern names the same type nodes.
+const TS_HERITAGE_TAGS: &str = r#"
+(implements_clause [(type_identifier) (nested_type_identifier) (generic_type)] @name)
+  @reference.implementation
+(extends_type_clause type: [(type_identifier) (nested_type_identifier) (generic_type)] @name)
+  @reference.implementation
+(extends_clause value: (identifier) @name) @reference.implementation
+(extends_clause
+  value: (member_expression object: (_) @qualifier.member property: (property_identifier) @name))
+  @reference.implementation
+"#;
+
+/// The JS-family queries' const and field patterns (spec 117, OTHER LANGUAGES: a const read, an
+/// `^[A-Z][A-Z0-9_]*$` identifier read; a field, `x.f` not called), composed after every other
+/// pattern but [`TS_TYPE_TAGS`]. A member expression whose direct parent holds no `arguments` and
+/// no `constructor` is staged, which leaves out the callee of a call and of a `new`: it is a const
+/// when its property is spelled as a constant and a field otherwise, read or written (`a.b = 1`),
+/// an inner chain (`y` of `x.y.z`), a subscript's object, an argument or a TS instantiation
+/// (`x.f<T>`) alike. The rule reads the direct parent alone and is taken at face value, so three
+/// members that run as calls are staged fields: `x.f!()` and `(x.g)()`, whose callee is the
+/// wrapper around the member, and the decorator `@Foo.bar`, the field `Foo.bar`. Each staged
+/// member is qualified as [`MEMBER_CALL_TAGS_CLOSE`] qualifies a call, by a capitalised object, so
+/// `Config.MAX` is the const `Config.MAX` and `cfg.TIMEOUT` the const `TIMEOUT`. The const
+/// patterns stand before the field patterns and a qualified pattern before its plain one, because
+/// each pair names the same property node and the earlier pattern makes the tag; an identifier
+/// spelled as a constant in an expression's place is a const too. The parent's fields are tested
+/// under a wildcard grandparent, the query language reading no negated field on a pattern's root.
+const JS_REFERENCE_TAGS: &str = r#"
+((_ (_ !arguments !constructor
+    (member_expression
+      object: [(identifier) @qualifier.member
+        (member_expression property: (property_identifier) @qualifier.member)]
+      property: (property_identifier) @name) @reference.constant))
+  (#match? @qualifier.member "^[A-Z]")
+  (#match? @name "^[A-Z][A-Z0-9_]*$"))
+((_ (_ !arguments !constructor
+    [(primary_expression/identifier) @name
+      (member_expression property: (property_identifier) @name)] @reference.constant))
+  (#match? @name "^[A-Z][A-Z0-9_]*$"))
+((_ (_ !arguments !constructor
+    (member_expression
+      object: [(identifier) @qualifier.member
+        (member_expression property: (property_identifier) @qualifier.member)]
+      property: [(property_identifier) (private_property_identifier)] @name) @reference.field))
+  (#match? @qualifier.member "^[A-Z]"))
+(_ (_ !arguments !constructor
+    (member_expression
+      property: [(property_identifier) (private_property_identifier)] @name) @reference.field))
+"#;
+
+/// The TS and TSX queries' type pattern (spec 117, OTHER LANGUAGES: every `type_identifier` in
+/// type position), their last part: a type named by an identifier, a dotted name or a generic,
+/// in any type's place, is a type reference, so `IShape[]` names `IShape`, `Ns.T` names `Ns.T`
+/// and `Map<K, V>` names `Map`, `K` and `V`.
+const TS_TYPE_TAGS: &str = r#"
+[(primary_type/type_identifier) (primary_type/nested_type_identifier) (primary_type/generic_type)]
+  @name @reference.type
+"#;
+
 /// `parts` joined one per line into `cell` on first use - a tags query composed ONCE for the
 /// process lifetime, so a [`LanguageEntry`] can borrow it as `&'static str`.
 fn composed_once(cell: &'static OnceLock<String>, parts: &[&str]) -> &'static str {
@@ -420,6 +522,24 @@ const GO_DEFINITION_TAGS: &str = r#"
 const GO_FIELD_TAGS: &str =
     "(selector_expression field: (field_identifier) @name) @reference.field";
 
+// The statement a Python docstring is, spelled once for `PYTHON_TAGS`'s class, function and
+// module docstring patterns, a literal its own macro names since `concat!` takes literals alone:
+// a statement whose one named child is a string, an implicit concatenation of strings or either in
+// one pair of parentheses, so a tuple a string leads is none, each part and each comment between
+// parts a `@doc`, none of them a literal whose prefix holds `b`, `f` or `t` (a bytes, formatted or
+// template literal, which is no str). The prefix predicate sits on a group around the statement,
+// since tree-sitter drops a trailing `.` anchor that a predicate follows.
+macro_rules! python_docstring {
+    () => {
+        r#"((expression_statement . [
+      (string) @doc
+      (concatenated_string [(string) (comment)]+ @doc)
+      (parenthesized_expression
+        [(string) @doc (concatenated_string [(string) (comment)]+ @doc)])
+    ] .) (#not-match? @doc "^[A-Za-z]*[bBfFtT][A-Za-z]*[\"']"))"#
+    };
+}
+
 /// The Python `tags` query. The upstream `tree-sitter-python` `tags.scm` tags a module-level
 /// assignment whose target is an identifier a constant whatever its value, so a chained
 /// assignment (`x = y = f()`) tags its first target alone over the whole chain, every call in it
@@ -429,7 +549,32 @@ const GO_FIELD_TAGS: &str =
 /// chain, the names a pattern binds, a class body's targets and a `type X = ..` alias are read
 /// off the parsed tree by `extract`. Every def is tagged a function, which `extract` lowers to a
 /// method when its nearest enclosing definition is a class.
-const PYTHON_TAGS: &str = r#"
+///
+/// Spec 117 (OTHER LANGUAGES): a docstring is found as Python finds one, the first statement of a
+/// class's or a function's body, or of the module, comments before it aside, when that statement
+/// is a str literal alone: one string, an implicit concatenation of strings (`"a" "b"`, a comment
+/// between parts included) or either in one pair of parentheses (`("P.")`), every part and comment
+/// of it a `@doc`, so a tuple a str leads (`"a", "b"`) is none. A bytes, formatted or template
+/// literal, whose prefix holds `b`, `f` or `t`, is no str, so a first statement holding one is no
+/// docstring and gives no span. The shape is spelled once, in `python_docstring!`. The query
+/// reaches one pair of parentheses, so `(("N."))`, a docstring to Python, gives none, and its
+/// anchors skip the anonymous comma, so the one-element tuple `"a",`, none to Python, gives a span.
+/// A class's or a function's docstring is its `@doc`, matched by
+/// a pattern ahead of the plain one that tags the definition whatever its first statement, so a
+/// definition with no docstring stays a definition; the module's is a match that tags nothing,
+/// which gives the file its doc span ([`CompiledTags::tags_in`]). Of the patterns naming one node
+/// the earliest makes its tag, so their order decides: a call on an object that is exactly a
+/// capitalised identifier is qualified by it, `Shape.area()` the call `Shape.area`, ahead of the
+/// upstream call; a base class, a name, an attribute's leaf or a subscript's value, is an
+/// `implementation`, a keyword argument none; a capitalised identifier a `type` node holds within
+/// three levels is a `type`, unqualified, an all-caps one included; an attribute's leaf read or
+/// assigned and not called, on an object that is exactly a capitalised identifier, is a `field`
+/// qualified by that object, `Shape.side` and the member constant `Config.MAX` alike, since a
+/// class body's assignment is a field; any other all-caps name read, an attribute's leaf included
+/// (`cfg.TIMEOUT`), is a `constant`; and any other attribute leaf, read or assigned and not
+/// called, is a `field`.
+const PYTHON_TAGS: &str = concat!(
+    r#"
 (module (expression_statement (assignment left: (identifier) @name !right) @definition.constant))
 (module
   (expression_statement
@@ -439,10 +584,28 @@ const PYTHON_TAGS: &str = r#"
     @definition.constant))
 
 (class_definition
-  name: (identifier) @name) @definition.class
+  name: (identifier) @name
+  ":" . (comment)* . body: (block . "#,
+    python_docstring!(),
+    r#")) @definition.class
+(class_definition name: (identifier) @name) @definition.class
 
 (function_definition
-  name: (identifier) @name) @definition.function
+  name: (identifier) @name
+  ":" . (comment)* . body: (block . "#,
+    python_docstring!(),
+    r#")) @definition.function
+(function_definition name: (identifier) @name) @definition.function
+
+(module . (comment)* . "#,
+    python_docstring!(),
+    r#")
+
+(call
+  function: (attribute
+    object: (identifier) @qualifier.member
+    attribute: (identifier) @name)
+  (#match? @qualifier.member "^[A-Z]")) @reference.call
 
 (call
   function: [
@@ -450,7 +613,34 @@ const PYTHON_TAGS: &str = r#"
       (attribute
         attribute: (identifier) @name)
   ]) @reference.call
-"#;
+
+(class_definition
+  superclasses: (argument_list
+    [
+      (identifier) @name
+      (attribute attribute: (identifier) @name)
+      (subscript
+        value: [
+          (identifier) @name
+          (attribute attribute: (identifier) @name)
+        ])
+    ] @reference.implementation))
+
+((type (identifier) @name @reference.type) (#match? @name "^[A-Z]"))
+((type (_ (identifier) @name @reference.type)) (#match? @name "^[A-Z]"))
+((type (_ (_ (identifier) @name @reference.type))) (#match? @name "^[A-Z]"))
+
+((attribute
+  object: (identifier) @qualifier.member
+  attribute: (identifier) @name @reference.field)
+  (#match? @qualifier.member "^[A-Z]"))
+((attribute attribute: (identifier) @name @reference.constant)
+  (#match? @name "^[A-Z][A-Z0-9_]*$"))
+((primary_expression/identifier) @name @reference.constant
+  (#match? @name "^[A-Z][A-Z0-9_]*$"))
+(attribute attribute: (identifier) @name @reference.field)
+"#
+);
 
 /// A registered language: the rigger `Lang`, its tree-sitter grammar, the `tags` query the
 /// extractor runs over a file in that language, the grammar's node kinds that construct an
@@ -531,8 +721,11 @@ pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
     // concrete-declaration rules compile and match against them: the TS and TSX queries compose
     // the upstream JS query (concrete declarations and call/reference rules) with the upstream
     // TS one, `JS_DEFINITION_TAGS` and `TS_DEFINITION_TAGS`, the JS query the upstream JS query
-    // with `JS_DEFINITION_TAGS`; each closes with the constant pattern over its own grammar's
-    // value types, so none of the three compiles against another's grammar.
+    // with `JS_DEFINITION_TAGS`. Each opens with the qualified member call pattern, which the TS
+    // and TSX queries guard with `TS_UNINSTANTIATED`, ahead of the upstream call pattern naming
+    // the same callee; follows them with the constant pattern over its own grammar's value types;
+    // and closes with its heritage patterns and `JS_REFERENCE_TAGS`, the TS and TSX queries with
+    // `TS_TYPE_TAGS` last, so none of the three compiles against another's grammar.
     static JS_TAGS: OnceLock<String> = OnceLock::new();
     static TS_TAGS: OnceLock<String> = OnceLock::new();
     static TSX_TAGS: OnceLock<String> = OnceLock::new();
@@ -575,6 +768,9 @@ pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
             composed_once(
                 &TS_TAGS,
                 &[
+                    MEMBER_CALL_TAGS_OPEN,
+                    TS_UNINSTANTIATED,
+                    MEMBER_CALL_TAGS_CLOSE,
                     tree_sitter_javascript::TAGS_QUERY,
                     tree_sitter_typescript::TAGS_QUERY,
                     JS_DEFINITION_TAGS,
@@ -584,6 +780,9 @@ pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
                     TS_CONSTANT_VALUES,
                     "(type_assertion)",
                     CONSTANT_TAGS_CLOSE,
+                    TS_HERITAGE_TAGS,
+                    JS_REFERENCE_TAGS,
+                    TS_TYPE_TAGS,
                 ],
             ),
             JS_CONSTRUCTORS,
@@ -596,6 +795,9 @@ pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
             composed_once(
                 &TSX_TAGS,
                 &[
+                    MEMBER_CALL_TAGS_OPEN,
+                    TS_UNINSTANTIATED,
+                    MEMBER_CALL_TAGS_CLOSE,
                     tree_sitter_javascript::TAGS_QUERY,
                     tree_sitter_typescript::TAGS_QUERY,
                     JS_DEFINITION_TAGS,
@@ -605,6 +807,9 @@ pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
                     TS_CONSTANT_VALUES,
                     JSX_CONSTANT_VALUES,
                     CONSTANT_TAGS_CLOSE,
+                    TS_HERITAGE_TAGS,
+                    JS_REFERENCE_TAGS,
+                    TS_TYPE_TAGS,
                 ],
             ),
             JS_CONSTRUCTORS,
@@ -617,12 +822,16 @@ pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
             composed_once(
                 &JS_TAGS,
                 &[
+                    MEMBER_CALL_TAGS_OPEN,
+                    MEMBER_CALL_TAGS_CLOSE,
                     tree_sitter_javascript::TAGS_QUERY,
                     JS_DEFINITION_TAGS,
                     CONSTANT_TAGS_OPEN,
                     JS_CONSTANT_VALUES,
                     JSX_CONSTANT_VALUES,
                     CONSTANT_TAGS_CLOSE,
+                    JS_HERITAGE_TAGS,
+                    JS_REFERENCE_TAGS,
                 ],
             ),
             JS_CONSTRUCTORS,
@@ -960,6 +1169,11 @@ pub(crate) mod tests {
         (12, "run", Some("handler")),
     ];
 
+    /// The tagged references in the JS lines of every JS and TS definitions fixture, the field
+    /// use of the member `o.p` a `for .. of` assigns, as [`crate::symbol_index::tagged_refs`]
+    /// renders them.
+    const JS_LINES_TAGGED: &str = "1 field p host";
+
     /// The definitions the TS and TSX definitions fixtures hold in their TS lines, 16-23, as
     /// `(line, leaf, kind)`, sorted.
     const TS_LINES_DEFINITIONS: [(u32, &str, Kind); 27] = [
@@ -1000,8 +1214,8 @@ pub(crate) mod tests {
         (22, "setup", Some("A.B")),
     ];
 
-    /// The tagged references of the TS and TSX definitions fixtures, all in their TS lines, each
-    /// a type reference with its caller, as [`crate::symbol_index::tagged_refs`] renders them.
+    /// The tagged references in the TS lines of the TS and TSX definitions fixtures, each a type
+    /// reference with its caller, as [`crate::symbol_index::tagged_refs`] renders them.
     const TS_LINES_TAGGED: &str = "16 type Arg -\n\
                                    16 type Ret -\n\
                                    17 type PQ Shape2.p-q\n\
@@ -1009,7 +1223,8 @@ pub(crate) mod tests {
                                    17 type Ret Shape2\n\
                                    17 type Two Shape2.2\n\
                                    17 type V Shape2\n\
-                                   18 type FT Abs.fld";
+                                   18 type FT Abs.fld\n\
+                                   20 type Base Alias";
 
     /// Rust's declared non-definitions (spec 116): the named node types of the Rust grammar
     /// that THE RULE classifies no definition. An extern block, `foreign_mod_item`, carries no
@@ -1445,6 +1660,9 @@ mod tests {
     #[test]
     fn t() { super::helper(1); }
 }
+impl Kestrel { fn molt(&self) -> u32 { Self::grow(self) + self.grow() } }
+fn pile() -> Vec<u32> { vec![helper(QUOTA_CAP)] }
+use crate::store::Ledger as Book; fn drain() { Book::open(); String::new(); }
 ",
         ),
         ("rs", "fn whole() { helper(); }\nfn broken( {\n"),
@@ -1476,6 +1694,10 @@ function zero(): number { return 0; }
 function same(b: Box): Box { return b; }
 const made = new Box();
 const kit = new Ns.Box();
+class Lid extends Box implements Shape {
+    sides: Side[] = [];
+    size() { return Box.make(this.depth, Box.CAP); }
+}
 ",
         ),
         (
@@ -1489,6 +1711,10 @@ function blank() { return \"\"; }
 function keep(s: Label): Label { return s; }
 const made = new Label();
 const kit = new Ns.Label();
+class Tag extends Label implements Shape {
+    sides: Side[] = [];
+    size() { return Label.make(this.depth, Label.CAP); }
+}
 ",
         ),
         (
@@ -1503,6 +1729,9 @@ function calc(n) { return n; }
 function zero() { return 0; }
 const made = new Box();
 const kit = new Ns.Box();
+class Lid extends Box {
+    size() { return Box.make(this.depth, Box.CAP); }
+}
 ",
         ),
         (
@@ -1529,6 +1758,20 @@ class Box:
         return calc(LIMIT)
 def calc(n):
     return n
+class Lid(Box):
+    \"\"\"A lid.\"\"\"
+    def seal(self, b: Box):
+        return b.w + Box.MAX
+class Cap(typing.Generic[T]):
+    pass
+def fit(k: typing.Optional[Box]) -> A | B | C:
+    return k
+def joined():
+    \"a\" 'b'
+def wrapped():
+    (\"P.\")
+def raw():
+    rb\"x\"
 ",
         ),
     ];
@@ -1687,19 +1930,19 @@ def calc(n):
         // languages' rows merge clean.
         const PINNED: [(&str, &str, &str); 7] = [
             // Rust
-            ("rs", "rust-tags-v2", "cf79ba29624d68ed"),
+            ("rs", "rust-tags-v5", "f2a9e894cb91eb6e"),
             // C#
             ("cs", "csharp-tags-v5", "ff1a724ddef62a08"),
             // TypeScript
-            ("ts", "typescript-tags-v5", "44b3d1b0bddd54ba"),
+            ("ts", "typescript-tags-v6", "46fdbe808db7ebdc"),
             // TSX
-            ("tsx", "tsx-tags-v5", "4b777e0b89844c8c"),
+            ("tsx", "tsx-tags-v6", "59d077a2bb782c98"),
             // JavaScript
-            ("js", "javascript-tags-v5", "57bcf3aad620d53b"),
+            ("js", "javascript-tags-v6", "080c51224e924c72"),
             // Go
             ("go", "go-tags-v4", "5775409d3ffc32c0"),
             // Python
-            ("py", "python-tags-v1", "2ae6674264c03453"),
+            ("py", "python-tags-v2", "526d67033f741273"),
         ];
         assert_eq!(
             GRAMMAR_TAGS_VERSION,
@@ -1822,8 +2065,8 @@ def calc(n):
 
     /// The name filter keeps `_` where it is an ordinary name: a JS `const _ = require(..)` and a
     /// Python `_ = gettext.gettext` each keep their definition under the composed JS query and
-    /// the registered Python one; neither source holds a reference, the upstream JS query tagging
-    /// no `require` call and a Python attribute read being no call.
+    /// the registered Python one; neither source holds a call, the upstream JS query tagging no
+    /// `require` call and the Python attribute read being a field use.
     #[test]
     fn a_js_and_a_python_definition_named_underscore_keeps_its_def() {
         let js =
@@ -2038,7 +2281,8 @@ def calc(n):
         /// those in the constructor's body and in its local const the constructor's, a
         /// generator value's the declarator's and a static field initializer's the field's; the
         /// initializer of a pattern declarator is the file's, each binding spanning its own
-        /// identifier alone; and `require` is no reference.
+        /// identifier alone; and `require` is no reference. The member `o.p` a `for .. of`
+        /// assigns is a field use, its function's (spec 117, OTHER LANGUAGES).
         every_js_definition_type_yields_its_definition_at_its_kind:
             crate::symbol_index::assert_definitions_fixture(
                 "js",
@@ -2046,7 +2290,7 @@ def calc(n):
                 &JS_DEFINITION_TYPES,
                 &JS_LINES_DEFINITIONS,
                 &JS_LINES_REFERENCES,
-                "",
+                JS_LINES_TAGGED,
             );
         /// JS AND TS DEFINITIONS ARE NODES (spec 116 criterion 9), under the registered TS
         /// query: the JS lines yield what they yield under the JS query, a type assertion value
@@ -2065,7 +2309,9 @@ def calc(n):
         /// signature's types are its interface's, a declaration being no caller, so an ambient
         /// function's are the file's; an index signature's is its interface's; an enum member
         /// value's call is the member's; and a module's and a namespace's body calls are
-        /// theirs. Each type in an annotation is a type reference, no call (spec 117, CAPTURES).
+        /// theirs. Each type in an annotation is a type reference, no call (spec 117, CAPTURES),
+        /// as are the type a type assertion names and a type alias's value, and the JS lines'
+        /// `o.p` is a field use as under the JS query (spec 117, OTHER LANGUAGES).
         every_ts_definition_type_yields_its_definition_at_its_kind:
             crate::symbol_index::assert_definitions_fixture(
                 "ts",
@@ -2073,12 +2319,13 @@ def calc(n):
                 &TS_DEFINITION_TYPES,
                 &[&JS_LINES_DEFINITIONS[..], &TS_LINES_DEFINITIONS[..]].concat(),
                 &[&JS_LINES_REFERENCES[..], &TS_LINES_REFERENCES[..]].concat(),
-                TS_LINES_TAGGED,
+                &format!("{JS_LINES_TAGGED}\n15 type T el\n{TS_LINES_TAGGED}"),
             );
         /// JS AND TS DEFINITIONS ARE NODES (spec 116 criterion 9), under the TSX query `.tsx`
         /// registers: the TSX fixture, the TS one with a JSX element in place of the type
         /// assertion, yields the definitions and references the TS fixture yields under the TS
-        /// query, each row of TS's DEFINITION TYPES naming exactly one definition.
+        /// query but the type reference its type assertion makes, each row of TS's DEFINITION
+        /// TYPES naming exactly one definition.
         every_tsx_definition_type_yields_its_definition_at_its_kind:
             crate::symbol_index::assert_definitions_fixture(
                 "tsx",
@@ -2086,7 +2333,7 @@ def calc(n):
                 &TS_DEFINITION_TYPES,
                 &[&JS_LINES_DEFINITIONS[..], &TS_LINES_DEFINITIONS[..]].concat(),
                 &[&JS_LINES_REFERENCES[..], &TS_LINES_REFERENCES[..]].concat(),
-                TS_LINES_TAGGED,
+                &format!("{JS_LINES_TAGGED}\n{TS_LINES_TAGGED}"),
             );
         /// PYTHON DEFINITIONS ARE NODES (spec 116 criterion 10), under the registered Python
         /// query: the fixture yields every definition it holds at its own kind and leaf. A def
@@ -2108,6 +2355,11 @@ def calc(n):
         /// target that assignment's (`make()` is `k`'s), its field spanning the whole assignment
         /// as a module-level constant of one target does; the value of a pattern or a chained
         /// assignment is the file's, each bound name spanning its own identifier alone.
+        ///
+        /// The tagged references (spec 117, PYTHON STAGES ITS ROW): the attribute target `self.x`
+        /// is a field use, `area`'s; the read of `TYPE_CHECKING` a const read, the file's; and
+        /// each capitalised name in a type alias, its own name and its type parameter included
+        /// (`X` and `T` of `type X[T] = int`, `Y`), a type reference, the alias's.
         every_python_definition_type_yields_its_definition_at_its_kind:
             crate::symbol_index::assert_definitions_fixture(
                 "py",
@@ -2148,7 +2400,11 @@ def calc(n):
                     (18, "f", None),
                     (19, "f", None),
                 ],
-                "",
+                "11 field x Shape::area\n\
+                 22 const TYPE_CHECKING -\n\
+                 24 type T X\n\
+                 24 type X X\n\
+                 29 type Y Y",
             );
         /// Every Python definition carries its extent (spec 119, ONE EXTENT): a single-target
         /// module-level assignment (`z = 1`, `w: int`, and one of each other value type the

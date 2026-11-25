@@ -48,7 +48,7 @@ fn dependency_line(manifest: &str, header: &str, dep: &str) -> Option<String> {
 /// The target-cfg table (spec 93 criterion 1) that carries every dependency unconditional
 /// on every real target this product ships on, but absent for the wasm32-unknown-unknown
 /// target the pure `core` lane also builds for - `rusqlite`, `kurrentdb`, `tokio`, `rustix`,
-/// `fs2`, `uuid` and `ignore` all live here now instead of in `[dependencies]` because none
+/// `uuid` and `ignore` all live here now instead of in `[dependencies]` because none
 /// of them compile for that one target, not because any of them became optional.
 const NATIVE_TARGET_HEADER: &str = "target.'cfg(not(target_arch = \"wasm32\"))'.dependencies";
 

@@ -4,8 +4,9 @@
 //! project's workflow declares answers over THE EXTRACTOR PROTOCOL (spec 125), whose client is
 //! [`extractor_protocol`]; this module is no extractor of its own, and its one language knowledge
 //! is the doc rules [`FactsExtractor`]'s [`Extract::doc_text`] reads a doc span's text by: Rust's,
-//! which strips its lines to their comment text, and C#'s, which reads its `///` lines with their
-//! XML tags removed. Every name is kept as written and
+//! which strips its lines to their comment text, C#'s, which reads its `///` lines with their XML
+//! tags removed, and Python's, which reads its docstring's body, its parts joined, dedented.
+//! Every name is kept as written and
 //! nothing is resolved across files, so a file's facts are a function of its path and bytes alone
 //! under the extractor's fingerprint, a declared extractor being trusted, as a grammar is, to
 //! answer the same request the same way. The store's openers compose [`ProjectExtractor`], the
@@ -17,7 +18,7 @@ mod extractor_protocol;
 
 use std::collections::{btree_map, hash_map, BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use rigger_domain::code_facts::{
     Def, DocConcept, DocLink, FileFacts, Half, Mention, MentionKind, ModuleDecl, Scope, WfNode,
@@ -82,20 +83,26 @@ pub fn open_store(root: &Path, source: &dyn TreeSource, mode: Mode) -> Result<Op
 /// The head of the code store at `root` read for a reader in `worktree`, overlaid with the files
 /// the worktree differs in ([`open_head`]), composed as [`open_store`] composes it, its
 /// differing files' facts memoised for the life of the process and on disk under the store
-/// ([`Memo::process`]).
+/// ([`Memo::process`]). The head keeps the project's extractor, which a doc read takes a span's
+/// text from with no session; every declared extractor's session the read started is closed and
+/// waited for before the head is given ([`ProjectExtractor::close_sessions`]), so none outlives a
+/// read that ends by exiting.
 pub fn read_head(
     root: &Path,
     source: &(dyn TreeSource + Sync),
     worktree: &Path,
 ) -> Result<Head, String> {
-    open_head(
+    let extract = Arc::new(ProjectExtractor::of(root));
+    let head = open_head(
         root,
         source,
-        &ProjectExtractor::of(root),
+        extract.clone(),
         &ProductionGroupings,
         worktree,
         Memo::process(),
-    )
+    );
+    extract.close_sessions();
+    head
 }
 
 /// The extractors the workflow of the project at `root` declares (spec 125, THE EXTRACTORS KEY):
@@ -221,18 +228,22 @@ impl ProjectExtractor {
             }
         }
     }
+
+    /// Closes, and waits for, every session the extractor holds, so none outlives the read that
+    /// started it; a later file of a declared extractor's extensions starts a new one.
+    fn close_sessions(&self) {
+        let sessions =
+            std::mem::take(&mut *self.sessions.lock().unwrap_or_else(PoisonError::into_inner));
+        for session in sessions.into_values() {
+            session.close();
+        }
+    }
 }
 
 impl Drop for ProjectExtractor {
-    /// Closes every session the extractor still holds.
+    /// Closes every session the extractor still holds ([`ProjectExtractor::close_sessions`]).
     fn drop(&mut self) {
-        let sessions = self
-            .sessions
-            .get_mut()
-            .unwrap_or_else(PoisonError::into_inner);
-        for session in std::mem::take(sessions).into_values() {
-            session.close();
-        }
+        self.close_sessions();
     }
 }
 
@@ -305,12 +316,15 @@ impl Extract for FactsExtractor {
     }
 
     /// The doc rule of the language `lang` names: C#'s ([`csharp_doc_text`]), Rust's
-    /// ([`rust_doc_text`]), and the lines trimmed ([`trimmed_lines`]) for a language with no rule.
+    /// ([`rust_doc_text`]), Python's ([`python_doc_text`]), and the lines trimmed
+    /// ([`trimmed_lines`]) for a language with no rule.
     fn doc_text(&self, lang: &str, raw: &str) -> String {
         if lang == lang_str(Lang::CSharp) {
             csharp_doc_text(raw)
         } else if lang == lang_str(Lang::Rust) {
             rust_doc_text(raw)
+        } else if lang == lang_str(Lang::Python) {
+            python_doc_text(raw)
         } else {
             trimmed_lines(raw)
         }
@@ -461,7 +475,7 @@ fn after_token(text: &str) -> &str {
     let word_char = |c: char| c.is_ascii_alphanumeric() || c == '_';
     let mut chars = text.chars();
     match chars.next() {
-        Some('"') => plain_literal(chars.as_str()).1,
+        Some('"') => plain_literal(chars.as_str(), "\"").1,
         Some('\'') => {
             let quoted = chars.as_str();
             match (chars.next(), chars.next()) {
@@ -484,21 +498,97 @@ fn after_token(text: &str) -> &str {
     }
 }
 
-/// The body of the plain Rust string literal whose opening `"` ends just before `text`, as
-/// written, up to its own closer - the first `"` that no `\` escapes - and the text after that
-/// closer. The body runs to `text`'s end, with nothing after it, when the literal is unclosed.
-fn plain_literal(text: &str) -> (&str, &str) {
+/// The body of the string literal whose opener ends just before `text`, as written, up to its own
+/// `closer` - the first that no `\` escapes, a Rust plain literal's `"` or a Python string's quote
+/// or three - and the text after that closer. The body runs to `text`'s end, with nothing after
+/// it, when the literal is unclosed.
+fn plain_literal<'t>(text: &'t str, closer: &str) -> (&'t str, &'t str) {
     let mut chars = text.char_indices();
     while let Some((at, c)) = chars.next() {
-        match c {
-            '\\' => {
-                chars.next();
-            }
-            '"' => return (&text[..at], &text[at + 1..]),
-            _ => {}
+        if c == '\\' {
+            chars.next();
+        } else if text[at..].starts_with(closer) {
+            return (&text[..at], &text[at + closer.len()..]);
         }
     }
     (text, "")
+}
+
+/// The text of a Python docstring span's `raw` lines: the body of the string literal the span's
+/// first quote opens - three of that quote when it opens three, else the one - up to its own
+/// closer ([`plain_literal`]), joined with the body of each literal that continues it as an
+/// implicit concatenation ([`next_python_part`]), as Python joins `"a" "b"` into `ab`, each
+/// prefix (`r`, `u`) and whatever follows the last closer dropped and the escapes not decoded;
+/// empty when the span holds no quote. The joined body is dedented as PEP 257 trims a docstring:
+/// its first line trimmed; every later line stripped of the least indent of the later lines that
+/// are not blank, a tab counting as one column, and its end trimmed; the blank lines before the
+/// first line of text and after the last dropped; the lines joined by `\n`. The span's first
+/// quote is read as the docstring's opener, so a docstring on its header's line after a quote of
+/// the header's own (`def f(x="a"): """Doc."""`) is read from that quote.
+fn python_doc_text(raw: &str) -> String {
+    let Some(open) = raw.find(['"', '\'']) else {
+        return String::new();
+    };
+    let mut body = String::new();
+    let mut part = Some(&raw[open..]);
+    while let Some(quoted) = part {
+        let triple = quoted[..1].repeat(3);
+        let closer = if quoted.starts_with(&triple) {
+            triple.as_str()
+        } else {
+            &quoted[..1]
+        };
+        let (text, after) = plain_literal(&quoted[closer.len()..], closer);
+        body.push_str(text);
+        part = next_python_part(after);
+    }
+    let indent = |line: &str| line.chars().take_while(|c| c.is_whitespace()).count();
+    let margin = body
+        .split('\n')
+        .skip(1)
+        .filter(|line| !line.trim().is_empty())
+        .map(indent)
+        .min()
+        .unwrap_or(0);
+    let lines: Vec<&str> = body
+        .split('\n')
+        .enumerate()
+        .map(|(at, line)| {
+            if at == 0 {
+                return line.trim();
+            }
+            let line = line.trim_end();
+            line.char_indices()
+                .nth(margin)
+                .map_or("", |(cut, _)| &line[cut..])
+        })
+        .collect();
+    let text = |line: &&str| !line.is_empty();
+    match (lines.iter().position(text), lines.iter().rposition(text)) {
+        (Some(first), Some(last)) => lines[first..=last].join("\n"),
+        _ => String::new(),
+    }
+}
+
+/// The text from the opening quote of the Python string literal that continues an implicit
+/// concatenation after `text`, the text after a part's closer: the whitespace and line breaks, a
+/// `\` that continues a line and each `#` comment to its line's end before it are passed over,
+/// then its prefix's letters (`r`, `u`). None when anything else comes first: a `)`, a `;`, other
+/// code or the span's end.
+fn next_python_part(text: &str) -> Option<&str> {
+    let mut rest = text;
+    loop {
+        rest = rest.trim_start();
+        if let Some(comment) = rest.strip_prefix('#') {
+            rest = comment.split_once('\n').map_or("", |(_, after)| after);
+        } else if let Some(continued) = rest.strip_prefix('\\') {
+            rest = continued;
+        } else {
+            break;
+        }
+    }
+    let quoted = rest.trim_start_matches(|c: char| c.is_ascii_alphabetic());
+    quoted.starts_with(['"', '\'']).then_some(quoted)
 }
 
 /// The body of the raw Rust string literal whose `r` ends just before `text` (`r".."`,
@@ -536,7 +626,7 @@ fn doc_attribute_text(text: &str) -> Option<(&str, &str)> {
         .strip_prefix('=')?
         .trim_start();
     match value.strip_prefix('"') {
-        Some(plain) => Some(plain_literal(plain)),
+        Some(plain) => Some(plain_literal(plain, "\"")),
         None => raw_literal(value.strip_prefix('r')?),
     }
 }
@@ -1088,8 +1178,8 @@ pub(crate) mod tests {
     /// or `::`, give the last as the leaf and the text before its separator as the qualifier, so
     /// a C# base type `Ns.IShape` yields the leaf `IShape`, `global::IShape` the leaf `IShape`
     /// under a path, `List<IShape>` the leaf `List`, its type argument `IShape` a mention of its
-    /// own, and a JavaScript `new Ns.Kit.Box()` a call
-    /// of `Box`; a `@name` that is no such chain (`new arr[0]()`, `new a[0].b()`, `new (Box)()`)
+    /// own, and a JavaScript `new Ns.Kit.Box()` a call of `Box`, its inner `Ns.Kit` a field use
+    /// of `Kit`; a `@name` that is no such chain (`new arr[0]()`, `new a[0].b()`, `new (Box)()`)
     /// stages no mention.
     #[test]
     fn a_qualifier_capture_names_the_mention() {
@@ -1157,7 +1247,10 @@ pub(crate) mod tests {
                 "web/make.js",
                 "new Ns.Kit.Box();\n",
                 None,
-                vec![mention("Ns.Kit.Box", "Box", MentionKind::Call, None)],
+                vec![
+                    mention("Ns.Kit", "Kit", tagged("field"), None),
+                    mention("Ns.Kit.Box", "Box", MentionKind::Call, None),
+                ],
             ),
             ("web/make.js", "new arr[0]();\n", None, vec![]),
             ("web/make.js", "new a[0].b();\n", None, vec![]),
@@ -2071,19 +2164,19 @@ pub(crate) mod tests {
         // languages' rows merge clean.
         const PINNED: [(&str, &str, &str); 7] = [
             // Rust
-            ("rs", "rust-tags-v2", "927b635405339750"),
+            ("rs", "rust-tags-v5", "d2d32a872e13880d"),
             // C#
             ("cs", "csharp-tags-v5", "1686734362d08137"),
             // TypeScript
-            ("ts", "typescript-tags-v5", "ea4e6938dc08f1b3"),
+            ("ts", "typescript-tags-v6", "59a7286ef00e8791"),
             // TSX
-            ("tsx", "tsx-tags-v5", "11cb8ac6fae0ab22"),
+            ("tsx", "tsx-tags-v6", "f99cfdbc67a9dbe4"),
             // JavaScript
-            ("js", "javascript-tags-v5", "04c009a62eb98170"),
+            ("js", "javascript-tags-v6", "b0392ae368f5f278"),
             // Go
             ("go", "go-tags-v4", "dc89c1ebc294684f"),
             // Python
-            ("py", "python-tags-v1", "4c940d044409c6d8"),
+            ("py", "python-tags-v2", "ca3c7d0d1a679ab9"),
         ];
         const PINNED_FACTS: (&str, &str) = ("facts-v6", "006133eb2aae6c76");
         fn digest(facts: &impl std::fmt::Debug) -> String {
@@ -2824,10 +2917,51 @@ pub(crate) mod tests {
         );
     }
 
+    /// A READ HEAD HOLDS NO SESSION: over a project declaring the stub for `zig`, a reader that
+    /// reads the store's head - from the root, which advances the store, and from a worktree
+    /// differing in the declared file, which extracts that file again - holds a head whose every
+    /// session of the stub has already ended, so a read that ends by exiting leaves no extractor
+    /// running, and the head still carries the project's extractor, its doc text read with none.
+    #[cfg(unix)]
+    #[test]
+    fn a_read_head_holds_the_extractor_with_every_session_closed() {
+        let kept = tempfile::tempdir().expect("tempdir");
+        let stub = StubExtractor::new(kept.path());
+        let project = stub_project(&stub, "zig", "[zig]", &[("src/a.zig", "a\n")]);
+        stub.answers("src/a.zig", &answer_defining("src/a.zig", "a"));
+        let root = project.path();
+        let workflow =
+            std::fs::read_to_string(root.join(workflow_doc())).expect("read the workflow");
+        let worktree = project_declaring(Some(&workflow));
+        std::fs::create_dir_all(worktree.path().join("src")).expect("create the source directory");
+        std::fs::write(worktree.path().join("src/a.zig"), "b\n").expect("change the file");
+        // (the case, the reader's worktree, the stub's starts and ends while the head is held)
+        let rows: [(&str, &Path, usize); 2] = [
+            ("the root", root, 1),
+            (
+                "a worktree differing in the declared file",
+                worktree.path(),
+                2,
+            ),
+        ];
+        for (case, reader, sessions) in rows {
+            let head = DirectoryHead::new(root)
+                .head(reader)
+                .expect("read the head");
+            let doc = (head.extract.as_deref()).map(|extract| extract.doc_text("zig", " a \n b"));
+            assert_eq!(
+                (stub.starts().len(), stub.ends().len(), doc.as_deref()),
+                (sessions, sessions, Some("a\nb")),
+                "{case}"
+            );
+        }
+    }
+
     /// The doc text of a span, each row (the language, the span's raw lines, the doc text): Rust
     /// spans, `\r\n` endings, `#[doc(hidden)]` lines, nested block comments and literals holding
     /// a comment marker or a quote among them, C# `///` spans holding XML tags and a `<` that
-    /// opens none, and the lines of a language with no doc rule.
+    /// opens none, Python docstrings, one joined from parts and one in parentheses among them, and
+    /// the lines of a language with no doc rule.
     const DOC_TEXT_ROWS: &[(&str, &str, &str)] = &[
         (
             "rust",
@@ -2896,6 +3030,58 @@ Unclosed"#,
             "  // A Go doc.\r\n\t// Its second line.  \r\n\n",
             "// A Go doc.\n// Its second line.\n",
         ),
+        (
+            "python",
+            "    \"\"\"Area of the shape.\n\n    Computed in units.\n      Indented more.   \n    \"\"\"\n",
+            "Area of the shape.\n\nComputed in units.\n  Indented more.",
+        ),
+        (
+            "python",
+            "    \"\"\"\r\n    Starts below.\r\n\r\n    Then more.\r\n    \"\"\"\r\n",
+            "Starts below.\n\nThen more.",
+        ),
+        (
+            "python",
+            "\t\"\"\"Mixed.\n\tTab in.\n    Four in.\n\t\"\"\"",
+            "Mixed.\nTab in.\n   Four in.",
+        ),
+        ("python", "    \"\"\"One line.\"\"\"\n", "One line."),
+        ("python", "\"\"\"  Spaced.  \"\"\"", "Spaced."),
+        ("python", "'''Single.'''", "Single."),
+        ("python", "    'Plain.'\n", "Plain."),
+        ("python", "r\"\"\"Raw \\d.\"\"\"", "Raw \\d."),
+        ("python", "'It\\'s here.'", "It\\'s here."),
+        (
+            "python",
+            "\"\"\"Say 'hi', \"bye\" and \\\"\"\" too.\"\"\"",
+            "Say 'hi', \"bye\" and \\\"\"\" too.",
+        ),
+        ("python", "'a\"\"\"b'", "a\"\"\"b"),
+        ("python", "    \"\"\"Doc.\"\"\"  # a \"note\"\n", "Doc."),
+        ("python", "\"\"\"\"\"\"", ""),
+        ("python", "''", ""),
+        (
+            "python",
+            "    \"\"\"Unclosed\n    still open\n",
+            "Unclosed\nstill open",
+        ),
+        ("python", "    pass\n", ""),
+        ("python", "def one(): r\"\"\"Raw \\d.\"\"\"\n", "Raw \\d."),
+        ("python", "    \"a\" 'b'\n", "ab"),
+        ("python", "    \"a\" U'b' R\"c\"\n", "abc"),
+        ("python", "    \"a\" \\\n    r\"\\d\"\n", "a\\d"),
+        ("python", "    (\"P.\")\n", "P."),
+        (
+            "python",
+            "    (\"long \"  # it's \"x\"\n     \"doc\")\n",
+            "long doc",
+        ),
+        (
+            "python",
+            "    (\"\"\"First.\n\n        Indented.\n    \"\"\" \"\"\"    Tail.\"\"\")\n",
+            "First.\n\nIndented.\nTail.",
+        ),
+        ("python", "    \"a\"; x = \"q\"\n", "a"),
         (
             "zig",
             "/// Not read as Rust.\n #[doc(hidden)] ",
@@ -2974,8 +3160,9 @@ Unclosed"#,
     /// and each doc attribute's literal, every comment and literal bounded as Rust lexes it,
     /// everything else dropped, a doc block's opener, closer and one leading `*` stripped; turns
     /// a C# span's raw lines into the text of each `///` line with its XML tags removed, a line
-    /// left empty and every other line dropped; and gives a language with no rule its lines
-    /// trimmed. The project's extractor with no declaration answers as the bundled one.
+    /// left empty and every other line dropped; gives a Python span its docstring's body, its
+    /// parts joined, dedented; and gives a language with no rule its lines trimmed. The project's
+    /// extractor with no declaration answers as the bundled one.
     #[test]
     fn the_doc_text_is_the_comment_text_alone() {
         let project = project_declaring(None);

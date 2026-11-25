@@ -3790,6 +3790,93 @@ fn run_hosts_its_agents_granting_each_launch_its_bound_tools() {
     );
 }
 
+/// Given a project, when the operator runs `rigger run` with a stand-in `claude` first on PATH
+/// answering `--version` with each line, then below the minimum the exec-form hooks need the run
+/// refuses with the one too-old line `rigger validate` warns with, before any start effect: no
+/// launch, no run, no ref and no store or scratch file; at the minimum it runs, and on a line
+/// that names no version it runs and says nothing of the version.
+#[cfg(unix)]
+#[test]
+fn run_refuses_a_session_host_below_the_hooks_minimum_before_any_start_effect() {
+    use rigger::claude_auth::SessionHost;
+    use rigger::claude_version::{parse, too_old};
+
+    // (name, the stand-in's `--version` line, the line the run refuses with, none for a run)
+    let rows = [
+        (
+            "one below the minimum",
+            "2.1.138 (Claude Code)",
+            Some(format!(
+                "rigger: {}",
+                too_old(&SessionHost::default(), parse("2.1.138").unwrap()).unwrap()
+            )),
+        ),
+        ("the minimum", "2.1.139 (Claude Code)", None),
+        ("text with no version", "false (GNU coreutils) 9.4", None),
+    ];
+    for (name, answer, refusal) in rows {
+        let dir = temp_git_project_with_commit();
+        let root = dir.path();
+        write_workflow_fixture(root, &LIVENESS_WORKFLOW);
+        let scratch = tempfile::tempdir().unwrap();
+        let (fake, path_env) = install_fake_claude(RECORDING_WORKER_ARM);
+        let [path, tmpdir] = fake_claude_env(&path_env, scratch.path());
+        let entries = |dir: &Path| {
+            let mut names: Vec<String> = std::fs::read_dir(dir)
+                .map(|read| {
+                    read.map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                        .collect()
+                })
+                .unwrap_or_default();
+            names.sort();
+            names
+        };
+        let state = || {
+            (
+                common::git::git_out(root, &["for-each-ref", "--format=%(refname) %(objectname)"]),
+                entries(&root.join(".rigger")),
+                entries(scratch.path()),
+            )
+        };
+        let before = state();
+        let (out, err, ok) = run_rigger_envs(
+            root,
+            &["run"],
+            &[path, tmpdir, ("RIGGER_TEST_HOST_VERSION", answer)],
+        );
+        let launched = fake.path().join("bin/argv").exists();
+        match refusal {
+            Some(refusal) => {
+                assert!(!ok, "{name}: the run refuses; stdout: {out}\nstderr: {err}");
+                assert_eq!(
+                    err.lines().last(),
+                    Some(refusal.as_str()),
+                    "{name}: the too-old line ends what the run prints; stderr: {err}"
+                );
+                assert!(!launched, "{name}: no agent launched");
+                assert_eq!(
+                    state(),
+                    before,
+                    "{name}: no ref, store or scratch file changed"
+                );
+                assert_eq!(
+                    common::cli::current_run_id_of(root),
+                    None,
+                    "{name}: no run started"
+                );
+            }
+            None => {
+                assert!(ok, "{name}: the run succeeds; stdout: {out}\nstderr: {err}");
+                assert!(launched, "{name}: the run launched its agent");
+                assert!(
+                    !err.contains("session host"),
+                    "{name}: the run says nothing of the version; stderr: {err}"
+                );
+            }
+        }
+    }
+}
+
 /// Spec 105's hook injection, end to end: given a project, when the operator runs `rigger run`,
 /// then the launch's `--settings` carries the write guard rooted at the session's working
 /// directory and the spawn's scratch container, an empty `dir` resolving to the session's cwd and
@@ -3926,10 +4013,15 @@ fn run_carries_each_launchs_write_guard_and_stop_failure_hooks() {
             let command: Vec<&str> = words[1..].iter().map(String::as_str).collect();
             let (out, err, ok) = run_rigger(&root, &command);
             assert!(ok, "{name}: {class} records; stderr: {err}");
+            assert!(
+                out.trim().is_empty() || serde_json::from_str::<serde_json::Value>(&out).is_ok(),
+                "{name}: {class}: the hook's stdout is empty or JSON, the one form the host reads \
+                 a hook's stdout in: {out:?}"
+            );
             assert_eq!(
-                out.split(", position").next(),
+                err.split(", position").next(),
                 Some(format!("stop-failure recorded for {} (class {class}", row.spawn).as_str()),
-                "{name}: the hook records its class for the spawn"
+                "{name}: the hook says on stderr it records its class for the spawn"
             );
         }
     }
@@ -4104,20 +4196,35 @@ fn a_session_fires_its_injected_stop_failure_hook_and_the_launch_closes_under_th
             "{name}: the session's working directory"
         );
         assert_eq!(
-            (read("hook-status").as_str(), read("hook-err").as_str()),
-            ("0\n", ""),
+            read("hook-status"),
+            "0\n",
             "{name}: the hook the session ran succeeds"
         );
+        let hook_out = read("hook-out");
+        assert!(
+            hook_out.trim().is_empty()
+                || serde_json::from_str::<serde_json::Value>(&hook_out).is_ok(),
+            "{name}: the hook's stdout is empty or JSON, the one form the host reads a hook's \
+             stdout in: {hook_out:?}"
+        );
+        let hook_err = read("hook-err");
         assert_eq!(
-            read("hook-out").split(", position").next(),
-            Some(
-                format!(
-                    "stop-failure recorded for {} (class max_output_tokens",
-                    row.spawn
-                )
-                .as_str()
+            (
+                hook_err.lines().count(),
+                hook_err.split(", position").next()
             ),
-            "{name}: the hook the session ran records its class for the spawn"
+            (
+                1,
+                Some(
+                    format!(
+                        "stop-failure recorded for {} (class max_output_tokens",
+                        row.spawn
+                    )
+                    .as_str()
+                )
+            ),
+            "{name}: the hook the session ran says on stderr, and nothing else, that it records \
+             its class for the spawn"
         );
         assert_eq!(
             common::cli::recorded_progress::<rigger::progress::StopFailure>(&root),
@@ -14675,6 +14782,69 @@ fn validate_reports_scratch_residue_with_sizes_as_a_non_failing_warning() {
     );
 }
 
+/// `rigger validate` lists every ref rigger holds aside, so a read of them that fails is said on
+/// one advisory line naming git's error, never an empty list read as none held. A corrupt
+/// `packed-refs` makes git die on every ref read.
+#[test]
+fn validate_says_when_the_refs_held_aside_cannot_be_read() {
+    let dir = committed_scaffold_project();
+    let root = dir.path();
+    seed_store(root);
+    let scratch = root.join("scratchroot");
+    std::fs::create_dir_all(&scratch).unwrap();
+    git_ok(root, &["branch", "rigger/kept/unit-99-ghost"]);
+    git_ok(root, &["pack-refs", "--all"]);
+    let packed = root.join(".git").join("packed-refs");
+    let mut refs = std::fs::read_to_string(&packed).unwrap();
+    refs.push_str("garbage line\n");
+    std::fs::write(&packed, refs).unwrap();
+
+    let (_out, err, _ok) = run_rigger_envs(
+        root,
+        &["validate"],
+        &[("RIGGER_TMPDIR", scratch.to_str().unwrap())],
+    );
+    let said: Vec<&str> = err
+        .lines()
+        .filter(|line| line.contains("the refs rigger holds aside could not be read"))
+        .collect();
+    assert_eq!(
+        said.len(),
+        1,
+        "validate says once that the held refs could not be read; stderr:\n{err}"
+    );
+    assert!(
+        said[0].contains("unexpected line in .git/packed-refs"),
+        "the line names git's error; stderr:\n{err}"
+    );
+}
+
+/// Outside any git repository no ref can be held aside, so `rigger validate` reads none there and
+/// says nothing of a read that could not be made.
+#[test]
+fn validate_outside_any_repository_reads_no_held_refs() {
+    let proj = tempfile::tempdir().expect("a directory outside any git repository");
+    let root = proj.path();
+    let scratch = root.join("scratchroot");
+    std::fs::create_dir_all(&scratch).unwrap();
+    let envs = [
+        (
+            "GIT_CEILING_DIRECTORIES",
+            root.parent().unwrap().to_str().unwrap(),
+        ),
+        ("RIGGER_TMPDIR", scratch.to_str().unwrap()),
+    ];
+    let (_out, err, ok) = run_rigger_envs(root, &["init"], &envs);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+
+    let (_out, err, ok) = run_rigger_envs(root, &["validate"], &envs);
+    assert!(ok, "validate succeeds outside a repository; stderr:\n{err}");
+    assert!(
+        !err.contains("the refs rigger holds aside could not be read"),
+        "no held-ref read is made outside a repository; stderr:\n{err}"
+    );
+}
+
 /// Spec 89, criterion 2 (SCRATCH IS OUTSIDE THE STORE TREE) done-when: "the reaper and
 /// `validate` account for the new root." Every scratch-residue `validate` test in this file
 /// (the one just above included) deliberately overrides `RIGGER_TMPDIR` or a configured
@@ -17896,7 +18066,8 @@ fn an_interrupted_driver_is_stopped_on_purpose_and_never_relaunched() {
 /// carrying the relaunch it was started by, and clears its record once it is done, so the next
 /// invocation relaunches nothing. The dead driver's scratch and state roots, which the invocation
 /// does not share, are the relaunched driver's, and of the login token it ran its agents on its
-/// record keeps only that it had one.
+/// record keeps only that it had one; the relaunch hands the relaunched driver that token, which
+/// no child inherits.
 #[test]
 fn a_relaunched_driver_adopts_its_run_and_drives_it_to_its_end() {
     let dir = temp_git_project_with_commit();
@@ -17960,8 +18131,10 @@ fn a_relaunched_driver_adopts_its_run_and_drives_it_to_its_end() {
     assert!(
         live["run"] == run.as_str()
             && live["revived_at"].is_u64()
-            && live["relaunched_at"].is_null(),
-        "the relaunched driver keeps its own record of the run, carrying its relaunch; {live}"
+            && live["relaunched_at"].is_null()
+            && live["credentials"] == serde_json::json!([AGENT_TOKEN_VAR]),
+        "the relaunched driver keeps its own record of the run, carrying its relaunch, and runs \
+         on the login token the invocation handed it; {live}"
     );
     let done = common::fixtures::wait_until_for(POLLS_BESIDE_A_RUN, || {
         common::cli::driver_record(root).is_empty() && common::cli::step_lock_free(root)
@@ -27984,6 +28157,35 @@ fn the_content_script_checks_the_whole_spec_from_a_base_and_only_the_branch_with
             "`{check}` with no base must judge only the branch's own clean commit: {out}"
         );
     }
+}
+
+/// The content script's `check`, handed a base that shares no history with HEAD, refuses with
+/// its message rather than reading the failed three-dot diff as a clean one.
+fn the_content_script_refuses_an_unrelated_base(check: &str) {
+    let (dir, _) = common::git::unit_branch_repo(
+        "pub fn f() {}\n",
+        &[("src/lib.rs", "pub fn g() {}\n", "a unit commit")],
+    );
+    // A root commit of git's empty tree: in the repository, sharing no history with HEAD.
+    let empty_tree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+    let unrelated = common::git::git_out(dir.path(), &["commit-tree", empty_tree, "-m", "other"]);
+    assert_eq!(
+        common::repo::run_gate_script(dir.path(), "content.sh", &[check, &unrelated], &[]),
+        (
+            false,
+            format!(
+                "{check} gate: base '{unrelated}' shares no history with HEAD, so there is no \
+                 diff to check; refusing\n"
+            )
+        ),
+    );
+}
+
+rigger::test_cases! {
+    the_style_check_refuses_a_base_unrelated_to_head:
+        the_content_script_refuses_an_unrelated_base("style");
+    the_no_os_kill_check_refuses_a_base_unrelated_to_head:
+        the_content_script_refuses_an_unrelated_base("no-os-kill");
 }
 
 /// Round-9 escalation-remedy reject (adj-u69c1r9-verdict-reject upholding
