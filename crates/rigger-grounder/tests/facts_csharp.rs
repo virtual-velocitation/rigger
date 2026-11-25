@@ -53,8 +53,10 @@ type Case = (
 /// comment, a block under three other comments and a `///` line a plain one follows give none;
 /// and each per-form row, one pattern form written as a statement in a method's body, in each
 /// position and under each argument mix, a list case label, a list in one pair of parentheses, a
-/// keyword or typed argument and the left operand of a binary operator binding looser than `is`,
-/// at the bound and one past it, included, stages the `type`, `field` or call mentions, or none,
+/// keyword or typed argument, the left operand of a binary operator binding looser than `is`, at
+/// the bound and one past it, a generic name of two type arguments the grammar splits at its
+/// comma, in each list, form and right operand and at each bound and one past it, and a
+/// comparison no split leaves, included, stages the `type`, `field` or call mentions, or none,
 /// that the C# reference patterns' doc (`csharp_reference_tags`) states for that form; over the
 /// production extractor.
 #[test]
@@ -85,7 +87,7 @@ fn csharp_stages_its_row() {
     let field = |name: &str, leaf: &str| in_def(1, name, leaf, Some(REF_KIND_FIELD), 3);
     // A call in `K.M` on line 3, written `name` of `leaf`.
     let call = |name: &str, leaf: &str| in_def(1, name, leaf, None, 3);
-    let cases: [Case; 254] = [
+    let cases: [Case; 286] = [
         (
             "a base list, a parameter's types, a member constant, an assigned member and a doc block",
             "/// <summary>A square.</summary>\n/// <remarks>Its <c>Side</c> is fixed.</remarks>\nclass Square : IShape {\n    const int SIDES = 4;\n    int Side;\n    void Draw(List<IShape> s) { var n = Square.SIDES; s.Side = 2; }\n}\n",
@@ -1531,9 +1533,9 @@ fn csharp_stages_its_row() {
             k_m(),
         ),
         (
-            "an identifier as the left operand of `<`, a value",
+            "an identifier and a value compared by `<` after `is`, invalid C#, each staged as the kept half of a split generic name",
             in_m!("var r = p is Ov < ok;"),
-            vec![],
+            vec![ty("Ov"), ty("ok")],
             k_m(),
         ),
         (
@@ -1581,7 +1583,7 @@ fn csharp_stages_its_row() {
         (
             "a generic name of two type arguments as the left operand of `&` in an argument, split at its comma by the grammar",
             in_m!("F(p is Gv<A, B> & s is null);"),
-            vec![],
+            vec![ty("Gv"), ty("A"), ty("B")],
             k_m(),
         ),
         (
@@ -1593,6 +1595,198 @@ fn csharp_stages_its_row() {
         (
             "a generic name of two type arguments as the left operand of `&` in parentheses, a tuple to the grammar",
             in_m!("var r = (p is Gx<A, B> & s?.Length > 0);"),
+            vec![ty("Gx"), ty("A"), ty("B")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments as the left operand of `&` in an object creation's argument, split at its comma by the grammar",
+            in_m!("var k = new K(p is Jb<A, B> & s is null);"),
+            vec![call("K", "K"), ty("Jb"), ty("A"), ty("B")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments as the left operand of `&` in an index, split at its comma by the grammar",
+            in_m!("var e = xs[p is Jc<A, B> & s is null];"),
+            vec![ty("Jc"), ty("A"), ty("B")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments as the left operand of `&` in parentheses under `!`, a tuple to the grammar",
+            in_m!("var r = !(p is Je<A, B> & s is null);"),
+            vec![ty("Je"), ty("A"), ty("B")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments as the left operand of `&` in an array initializer, split at its comma by the grammar",
+            in_m!("int[] xs = { p is Jf<A, B> & s is null };"),
+            vec![ty("Jf"), ty("A"), ty("B")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments as the left operand of `&` in a collection initializer, split at its comma by the grammar",
+            in_m!("var l = new List<int> { p is Jg<A, B> & s is null };"),
+            vec![call("List", "List"), ty("Jg"), ty("A"), ty("B")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments as the left operand of `&` as an object initializer's assigned value, split at its comma by the grammar",
+            in_m!("var k = new K { X = p is Jh<A, B> & s is null };"),
+            vec![call("K", "K"), ty("Jh"), ty("A"), ty("B")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments as the left operand of `&` in a collection expression, split at its comma by the grammar",
+            in_m!("int[] c = [p is Ji<A, B> & s is null];"),
+            vec![ty("Ji"), ty("A"), ty("B")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments as the left operand of `&` in an interpolation, its comma an alignment to the grammar",
+            in_m!("var t = $\"{p is Jj<A, B> & s is null}\";"),
+            vec![ty("Jj"), ty("A"), ty("B")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments as the left operand of `&` as an assigned value in a `for` update, split at its comma by the grammar",
+            in_m!("for (;; i++, b = p is Jk<A, B> & s is null) { }"),
+            vec![ty("Jk"), ty("A"), ty("B")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments as the left operand of `&` as an assigned value in a `for` initializer, split at its comma by the grammar",
+            in_m!("for (i = 0, b = p is Jl<A, B> & s is null;;) { }"),
+            vec![ty("Jl"), ty("A"), ty("B")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments under `not` as the left operand of `&` in an argument, split at its comma by the grammar",
+            in_m!("F(p is not Jm<A, B> & s is null);"),
+            vec![ty("Jm"), ty("A"), ty("B")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments as the right of `and` and the left operand of `&` in an argument, split at its comma by the grammar",
+            in_m!("F(p is Foo and Jn<A, B> & s is null);"),
+            vec![ty("Foo"), ty("Jn"), ty("A"), ty("B")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments as the right of `or` and the left operand of `&` in an argument, split at its comma by the grammar",
+            in_m!("F(p is Foo or Jo<A, B> & s is null);"),
+            vec![ty("Foo"), ty("Jo"), ty("A"), ty("B")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments as the left operand of `&` in a lambda's body in an argument, split at its comma by the grammar",
+            in_m!("F(x => p is Jp<A, B> & s is null);"),
+            vec![ty("Jp"), ty("A"), ty("B")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments as the left operand of `&` as an assigned value in an argument, split at its comma by the grammar",
+            in_m!("F(b = p is Jq<A, B> & s is null);"),
+            vec![ty("Jq"), ty("A"), ty("B")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments as the left operand of `&&` in an argument, split at its comma by the grammar",
+            in_m!("F(p is Jr<A, B> && s is null);"),
+            vec![ty("Jr"), ty("A"), ty("B")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments as the left operand of `&&` whose right operand is `!=` in parentheses, a tuple to the grammar",
+            in_m!("var r = (p is Js<A, B> && s != null);"),
+            vec![ty("Js"), ty("A"), ty("B")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments as the left operand of `&&` in a conditional's condition in an argument, split at its comma by the grammar",
+            in_m!("F(p is Jt<A, B> && ok ? 1 : 0);"),
+            vec![ty("Jt"), ty("A"), ty("B")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments as the left operand of `&` and then `&&` in an argument, split at its comma by the grammar",
+            in_m!("F(p is Ju<A, B> & s is null && ok);"),
+            vec![ty("Ju"), ty("A"), ty("B")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments as the left operand of `^` in an argument, split at its comma by the grammar",
+            in_m!("F(p is Jv<A, B> ^ s is null);"),
+            vec![ty("Jv"), ty("A"), ty("B")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments as the left operand of `&& ok` as an assigned value in parentheses, a tuple to the grammar",
+            in_m!("var r = (b = p is Jw<A, B> && ok);"),
+            vec![ty("Jw"), ty("A"), ty("B")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, its second type argument sixteen nodes into its element, the bound",
+            in_m!("F(p is Jx<A, B> & s is null && ok && ok && ok && ok && ok && ok && ok && ok && ok && ok && ok && ok && ok && ok);"),
+            vec![ty("Jx"), ty("A"), ty("B")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, its second type argument seventeen nodes into its element, past the bound, none",
+            in_m!("F(p is Jy<A, B> & s is null && ok && ok && ok && ok && ok && ok && ok && ok && ok && ok && ok && ok && ok && ok && ok);"),
+            vec![ty("Jy"), ty("A")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, its `is` two nodes into its element, the bound",
+            in_m!("F(b = b = p is Jz<A, B> & s is null);"),
+            vec![ty("Jz"), ty("A"), ty("B")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, its `is` three nodes into its element, past the bound, its second type argument none",
+            in_m!("F(b = b = b = p is Ja<A, B> & s is null);"),
+            vec![ty("Ja"), ty("A")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, the first a generic name, its own type argument included",
+            in_m!("F(p is Jd<Mb<C>, A> & s is null);"),
+            vec![ty("Jd"), ty("C"), ty("Mb"), ty("A")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, the first a generic name of two type arguments, each included",
+            in_m!("F(p is Md<Mg<C, D>, A> & s is null);"),
+            vec![ty("Md"), ty("C"), ty("D"), ty("Mg"), ty("A")],
+            k_m(),
+        ),
+        (
+            "a `>` comparison of a prefix `&` in a condition, none",
+            in_m!("if (ptr > &x) { }"),
+            vec![],
+            k_m(),
+        ),
+        (
+            "a `>` comparison of a prefix `&` in an argument, none",
+            in_m!("F(ptr > &x);"),
+            vec![],
+            k_m(),
+        ),
+        (
+            "a `>` comparison of a prefix `&` in a second argument, none",
+            in_m!("F(i, ptr > &x);"),
+            vec![],
+            k_m(),
+        ),
+        (
+            "a `<` comparison in a case label, none",
+            in_m!("switch (b) { case Xc < 5: break; }"),
+            vec![],
+            k_m(),
+        ),
+        (
+            "a `<` comparison in a switch arm, none",
+            in_m!("var y = b switch { Xc < 5 => 1, _ => 0 };"),
             vec![],
             k_m(),
         ),
