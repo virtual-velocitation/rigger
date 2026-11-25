@@ -7253,6 +7253,20 @@ fn h() {
 5 ref const HASH i",
             ),
             (
+                "a width parameter after the zero flag is its identifier alone, the flag's digit \
+                 and a positional width none",
+                r#"fn n() {
+    format!("{:0W$} {:#0X$x} {:+0Y$} {:01$}", 1);
+}
+"#,
+                "\
+1 def Function n to 3
+2 ref call format n
+2 ref const W n
+2 ref const X n
+2 ref const Y n",
+            ),
+            (
                 "a named argument's name is read neither in the format string nor where it is \
                  bound, its value is, and a non-format macro's assignment stays a read",
                 "\
