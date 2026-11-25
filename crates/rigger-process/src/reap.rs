@@ -4338,11 +4338,19 @@ mod tests {
             };
             let fifos: Vec<String> = witness.env().into_iter().map(|(_, p)| p).collect();
             let of_middle = run(vec!["-p".into(), middle.to_string()]);
-            let of_fifos = run(fifos);
+            let dir = Path::new(&fifos[0])
+                .parent()
+                .and_then(|d| d.file_name())
+                .map(|d| d.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let all = run(vec!["-nP".into()]);
+            let mut of_fifos: Vec<&str> = all.lines().filter(|l| l.contains(&dir)).collect();
+            let own = run(vec!["-p".into(), std::process::id().to_string()]);
+            of_fifos.extend(own.lines());
             assert_eq!(
                 released,
                 Reading::Ended,
-                "{ending:?}: the release ends what the end left: {still:?} {near:#?} {:?}\nMIDDLE\n{of_middle}\nFIFOS\n{of_fifos}",
+                "{ending:?}: the release ends what the end left: {still:?} {near:#?} {:?}\nMIDDLE\n{of_middle}\nFIFOS\n{of_fifos:#?}",
                 os.sent
             );
             assert!(
