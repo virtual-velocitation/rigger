@@ -344,11 +344,13 @@ in an expression or matched in a refutable pattern: a match arm's pattern but it
 `Some(ONE)`, `0..=TOP`). The name an irrefutable pattern binds (a parameter, a plain `let`, a `for`,
 a closure parameter), a tuple struct pattern's head, a `ref` or `mut` binding and the name a
 `name @` binds stage none. A const read is also a format string's inline capture, read when the
-format-string argument is one string literal, raw or not: the first argument of `format!`,
-`print!`, `println!`, `eprint!`, `eprintln!`, `panic!`, `format_args!`, `unreachable!`, `todo!`
-and `unimplemented!`, the second of `write!`, `writeln!`, `assert!` and `debug_assert!`, the third
-of `assert_eq!`, `assert_ne!`, `debug_assert_eq!` and `debug_assert_ne!`. A placeholder's argument
-and a width or precision `NAME$` count (`{TEMP}`, `{:W$}`, the `W` of `{:0W$}`), each at its own line; a `{{` or `}}`
+format-string argument is one string literal, raw or not (`"{X}".to_owned()` is none), the
+macro's arguments split where a call's are (`f::<A, B>()` is one argument, `a < b` another): the
+first argument of `format!`, `print!`, `println!`, `eprint!`, `eprintln!`, `panic!`,
+`format_args!`, `unreachable!`, `todo!` and `unimplemented!`, the second of `write!`, `writeln!`,
+`assert!` and `debug_assert!`, the third of `assert_eq!`, `assert_ne!`, `debug_assert_eq!` and
+`debug_assert_ne!`. A placeholder's argument and a width or precision `NAME$` count (`{TEMP}`,
+`{:COL_W$}`, the `W` of `{:0W$}`), each at its own line; a `{{` or `}}`
 escape, a name not so spelled (`{temp}`) and a name a named argument binds stage none, and neither
 does that argument's own name (`TEMP` of `format!("{TEMP}", TEMP = 1)`). A name the exclusions hold
 (a standard-library import, an enclosing const generic parameter) stages none in either position.

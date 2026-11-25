@@ -1947,7 +1947,7 @@ def raw():
         // languages' rows merge clean.
         const PINNED: [(&str, &str, &str); 7] = [
             // Rust
-            ("rs", "rust-tags-v10", "e6d1f87af95ac729"),
+            ("rs", "rust-tags-v10", "71684eab40d0f0bd"),
             // C#
             ("cs", "csharp-tags-v5", "ff1a724ddef62a08"),
             // TypeScript

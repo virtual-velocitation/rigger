@@ -1296,9 +1296,9 @@ impl<'t> StructuralNodes<'t> {
 /// (spec 117, MACRO TOKEN TREES), its invocation's: the names of the generic parameters enclosing
 /// it ([`enclosing_generics`]), the type or trait `Self` and `self` name there
 /// ([`self_qualifier`]), the inline modules holding it, outermost first ([`inline_modules`]), the
-/// names the bindings in scope there bind ([`bindings_at`]), and the byte positions of the names
-/// its own named format arguments bind ([`format_arguments`]: `TEMP` of `TEMP = 1`). The file's
-/// own read has the first two alone.
+/// names the bindings in scope there bind ([`bindings_at`]), and the byte ranges of its own
+/// format string and of the names its named format arguments bind ([`format_arguments`]: `TEMP`
+/// of `TEMP = 1`). The file's own read has the first two alone.
 #[derive(Clone, Default)]
 struct Scope {
     std_imports: Vec<String>,
@@ -1307,7 +1307,8 @@ struct Scope {
     owner: Option<String>,
     modules: Vec<String>,
     bindings: Vec<String>,
-    named_arguments: Vec<usize>,
+    format_string: Option<std::ops::Range<usize>>,
+    named_arguments: Vec<std::ops::Range<usize>>,
 }
 
 impl Scope {
@@ -1315,9 +1316,18 @@ impl Scope {
     /// scope, is re-parsed with: the file's standard-library imports and aliases, the generic
     /// parameters enclosing `invocation` and then this scope's, the owner `Self` names at
     /// `invocation`, this scope's inline modules followed by those holding `invocation`, the
-    /// names the bindings in scope at `invocation` bind and then this scope's, and the positions
-    /// of `invocation`'s own named format arguments' names.
-    fn at(&self, invocation: tree_sitter::Node, source: &[u8]) -> Scope {
+    /// names the bindings in scope at `invocation` bind and then this scope's, and the format
+    /// arguments [`format_arguments`] reads off `arguments`, the argument list the token tree is
+    /// read whole as, when it is.
+    fn at(
+        &self,
+        invocation: tree_sitter::Node,
+        arguments: Option<tree_sitter::Node>,
+        source: &[u8],
+    ) -> Scope {
+        let (format_string, named_arguments) = arguments
+            .map(|arguments| format_arguments(invocation, arguments, source))
+            .unwrap_or_default();
         Scope {
             std_imports: self.std_imports.clone(),
             aliases: self.aliases.clone(),
@@ -1336,9 +1346,8 @@ impl Scope {
                 .into_iter()
                 .chain(self.bindings.iter().cloned())
                 .collect(),
-            named_arguments: format_arguments(invocation, source)
-                .map(|(_, named)| named.iter().map(|n| n.start_byte()).collect())
-                .unwrap_or_default(),
+            format_string,
+            named_arguments,
         }
     }
 }
@@ -1384,12 +1393,17 @@ fn reparse_invocations(
     out: &mut Vec<Reparse>,
 ) {
     for &invocation in nodes.iter().filter(|n| n.kind() == "macro_invocation") {
-        let Some(token_tree) = token_tree(invocation) else {
+        let Some(token_tree) = invocation.child(invocation.child_count().saturating_sub(1)) else {
             continue;
         };
-        let inner = scope.at(invocation, source.text.as_bytes());
         let mut parses = Vec::new();
-        read_tokens(parser, &inner_tokens(token_tree), source, &mut parses);
+        let whole = read_tokens(parser, &inner_tokens(token_tree), source, &mut parses);
+        // The argument list of the wrapper call `f(..);` an argument-list parse reads the run as.
+        let arguments = parses.first().filter(|_| whole).and_then(|(tree, _)| {
+            let call = tree.root_node().named_child(0)?.named_child(0)?;
+            call.child_by_field_name("arguments")
+        });
+        let inner = scope.at(invocation, arguments, source.text.as_bytes());
         for (tree, keep) in parses {
             let mut nested = Vec::new();
             let structure = StructuralNodes::of(tree.root_node(), Lang::Rust, &keep);
@@ -1402,11 +1416,6 @@ fn reparse_invocations(
             out.extend(nested);
         }
     }
-}
-
-/// The token tree of the macro invocation `invocation`, its last child.
-fn token_tree(invocation: tree_sitter::Node) -> Option<tree_sitter::Node> {
-    invocation.child(invocation.child_count().saturating_sub(1))
 }
 
 /// The tokens of `token_tree` inside its two delimiters, comments among them.
@@ -1430,33 +1439,34 @@ fn inner_tokens(token_tree: tree_sitter::Node) -> Vec<tree_sitter::Node> {
 /// the span holding no error ([`error_free_within`]) holds beyond itself, the reads of each run
 /// between those (the `,` of `pair::<A, B>(x)` cuts nothing); else that parse read over each
 /// such subtree, but those overlapping a token tree of the run none of them holds, and the
-/// reads of each such token tree's own tokens (`json!({"k": f(x)})` gives the call `f`).
+/// reads of each such token tree's own tokens (`json!({"k": f(x)})` gives the call `f`). Whether
+/// the run is read whole as a call's argument list, the one parse pushed then.
 fn read_tokens(
     parser: &mut tree_sitter::Parser,
     tokens: &[tree_sitter::Node],
     source: &Source,
     out: &mut Vec<(tree_sitter::Tree, Vec<std::ops::Range<usize>>)>,
-) {
+) -> bool {
     let Some(span) = tokens
         .first()
         .zip(tokens.iter().rfind(|token| !is_comment(**token)))
         .map(|(first, last)| first.start_byte()..last.end_byte())
     else {
-        return;
+        return false;
     };
     let clean = |tree: &tree_sitter::Tree| !tree.root_node().has_error();
     let args = reparse(parser, source, &span, ARGUMENT_LIST);
     if let Some(args) = args.as_ref().filter(|tree| clean(tree)) {
         out.push((args.clone(), vec![span]));
-        return;
+        return true;
     }
     if let Some(items) = reparse(parser, source, &span, ITEMS).filter(clean) {
         let read = span.start..span.end + ITEMS.1.len();
         out.push((items, vec![read]));
-        return;
+        return false;
     }
     let Some(args) = args else {
-        return;
+        return false;
     };
     let mut keep = Vec::new();
     error_free_within(args.root_node(), &span, &mut keep);
@@ -1469,7 +1479,7 @@ fn read_tokens(
         for run in runs {
             read_tokens(parser, run, source, out);
         }
-        return;
+        return false;
     }
     let broken: Vec<_> = tokens
         .iter()
@@ -1484,6 +1494,7 @@ fn read_tokens(
     for tree in broken {
         read_tokens(parser, &inner_tokens(*tree), source, out);
     }
+    false
 }
 
 /// `span` of `source` re-parsed IN PLACE, every node at its file byte, line and column: the
@@ -1713,9 +1724,11 @@ impl UseLeaf<'_> {
 /// RUST'S TAGGED REFERENCES (spec 117, RUST REFERENCES), every one in the file the walk `structure`
 /// gathered ([`StructuralNodes`]), in source order, save the impl headers' rows, which come last. A
 /// CONST READ ([`is_const_read`]) is an `identifier` in expression position or in a refutable
-/// pattern, or the final identifier of a whole expression or refutable pattern path (never a
-/// prefix or a call's head), spelled `^[A-Z][A-Z0-9_]*$`; and a format macro's inline capture so
-/// spelled ([`format_captures`]), staged at its own bytes in the format string. A
+/// pattern (never a tuple struct pattern's head, a `ref` or `mut` binding or the name a `name @`
+/// binds: [`in_refutable_pattern`]), or the final identifier of a whole expression or refutable
+/// pattern path (never a prefix or a call's head), spelled `^[A-Z][A-Z0-9_]*$`; and a format
+/// macro's inline capture so spelled ([`format_captures`]), staged at its own bytes in the format
+/// string the read of its token tree holds ([`Scope::format_string`]). A
 /// TYPE REFERENCE is a `type_identifier` that is no definition's own name, nor an impl header's
 /// self type or trait, or the final identifier of an expression or pattern path's `path` that
 /// begins with an uppercase letter; a struct literal or pattern named `Path::Name` whose path ends
@@ -1756,7 +1769,7 @@ fn rust_references(structure: &StructuralNodes, source: &[u8], scope: &Scope) ->
     let headers: Vec<usize> = header_leaves.iter().map(|(leaf, _)| leaf.id()).collect();
     let mut out = Vec::new();
     // `span` is the staged name's bytes: `node`'s own, but a format capture's, which has no node
-    // and is excluded under its invocation's.
+    // of its own and is excluded under its format string's.
     let mut stage = |node: tree_sitter::Node,
                      span: std::ops::Range<usize>,
                      kind: &'static str,
@@ -1882,8 +1895,8 @@ fn rust_references(structure: &StructuralNodes, source: &[u8], scope: &Scope) ->
             "identifier" if is_const_read(node, node, source) => {
                 stage(node, node.byte_range(), REF_KIND_CONST, None, None, None)
             }
-            "macro_invocation" => {
-                for span in format_captures(node, source) {
+            _ if scope.format_string == Some(node.byte_range()) => {
+                for span in format_captures(node, source, &scope.named_arguments) {
                     stage(node, span, REF_KIND_CONST, None, None, None);
                 }
             }
@@ -1927,47 +1940,50 @@ const FORMAT_MACROS: [(&str, usize); 18] = [
     ("debug_assert_ne", 2),
 ];
 
-/// The arguments of `invocation` when it invokes a format macro ([`FORMAT_MACROS`]): the tokens
-/// of its format string's argument, comments dropped, and the name of each named argument after
-/// it (`TEMP` of `TEMP = 1`); `None` for any other macro. Arguments are split at the token tree's
-/// own commas, so a nested call's or macro's are no split.
-fn format_arguments<'t>(
-    invocation: tree_sitter::Node<'t>,
+/// The format arguments of `invocation` when it invokes a format macro ([`FORMAT_MACROS`]), read
+/// off `arguments`, the argument list its token tree is read whole as ([`read_tokens`]), so they
+/// split where a call's do (`f::<A, B>()` is one argument, `a < b` another): the byte range of its
+/// format string's argument when that is one string literal, raw or not, and that of the left
+/// side of each assignment after it, the name a named argument binds (`TEMP` of `TEMP = 1`);
+/// neither for any other macro.
+fn format_arguments(
+    invocation: tree_sitter::Node,
+    arguments: tree_sitter::Node,
     source: &[u8],
-) -> Option<(Vec<tree_sitter::Node<'t>>, Vec<tree_sitter::Node<'t>>)> {
-    let leaf = final_identifier(invocation.child_by_field_name("macro")?)?;
-    let leaf = leaf.utf8_text(source).ok()?;
-    let &(_, at) = FORMAT_MACROS.iter().find(|(name, _)| *name == leaf)?;
-    // shortcut: a turbofish's comma before the format string (`assert_eq!(f::<A, B>(), x, ..)`)
-    // shifts the index onto the argument before it; split outside `<..>` when that shape matters.
-    let tokens: Vec<_> = inner_tokens(token_tree(invocation)?)
-        .into_iter()
-        .filter(|t| !is_comment(*t))
+) -> (Option<std::ops::Range<usize>>, Vec<std::ops::Range<usize>>) {
+    let leaf = invocation
+        .child_by_field_name("macro")
+        .and_then(final_identifier)
+        .and_then(|leaf| leaf.utf8_text(source).ok());
+    let Some(&(_, at)) = FORMAT_MACROS.iter().find(|(name, _)| leaf == Some(*name)) else {
+        return Default::default();
+    };
+    let mut cursor = arguments.walk();
+    let mut each = arguments
+        .named_children(&mut cursor)
+        .filter(|argument| !is_comment(*argument));
+    let string = each
+        .nth(at)
+        .filter(|string| matches!(string.kind(), "string_literal" | "raw_string_literal"))
+        .map(|string| string.byte_range());
+    let named = each
+        .filter(|argument| argument.kind() == "assignment_expression")
+        .filter_map(|argument| argument.child_by_field_name("left"))
+        .map(|name| name.byte_range())
         .collect();
-    let mut arguments = tokens.split(|t| t.kind() == ",");
-    let string = arguments.nth(at).unwrap_or_default().to_vec();
-    let named = arguments
-        .filter_map(|argument| match argument {
-            [name, eq, ..] if name.kind() == "identifier" && eq.kind() == "=" => Some(*name),
-            _ => None,
-        })
-        .collect();
-    Some((string, named))
+    (string, named)
 }
 
-/// THE FORMAT CAPTURES (spec 117, CONST READ): the byte spans of the names a format macro's
-/// `invocation` captures inline when its format string's argument is one string literal, raw or
-/// not ([`format_arguments`]), the one token holding `string_content`: each [`inline_captures`]
-/// reads off a run of its literal text (an escape sequence is no such run), spelled as a constant
-/// ([`is_const_spelled`]) and bound by none of its named arguments.
-fn format_captures(invocation: tree_sitter::Node, source: &[u8]) -> Vec<std::ops::Range<usize>> {
-    let Some((string, named)) = format_arguments(invocation, source) else {
-        return Vec::new();
-    };
-    let [literal] = string[..] else {
-        return Vec::new();
-    };
-    let named: Vec<&[u8]> = named.iter().map(|n| &source[n.byte_range()]).collect();
+/// THE FORMAT CAPTURES (spec 117, CONST READ): the byte spans of the names the format string
+/// `literal` captures inline ([`format_arguments`]): each [`inline_captures`] reads off a run of
+/// its literal text (an escape sequence is no such run), spelled as a constant
+/// ([`is_const_spelled`]) and bound by none of the names `named` spans, its named arguments'.
+fn format_captures(
+    literal: tree_sitter::Node,
+    source: &[u8],
+    named: &[std::ops::Range<usize>],
+) -> Vec<std::ops::Range<usize>> {
+    let named: Vec<&[u8]> = named.iter().map(|name| &source[name.clone()]).collect();
     let mut cursor = literal.walk();
     let contents: Vec<_> = literal
         .children(&mut cursor)
@@ -1992,15 +2008,17 @@ fn format_captures(invocation: tree_sitter::Node, source: &[u8]) -> Vec<std::ops
 /// The byte spans in `text`, a format string's literal text, of what each of its placeholders
 /// CAPTURES inline (spec 117, CONST READ): a `{argument}`'s or `{argument:spec}`'s argument, its
 /// trailing whitespace trimmed, and each name the `spec` writes a width or precision `NAME$` by
-/// (`{:W$}`, `{:.P$}`, the `W` of `{:0W$}` past its zero flag). `{{` and `}}` escape a brace and open or close no placeholder. A span may
-/// hold no name (`{}`, `{0}`, `{:1$}`); [`format_captures`] keeps the const-spelled ones.
+/// (`{:W$}`, `{:.P$}`, the `W` of `{:0W$}` past its zero flag). `{{` and `}}` escape a brace and
+/// open or close no placeholder: a placeholder is read through its `}`, so a `}` reached outside
+/// one is passed. A span may hold no name (`{}`, `{0}`, `{:1$}`); [`format_captures`] keeps the
+/// const-spelled ones.
 fn inline_captures(text: &str) -> Vec<std::ops::Range<usize>> {
     let bytes = text.as_bytes();
     let mut spans = Vec::new();
     let mut at = 0;
     while at < bytes.len() {
         match (bytes[at], bytes.get(at + 1)) {
-            (b'{', Some(b'{')) | (b'}', Some(b'}')) => at += 2,
+            (b'{', Some(b'{')) => at += 2,
             (b'{', _) => {
                 let open = at + 1;
                 let Some(len) = text[open..].find('}') else {
@@ -2029,7 +2047,7 @@ fn inline_captures(text: &str) -> Vec<std::ops::Range<usize>> {
     spans
 }
 
-/// RUST STAGES FUNCTION VALUES (spec 117):the name nodes of the functions the tree `structure`
+/// RUST STAGES FUNCTION VALUES (spec 117): the name nodes of the functions the tree `structure`
 /// was gathered from passes by name, in source order, each a call at its site ([`extract`]):
 /// the final identifier of a whole expression path that is read ([`is_read`]: never a call's
 /// head) and begins lowercase (`.map(Store::open)`), and a bare identifier passed as a call's
@@ -2148,7 +2166,7 @@ fn excluded(
     name == "Self"
         || std_named(name, root_seg, scope)
         || names_enclosing_generic(name, node, source, scope)
-        || scope.named_arguments.contains(&node.start_byte())
+        || scope.named_arguments.contains(&node.byte_range())
 }
 
 /// Whether `name`, under a path whose root segment is `root_seg`, names the standard library
@@ -2337,8 +2355,7 @@ fn is_read(node: tree_sitter::Node) -> bool {
         let pattern = match parent.kind() {
             "match_pattern" => field != Some("condition"),
             kind => {
-                kind.ends_with("_pattern")
-                    || matches!(kind, "closure_parameters" | "lifetime" | "label")
+                is_pattern_kind(kind) || matches!(kind, "closure_parameters" | "lifetime" | "label")
             }
         };
         !pattern && !field.is_some_and(|f| NON_READ_FIELDS.contains(&f))
@@ -2368,8 +2385,13 @@ fn in_refutable_pattern(node: tree_sitter::Node) -> bool {
         "tuple_struct_pattern" if field_of(node) == Some("type") => false,
         "ref_pattern" | "mut_pattern" => false,
         "captured_pattern" if parent.named_child(0) == Some(node) => false,
-        kind => kind.ends_with("_pattern") && in_refutable_pattern(parent),
+        kind => is_pattern_kind(kind) && in_refutable_pattern(parent),
     })
+}
+
+/// Whether `kind` is a pattern node's kind: the Rust grammar names each `*_pattern`.
+fn is_pattern_kind(kind: &str) -> bool {
+    kind.ends_with("_pattern")
 }
 
 /// Whether `node`, a `scoped_identifier`, is a WHOLE expression or pattern path: no prefix of a
@@ -6502,9 +6524,9 @@ class K
         let cases = [
             // A const read is an all-caps identifier or the final identifier of a whole expression
             // path (or refutable pattern path, or a format string's inline capture:
-            // `rust_reads_pattern_and_format_constants`), a type reference a type name or an uppercase path's final identifier in
-            // expression position, a `use` each imported leaf; a definition's own name stages
-            // nothing.
+            // `rust_reads_pattern_and_format_constants`), a type reference a type name or an
+            // uppercase path's final identifier in expression position, a `use` each imported
+            // leaf; a definition's own name stages nothing.
             (
                 "a const read, a type reference and a use are tagged",
                 "\
