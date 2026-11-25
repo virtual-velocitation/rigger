@@ -113,6 +113,34 @@ const DEPARTURES: &[(&str, &[&str], &[&str])] = &[
             r#"node src/lib.rs::helper [code-entity] kind=function lang=rust line=26 name=helper proof_evidence=["src/lib.rs:39","src/lib.rs:40"] proven_by=2"#,
         ],
     ),
+    (
+        "an impl header's trait and self type are `impl` mentions the impl encloses, never calls, \
+         and a prelude trait such as `Default` stages none (spec 117, RUST TAGS IMPL HEADERS)",
+        &[
+            "edge src/shapes.rs -REFERENCES/ambiguous-> src/shapes.rs::%Default",
+            "edge src/shapes.rs::impl Default for Shape -CALLS/ambiguous-> src/shapes.rs::%Default",
+            "edge src/shapes.rs::impl Default for Shape -CALLS/extracted-> src/shapes.rs::Shape",
+            "edge src/shapes.rs::impl Shape -CALLS/extracted-> src/shapes.rs::Shape",
+            "node src/shapes.rs::%Default [code-entity] ",
+        ],
+        &[
+            "edge src/shapes.rs::impl Default for Shape -REFERENCES/extracted-> src/shapes.rs::Shape",
+            "edge src/shapes.rs::impl Shape -REFERENCES/extracted-> src/shapes.rs::Shape",
+        ],
+    ),
+    (
+        "a call qualified by a type reaches the method the type's impl defines, the impl \
+         mentioning its self type (spec 117, RUST TAGS IMPL HEADERS)",
+        &[
+            "edge src/lib.rs -REFERENCES/inferred-> src/lib.rs::%new",
+            "edge src/lib.rs::run -CALLS/inferred-> src/lib.rs::%new",
+            "node src/lib.rs::%new [code-entity] ",
+        ],
+        &[
+            "edge src/lib.rs -REFERENCES/extracted-> src/shapes.rs::Shape::new",
+            "edge src/lib.rs::run -CALLS/extracted-> src/shapes.rs::Shape::new",
+        ],
+    ),
 ];
 
 /// The golden with every departure applied.

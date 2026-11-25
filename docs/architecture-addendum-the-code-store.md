@@ -337,6 +337,11 @@ variant, a path in type position (`-> Self::Target`) is a type reference alone, 
 naming the standard library (`Ordering::Less` under `use std::cmp::Ordering`) stages none, while
 a leaf sharing a standard-library or enclosing generic parameter's name stages its variant all the
 same (`Located::None`, `Shape::Box { w } =>`).
+A Rust impl header is an `impl` reference of its self type, and of its trait for `impl Tr for T`,
+each by its base name with path and generics stripped (`impl<T> CodeView for FactsView<T>` gives
+`CodeView` and `FactsView`), enclosed by the impl definition itself even inside a function; a
+name the exclusions hold (a prelude trait such as `Default`, a standard-library path, a generic
+self type) and a tuple self type stage none, and the header makes no call.
 A module's two lists depend only on the declaring file, so they
 are computed at extraction, an enclosing inline module's components and an explicit path attribute
 placed by the same two rules; for a file named `mod.rs`, `lib.rs` or `main.rs` the two are equal.

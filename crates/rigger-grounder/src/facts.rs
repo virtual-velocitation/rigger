@@ -2164,7 +2164,7 @@ pub(crate) mod tests {
         // languages' rows merge clean.
         const PINNED: [(&str, &str, &str); 7] = [
             // Rust
-            ("rs", "rust-tags-v8", "a8c3da04663443dc"),
+            ("rs", "rust-tags-v9", "9b314ccf0ffb9bc9"),
             // C#
             ("cs", "csharp-tags-v5", "1686734362d08137"),
             // TypeScript

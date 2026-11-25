@@ -1931,11 +1931,11 @@ def raw():
     /// until its generation is bumped and the row re-pinned, and a snapshot of the code store
     /// written before the change is not trusted. `GRAMMAR_TAGS_VERSION` is held equal to the
     /// generation table's generations joined in its order. The fixtures set an implementation
-    /// reference, the tagged reference kind a Python base class records, and every part a snapshot
-    /// stores, the stored inputs of the derived out-of-line module row and each tagged reference
-    /// kind a registered language records (a const read, a type reference, a use, a field use and
-    /// a variant use) and a reference's qualifier included, so a change to any of them moves a
-    /// digest.
+    /// reference, the tagged reference kind a Python base class and a Rust impl header record, and
+    /// every part a snapshot stores, the stored inputs of the derived out-of-line module row and
+    /// each tagged reference kind a registered language records (a const read, a type reference, a
+    /// use, a field use and a variant use) and a reference's qualifier included, so a change to
+    /// any of them moves a digest.
     #[test]
     fn an_extraction_change_ships_with_a_grammar_tags_version_bump() {
         use crate::contextgraph::{
@@ -1946,7 +1946,7 @@ def raw():
         // languages' rows merge clean.
         const PINNED: [(&str, &str, &str); 7] = [
             // Rust
-            ("rs", "rust-tags-v8", "b3c616ecb35019e2"),
+            ("rs", "rust-tags-v9", "16fd5c41feb05cf1"),
             // C#
             ("cs", "csharp-tags-v5", "ff1a724ddef62a08"),
             // TypeScript

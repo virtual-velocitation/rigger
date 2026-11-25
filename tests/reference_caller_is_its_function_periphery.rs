@@ -17,11 +17,12 @@ use crate::common;
 /// inline mod in `fn host` beside a file-level impl, mod and trait, and a JS file binding calls
 /// to consts inside and outside functions,
 /// WHEN the operator runs `rigger graph build`,
-/// THEN the graph's `CALLS` edges are exactly: a fn-local impl header's, trait body's and inline
-/// mod's references from `host`; a call inside a method or fn nested in any of them from that
-/// method or fn; a file-level impl header's from the impl, a file-level mod's and trait's from
-/// themselves; a function-local JS const's call from its function and a top-level const's from
-/// the const; and a top-level call's from the file, its caller.
+/// THEN the graph's `CALLS` edges are exactly: a fn-local trait body's and inline mod's
+/// references from `host`; a call inside a method or fn nested in any of them from that method
+/// or fn; a file-level mod's and trait's from themselves; a function-local JS const's call from
+/// its function and a top-level const's from the const; and a top-level call's from the file, its
+/// caller. No impl header, file-level or fn-local, makes one: its trait and self type are `impl`
+/// mentions, no call (spec 117, RUST TAGS IMPL HEADERS).
 #[cfg(feature = "symbols")]
 #[test]
 fn graph_build_hangs_each_call_off_its_innermost_enclosing_function() {
@@ -42,13 +43,9 @@ fn graph_build_hangs_each_call_off_its_innermost_enclosing_function() {
             ("lib.rs::Top", "lib.rs::%announce"),
             ("lib.rs::host", "lib.rs::%declare"),
             ("lib.rs::host", "lib.rs::%setup"),
-            ("lib.rs::host", "lib.rs::Draw"),
-            ("lib.rs::host", "lib.rs::host::Local"),
             ("lib.rs::host::<Local as Draw>::draw", "lib.rs::%brush"),
             ("lib.rs::host::Shape::area", "lib.rs::%measure"),
             ("lib.rs::host::inner::deep", "lib.rs::%dig"),
-            ("lib.rs::impl Draw for Widget", "lib.rs::Draw"),
-            ("lib.rs::impl Draw for Widget", "lib.rs::Widget"),
             ("lib.rs::outer", "lib.rs::%boot"),
         ],
         "every CALLS edge of the built graph, each from the caller the function-first rule names",
@@ -56,12 +53,10 @@ fn graph_build_hangs_each_call_off_its_innermost_enclosing_function() {
 }
 
 /// The `CALLS` edges of [`common::fixtures::RUST_METHOD_CALLER_SOURCE`] folded as `a.rs`, each `(from, to)`: the
-/// call in `new` from the method's path `T::new`, and the impl header's self type from the impl.
+/// call in `new` from the method's path `T::new`. The impl header's self type is an `impl`
+/// mention, no call, and makes no `CALLS` edge (spec 117, RUST TAGS IMPL HEADERS).
 #[cfg(feature = "symbols")]
-const RUST_METHOD_CALLER_CALLS: &[(&str, &str)] = &[
-    ("a.rs::T::new", "a.rs::helper"),
-    ("a.rs::impl T", "a.rs::T"),
-];
+const RUST_METHOD_CALLER_CALLS: &[(&str, &str)] = &[("a.rs::T::new", "a.rs::helper")];
 
 /// The `CALLS` edges of [`common::fixtures::GO_RECEIVER_CALLER_SOURCE`] folded as `g.go`, each `(from, to)`: the
 /// call to `helper`, from the method's path `Recv::name`. The receiver type is a type reference,

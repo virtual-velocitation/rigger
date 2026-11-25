@@ -677,12 +677,12 @@ impl CompiledTags {
 /// 117, RUST STAGES FUNCTION VALUES) is a call reference at its name, staged by that same rule
 /// ([`rust_staged`]) after its tree's reference tags.
 ///
-/// Rust's const reads, type references, variant uses and the leaves a `use` imports are read off
-/// the tree too ([`rust_references`], spec 117): each is a reference tagged with its `ref_kind`,
-/// a variant carrying the qualifier the same rule gives it (spec 117, RUST STAGES VARIANT USES),
-/// pushed after every call reference of every tree so it takes its caller and test region by the
-/// same position rules, an impl header's trait row taking the self type's path when exactly one
-/// non-test definition of the file has the self type's leaf, else the impl block's.
+/// Rust's const reads, type references, variant uses, impl headers and the leaves a `use` imports
+/// are read off the tree too ([`rust_references`], spec 117): each is a reference tagged with its
+/// `ref_kind`, a variant carrying the qualifier the same rule gives it (spec 117, RUST STAGES
+/// VARIANT USES), pushed after every call reference of every tree so it takes its caller and test
+/// region by the same position rules, save an impl header's mention, which the impl block itself
+/// encloses even inside a function (spec 117, RUST TAGS IMPL HEADERS).
 ///
 /// Doc spans (spec 117, DOC FACTS): a definition's `@doc` capture gives it its span, and the
 /// first match that tags nothing and holds a capture gives the file its span, in every language;
@@ -850,11 +850,9 @@ pub fn extract(source: &str, lang: Lang, tags: &CompiledTags) -> Result<FileSymb
         }
         def_reads.resize(def_ranges.len(), at_read);
     }
-    // Every impl block is a definition of its own (gap 104), named by its header, with its trait
-    // and self type recorded as references. Added before the attribution pass below, so those two
-    // references attribute to the impl (the impl -> trait and impl -> type links) unless a
-    // function encloses the impl, which then is their caller, while a reference inside one of its
-    // methods still attributes to the method, the innermost function.
+    // Every impl block is a definition of its own (gap 104), named by its header; the mentions its
+    // header makes are Rust's tagged references below, and a reference inside one of its methods
+    // still attributes to the method, the innermost function.
     for (at_read, read) in reads.iter().enumerate() {
         for block in impl_blocks(&read.structure.impls, bytes) {
             defs.push(def_of(
@@ -865,27 +863,19 @@ pub fn extract(source: &str, lang: Lang, tags: &CompiledTags) -> Result<FileSymb
                 block.line,
             ));
             def_ranges.push((block.range, block.name, Kind::Impl));
-            for (name, line, pos) in block.targets {
-                ref_positions.push(pos);
-                refs.push(SymRef {
-                    name,
-                    line,
-                    ..SymRef::default()
-                });
-            }
         }
         def_reads.resize(def_ranges.len(), at_read);
     }
     // Spec 117 (RUST REFERENCES): Rust's tagged references, read off the parsed trees after every
     // call reference, so each follows the untagged one of its name and site and the attribution
-    // and test-region passes below cover it; an impl header's trait row is noted to take its
-    // `from` once every definition's test status is known.
-    let mut impl_rows: Vec<(usize, std::ops::Range<usize>, String)> = Vec::new();
+    // and test-region passes below cover it; an impl header's mention is noted with its impl's
+    // range, to be enclosed by that impl once every definition's path is known.
+    let mut impl_rows: Vec<(usize, std::ops::Range<usize>)> = Vec::new();
     if lang == Lang::Rust {
         for read in &reads {
             for tagged in rust_references(&read.structure, bytes, read.scope) {
-                if let Some((impl_range, self_leaf)) = tagged.impl_from {
-                    impl_rows.push((refs.len(), impl_range, self_leaf));
+                if let Some(impl_range) = tagged.impl_from {
+                    impl_rows.push((refs.len(), impl_range));
                 }
                 ref_positions.push(tagged.pos);
                 refs.push(SymRef {
@@ -1015,19 +1005,13 @@ pub fn extract(source: &str, lang: Lang, tags: &CompiledTags) -> Result<FileSymb
             r.is_test = regions.iter().any(|region| region.contains(&pos));
         }
     }
-    // Spec 117 (RUST REFERENCES): an impl header's trait row comes from the self type's path when
-    // exactly one surviving (non-test) definition of the file has the self type's leaf, else from
-    // the impl's own path.
-    for (at, impl_range, self_leaf) in impl_rows {
-        let mut named = defs.iter().filter(|d| !d.is_test && d.name == self_leaf);
-        let from = match (named.next(), named.next()) {
-            (Some(only), None) => Some(only.path.clone()),
-            _ => def_ranges
-                .iter()
-                .position(|(range, _, _)| *range == impl_range)
-                .map(|i| defs[i].path.clone()),
-        };
-        refs[at].enclosing = from;
+    // Spec 117 (RUST TAGS IMPL HEADERS): an impl header's mention is enclosed by the impl
+    // definition itself, never a function enclosing the impl.
+    for (at, impl_range) in impl_rows {
+        refs[at].enclosing = def_ranges
+            .iter()
+            .position(|(range, _, _)| *range == impl_range)
+            .map(|i| defs[i].path.clone());
     }
     // Round 6 (`op-u86c1-r5-close-every-remaining-test-shape` item 2): mark every `Module`-kind
     // definition that is an OUT-OF-LINE declaration (`mod name;`, no body of its own - see
@@ -1220,14 +1204,11 @@ fn node_preceded_by_test_attribute(node: tree_sitter::Node, source: &[u8]) -> bo
 
 /// One impl block read off the parsed tree: its header name (`impl Trait for Type`, or
 /// `impl Type` for an inherent impl, each written as in the source with its whitespace collapsed),
-/// its whole byte range, its 1-based line, and the `(name, line, byte)` of each item it links to -
-/// the trait (when it has one) and the self type, by their base identifier, so a path-qualified
-/// (`crate::store::EventStore`) or generic (`Wrapper<T>`) name still links to its definition.
+/// its whole byte range and its 1-based line.
 struct ImplBlock {
     name: String,
     range: std::ops::Range<usize>,
     line: u32,
-    targets: Vec<(String, u32, usize)>,
 }
 
 /// Each of the file's `impl_item` nodes `impls` ([`StructuralNodes`]: an impl nested in a function
@@ -1690,15 +1671,15 @@ const NON_READ_FIELDS: [&str; 6] = ["name", "alias", "pattern", "function", "mac
 
 /// One tagged reference [`rust_references`] reads off the tree: its leaf, its 1-based line, its
 /// byte position (the caller attribution and test regions key on it) and its kind, for an
-/// impl header's trait row the impl's byte range and its self type's leaf, which decide its
-/// `from` once every definition is known, and the qualifier a variant is written with
-/// ([`variant_qualifier`]), every other row's none.
+/// impl header's mention the impl's byte range, whose definition encloses it once every
+/// definition is known, and the qualifier a variant is written with ([`variant_qualifier`]),
+/// every other row's none.
 struct TaggedRef {
     name: String,
     line: u32,
     pos: usize,
     kind: &'static str,
-    impl_from: Option<(std::ops::Range<usize>, String)>,
+    impl_from: Option<std::ops::Range<usize>>,
     qualifier: Option<Qualifier>,
 }
 
@@ -1732,9 +1713,10 @@ impl UseLeaf<'_> {
 /// name of such a struct literal or pattern (`Kind::RejectRecurrence { n } =>`), that
 /// [`variant_qualifier`] gives a qualifier, staged with that qualifier: a path's beside its path's
 /// type row, a struct literal's or pattern's in place of it. A USE is each imported
-/// leaf of a `use` ([`use_leaves`]). An impl header's trait is one `type` row of its own,
-/// carrying the impl's range and its self type's leaf. An attribute, a `macro_rules!` body and a
-/// visibility path stage nothing, a macro's token tree stages what its re-parse reads
+/// leaf of a `use` ([`use_leaves`]). An IMPL HEADER stages an `impl` row of its trait, when it
+/// has one, then one of its self type, each by its base name ([`base_type_identifier`]: path and
+/// generics stripped, a tuple none), carrying the impl's range. An attribute, a `macro_rules!`
+/// body and a visibility path stage nothing, a macro's token tree stages what its re-parse reads
 /// ([`reparse_invocations`]), and no name [`excluded`] under `scope` stages, save a variant,
 /// which its qualifier and root alone exclude.
 fn rust_references(structure: &StructuralNodes, source: &[u8], scope: &Scope) -> Vec<TaggedRef> {
@@ -1760,7 +1742,7 @@ fn rust_references(structure: &StructuralNodes, source: &[u8], scope: &Scope) ->
     let mut stage = |node: tree_sitter::Node,
                      kind: &'static str,
                      root_seg: Option<&str>,
-                     impl_from: Option<(std::ops::Range<usize>, String)>,
+                     impl_from: Option<std::ops::Range<usize>>,
                      qualifier: Option<Qualifier>| {
         let Ok(name) = node.utf8_text(source) else {
             return;
@@ -1851,25 +1833,18 @@ fn rust_references(structure: &StructuralNodes, source: &[u8], scope: &Scope) ->
         }
     }
     for &block in impls {
-        let (Some(trait_node), Some(self_type)) = (
-            block.child_by_field_name("trait"),
-            block.child_by_field_name("type"),
-        ) else {
-            continue;
-        };
-        let (Some(leaf), Some(self_leaf)) = (
-            base_type_identifier(trait_node),
-            base_type_identifier(self_type).and_then(|n| n.utf8_text(source).ok()),
-        ) else {
-            continue;
-        };
-        stage(
-            leaf,
-            REF_KIND_TYPE,
-            type_root(trait_node, source).as_deref(),
-            Some((block.byte_range(), self_leaf.to_string())),
-            None,
-        );
+        let header = ["trait", "type"].map(|field| block.child_by_field_name(field));
+        for named in header.into_iter().flatten() {
+            if let Some(leaf) = base_type_identifier(named) {
+                stage(
+                    leaf,
+                    REF_KIND_IMPL,
+                    type_root(named, source).as_deref(),
+                    Some(block.byte_range()),
+                    None,
+                );
+            }
+        }
     }
     out
 }
@@ -2757,24 +2732,10 @@ fn impl_block(node: tree_sitter::Node, source: &[u8]) -> Option<ImplBlock> {
         Some(t) => format!("impl {t} for {self_type}"),
         None => format!("impl {self_type}"),
     };
-    let targets = node
-        .child_by_field_name("trait")
-        .into_iter()
-        .chain(node.child_by_field_name("type"))
-        .filter_map(base_type_identifier)
-        .filter_map(|id| {
-            Some((
-                collapsed(id, source)?,
-                id.start_position().row as u32 + 1,
-                id.start_byte(),
-            ))
-        })
-        .collect();
     Some(ImplBlock {
         name,
         range: node.byte_range(),
         line: node.start_position().row as u32 + 1,
-        targets,
     })
 }
 
@@ -3604,9 +3565,10 @@ pub(crate) mod tests {
     }
 
     /// Gap 104: the registered Rust grammar records every impl block as an `Impl` definition
-    /// named by its header, attributes the impl's trait and self type to that definition (the
-    /// impl -> trait and impl -> type links), and records a path-qualified or turbofish call
-    /// (`Type::open()`, `crate::m::f()`, `make::<T>()`) as a call reference like a plain one.
+    /// named by its header, stages `impl` mentions of the impl's trait and self type enclosed by
+    /// that definition (the impl -> trait and impl -> type links; spec 117, RUST TAGS IMPL
+    /// HEADERS), and records a path-qualified or turbofish call (`Type::open()`, `crate::m::f()`,
+    /// `make::<T>()`) as a call reference like a plain one.
     #[test]
     fn rust_impl_blocks_are_definitions_linked_to_their_trait_and_type_and_path_calls_are_references(
     ) {
@@ -3637,43 +3599,38 @@ pub fn open_store() -> Sqlite { let s = Sqlite::open(); s.append(); make::<u8>()
             "every impl block is a definition named by its header; got {:?}",
             fs.defs
         );
-        let refs: Vec<(&str, u32, Option<&str>)> = fs
-            .calls()
-            .map(|r| (r.name.as_str(), r.line, r.enclosing.as_deref()))
+        let site = |r: &'_ SymRef| (r.name.clone(), r.line, r.enclosing.clone());
+        let links: Vec<_> = fs
+            .refs
+            .iter()
+            .filter(|r| r.ref_kind.as_deref() == Some(REF_KIND_IMPL))
+            .map(site)
             .collect();
-        for expected in [
-            ("EventStore", 3, Some("impl EventStore for Sqlite")),
-            ("Sqlite", 3, Some("impl EventStore for Sqlite")),
-            ("helper", 3, Some("<Sqlite as EventStore>::append")),
-            (
-                "EventStore",
-                4,
-                Some("impl crate::store::EventStore for Kurrent"),
-            ),
-            (
-                "Kurrent",
-                4,
-                Some("impl crate::store::EventStore for Kurrent"),
-            ),
-            ("EventStore", 5, Some("impl EventStore for Wrapper<T>")),
-            ("Wrapper", 5, Some("impl EventStore for Wrapper<T>")),
-            ("Sqlite", 6, Some("impl Sqlite")),
-            ("open_connection", 6, Some("Sqlite::open")),
-            ("open", 7, Some("open_store")),
-            ("append", 7, Some("open_store")),
-            ("make", 7, Some("open_store")),
-        ] {
-            assert!(
-                refs.contains(&expected),
-                "missing reference {expected:?}; got {refs:?}"
-            );
-        }
+        let at = |name: &str, line, from: &str| (name.to_owned(), line, Some(from.to_owned()));
         assert_eq!(
-            refs.iter()
-                .filter(|(n, l, _)| *n == "EventStore" && *l == 3)
-                .count(),
-            1,
-            "an impl's trait is referenced once, never twice; got {refs:?}"
+            links,
+            vec![
+                at("EventStore", 3, "impl EventStore for Sqlite"),
+                at("Sqlite", 3, "impl EventStore for Sqlite"),
+                at("EventStore", 4, "impl crate::store::EventStore for Kurrent"),
+                at("Kurrent", 4, "impl crate::store::EventStore for Kurrent"),
+                at("EventStore", 5, "impl EventStore for Wrapper<T>"),
+                at("Wrapper", 5, "impl EventStore for Wrapper<T>"),
+                at("Sqlite", 6, "impl Sqlite"),
+            ],
+            "each impl links to its trait and self type once, from the impl"
+        );
+        let calls: Vec<_> = fs.calls().map(site).collect();
+        assert_eq!(
+            calls,
+            vec![
+                at("helper", 3, "<Sqlite as EventStore>::append"),
+                at("open_connection", 6, "Sqlite::open"),
+                at("open", 7, "open_store"),
+                at("append", 7, "open_store"),
+                at("make", 7, "open_store"),
+            ],
+            "a path-qualified or turbofish call is a call reference like a plain one"
         );
     }
 
@@ -3868,23 +3825,29 @@ setup!();
         );
     }
 
-    /// A REFERENCE'S CALLER IS ITS FUNCTION (spec 116 criterion 2), under `RUST_TAGS`: a
-    /// file-level impl header's trait and self type are the impl's, while a fn-local impl
-    /// header's, a fn-local trait body's outside its methods and a fn-local inline mod's
-    /// references are the fn's; a call inside a method or fn nested in any of them stays that
-    /// innermost function's; a file-level mod's and trait's own references stay theirs, no
-    /// function enclosing them; and a top-level reference has the file, no caller.
+    /// A REFERENCE'S CALLER IS ITS FUNCTION (spec 116 criterion 2), under `RUST_TAGS`: a fn-local
+    /// trait body's references outside its methods and a fn-local inline mod's are the fn's; a
+    /// call inside a method or fn nested in any of them stays that innermost function's; a
+    /// file-level mod's and trait's own references stay theirs, no function enclosing them; and a
+    /// top-level reference has the file, no caller. An impl header's `impl` mentions are the
+    /// impl's, a fn-local impl's included (spec 117, RUST TAGS IMPL HEADERS).
     #[test]
     fn a_reference_s_caller_is_its_innermost_enclosing_function_else_definition_else_file() {
+        crate::symbol_index::assert_tagged_refs(
+            "rs",
+            crate::caller_sources::RUST_CALLER_SOURCE,
+            "\
+3 impl Draw impl Draw for Widget
+3 impl Widget impl Draw for Widget
+6 impl Draw host::impl Draw for Local
+6 impl Local host::impl Draw for Local",
+            "an impl header's mentions are the impl's, a fn-local impl's included",
+        );
         crate::symbol_index::assert_callers(
             "rs",
             crate::caller_sources::RUST_CALLER_SOURCE,
             &[
-                (3, "Draw", Some("impl Draw for Widget")),
-                (3, "Widget", Some("impl Draw for Widget")),
                 (3, "paint", Some("<Widget as Draw>::draw")),
-                (6, "Draw", Some("host")),
-                (6, "Local", Some("host")),
                 (6, "brush", Some("host::<Local as Draw>::draw")),
                 (7, "declare", Some("host")),
                 (7, "measure", Some("host::Shape::area")),
@@ -3906,7 +3869,7 @@ setup!();
         crate::symbol_index::assert_callers(
             "rs",
             crate::caller_sources::RUST_METHOD_CALLER_SOURCE,
-            &[(2, "T", Some("impl T")), (3, "helper", Some("T::new"))],
+            &[(3, "helper", Some("T::new"))],
         );
         crate::symbol_index::assert_callers(
             "go",
@@ -4239,8 +4202,7 @@ setup!();
 
     /// RUST DEFINITIONS ARE NODES (spec 116 criterion 6), the callers: a call in an item
     /// static's initializer is the static's, no function enclosing it, while a call in a const
-    /// local to a fn is the fn's and one in a const local to a proc-macro fn the macro's; an impl
-    /// header's self type stays the impl's.
+    /// local to a fn is the fn's and one in a const local to a proc-macro fn the macro's.
     #[test]
     fn a_call_in_a_rust_data_definition_is_its_function_s_else_the_definition_s() {
         crate::symbol_index::assert_callers(
@@ -4248,10 +4210,8 @@ setup!();
             RUST_DEFINITIONS_SOURCE,
             &[
                 (4, "build", Some("TABLE")),
-                (10, "Pair", Some("impl Pair")),
                 (13, "seed", Some("derive")),
                 (14, "compute", Some("host")),
-                (23, "X", Some("impl X")),
             ],
         );
     }
@@ -4956,8 +4916,7 @@ fn product() {}
     /// `self` is a member access qualified by that same type or trait. A lowercase segment, a
     /// `self` or `super` path, a bracketed type naming no trait, any other receiver, an enclosing
     /// generic parameter (a blanket impl's self type among them), a self type naming no single
-    /// type and a `Self` outside every impl and trait write none, and an impl header's trait and
-    /// self type rows stay unqualified.
+    /// type and a `Self` outside every impl and trait write none.
     #[test]
     fn rust_writes_the_qualifier() {
         let path = |name: &str| Some(qualifier(name, true));
@@ -4968,7 +4927,7 @@ fn product() {}
             ("fn f() { Store::open(); }\n", vec![("open", path("Store"))]),
             (
                 "impl<T> Store<T> { fn f() { Self::new(); } }\n",
-                vec![("new", path("Store")), ("Store", None)],
+                vec![("new", path("Store"))],
             ),
             (
                 "trait CodeView { fn file(&self); fn modules(&self) { self.file(); } }\n",
@@ -4976,7 +4935,7 @@ fn product() {}
             ),
             (
                 "impl Store { fn f(&self) { self.inner.open(); } }\n",
-                vec![("open", None), ("Store", None)],
+                vec![("open", None)],
             ),
             (
                 "fn f() { paths::module_dir(); }\n",
@@ -5017,16 +4976,11 @@ fn product() {}
             ),
             (
                 "impl Store { fn f(&self, store: Store) { self.open(); store.open(); } }\n",
-                vec![("open", member("Store")), ("open", None), ("Store", None)],
+                vec![("open", member("Store")), ("open", None)],
             ),
             (
                 "impl CodeView for Store { fn f(&self) { Self::open(); self.file(); } }\n",
-                vec![
-                    ("open", path("Store")),
-                    ("file", member("Store")),
-                    ("CodeView", None),
-                    ("Store", None),
-                ],
+                vec![("open", path("Store")), ("file", member("Store"))],
             ),
             (
                 "trait CodeView { fn new() -> Self; fn make() { Self::new(); } }\n",
@@ -5038,16 +4992,11 @@ fn product() {}
             ),
             (
                 "impl<T> CodeView for T { fn f(&self) { Self::open(); self.file(); } }\n",
-                vec![
-                    ("open", None),
-                    ("file", None),
-                    ("CodeView", None),
-                    ("T", None),
-                ],
+                vec![("open", None), ("file", None)],
             ),
             (
                 "impl CodeView for [u8] { fn f(&self) { Self::open(); self.file(); } }\n",
-                vec![("open", None), ("file", None), ("CodeView", None)],
+                vec![("open", None), ("file", None)],
             ),
             ("fn f() { Self::new(); }\n", vec![("new", None)]),
         ];
@@ -5126,7 +5075,7 @@ impl C {
                 "\
 1 ref use B -
 2 def Impl impl C to 7
-2 ref call C impl C
+2 ref impl C impl C
 3 def Method C::g to 6 in impl C
 4 ref call f C::g q B::
 5 ref call h C::g q B.",
@@ -5243,9 +5192,7 @@ impl Local for Vec<u8> {
 ",
                 "\
 1 def Impl impl Local for Vec<u8> to 6
-1 ref call Local impl Local for Vec<u8>
-1 ref call Vec impl Local for Vec<u8>
-1 ref type Local impl Local for Vec<u8>
+1 ref impl Local impl Local for Vec<u8>
 2 def Method <Vec<u8> as Local>::f to 5 in impl Local for Vec<u8>
 3 ref call new <Vec<u8> as Local>::f
 4 ref call len <Vec<u8> as Local>::f",
@@ -5584,7 +5531,7 @@ impl Store {
                 "\
 1 def Type Store to 1
 2 def Impl impl Store to 6
-2 ref call Store impl Store
+2 ref impl Store impl Store
 3 def Method Store::at to 5 in impl Store
 4 ref field root Store::at q Store.",
             ),
@@ -5649,7 +5596,7 @@ impl Store {
                 "\
 1 def Type Store to 1
 2 def Impl impl Store to 6
-2 ref call Store impl Store
+2 ref impl Store impl Store
 3 def Method Store::new to 5 in impl Store
 4 ref field root Store::new q Store::",
             ),
@@ -5679,7 +5626,7 @@ impl Store {
                 "\
 1 def Type Store to 1
 2 def Impl impl Store to 7
-2 ref call Store impl Store
+2 ref impl Store impl Store
 3 def Method Store::at to 6 in impl Store
 4 ref call open Store::at
 4 ref field inner Store::at q Store.
@@ -5817,7 +5764,7 @@ impl Kind {
 ",
                 "\
 1 def Impl impl Kind to 6
-1 ref call Kind impl Kind
+1 ref impl Kind impl Kind
 2 def Method Kind::g to 5 in impl Kind
 3 ref variant One Kind::g q Kind::
 4 ref field n Kind::g q Many::
@@ -6368,11 +6315,11 @@ fn read(k: Kestrel) -> u32 {
 5 const QUOTA_CAP read
 5 const SPAN_CAP read",
             ),
-            // A local, a generic and a const generic parameter of an enclosing item, an impl
-            // header's self type, `Self`, a name the file imports from `std` (a leaf, an alias by
-            // its alias name, a path rooted at an imported module), a `std::` path and a
-            // primitive-qualified const stage nothing, while a project type and a field read
-            // beside them do.
+            // A local, a generic and a const generic parameter of an enclosing item, `Self`, a
+            // name the file imports from `std` (a leaf, an alias by its alias name, a path rooted
+            // at an imported module), a `std::` path and a primitive-qualified const stage
+            // nothing, while a project type, a field read and the impl header's mention of its
+            // self type beside them do.
             (
                 "locals, generics, Self, std names and primitive consts are never tagged",
                 "\
@@ -6396,15 +6343,16 @@ impl<T: Clone> Holder<T> {
 }
 ",
                 "\
+5 impl Holder impl Holder<T>
 13 field item Holder<T>::get
 15 type Plover Holder<T>::get
 15 type Plover Holder<T>::get",
             ),
-            // `impl Trait for Type` stages one `type` row of its trait, from the self type's path
-            // when exactly one surviving definition of the file has the self type's leaf, else
-            // from the impl's path: none, two, or one beside a test-code twin.
+            // `impl Trait for Type` stages an `impl` row of its trait and one of its self type,
+            // each from the impl's own path, whether the file holds no definition of the self
+            // type's leaf, one, two, or one beside a test-code twin, and no `type` row of either.
             (
-                "an impl trait row is from its one surviving self type, else from the impl",
+                "an impl header's rows are from the impl, whatever definitions share its self type",
                 "\
 trait Draw {}
 struct Kestrel;
@@ -6419,10 +6367,14 @@ mod tests { struct Gizmo; }
 impl Draw for Gizmo {}
 ",
                 "\
-3 type Draw Kestrel
-4 type Draw impl Draw for Plover
-7 type Draw impl Draw for Twin
-11 type Draw Gizmo",
+3 impl Draw impl Draw for Kestrel
+3 impl Kestrel impl Draw for Kestrel
+4 impl Draw impl Draw for Plover
+4 impl Plover impl Draw for Plover
+7 impl Draw impl Draw for Twin
+7 impl Twin impl Draw for Twin
+11 impl Draw impl Draw for Gizmo
+11 impl Gizmo impl Draw for Gizmo",
             ),
             // A struct literal and a struct pattern stage one row of their name: a `variant` row
             // of a variant written under an uppercase path (`Enum::Variant { .. }`,
@@ -6504,7 +6456,7 @@ fn f() -> u8 {
             // A path rooted at `std`, `core` or `alloc` (a leading `::` included, a generic root
             // read through its type) or at a module the file imports from one stages nothing, in
             // a `use`, a type, an expression and an impl header's trait alike; a prelude trait
-            // stages no impl row.
+            // stages no `impl` row either, while the header's project self type stages its own.
             (
                 "the standard library's roots and an imported module's stage nothing",
                 "\
@@ -6522,7 +6474,10 @@ impl Clone for Kestrel {}
                 "\
 6 type Kestrel f
 6 const LIMIT_CAP f
-9 type Kestrel impl core::ops::Add<Kestrel> for Kestrel",
+8 impl Kestrel impl std::fmt::Display for Kestrel
+9 impl Kestrel impl core::ops::Add<Kestrel> for Kestrel
+9 type Kestrel impl core::ops::Add<Kestrel> for Kestrel
+10 impl Kestrel impl Clone for Kestrel",
             ),
             // No pattern, call or macro head, path segment, alias, closure parameter, lifetime,
             // label, attribute, visibility path or `macro_rules!` pattern stages a const read, nor
@@ -6679,8 +6634,8 @@ pub fn f() -> u8 {
     }
 
     /// Spec 117, RUST REFERENCES: the tagged references follow the call references in `refs`, in
-    /// source order, and one inside a test region, an impl header's trait row included, is
-    /// marked test code like any reference there.
+    /// source order, and one inside a test region, an impl header's mentions included, is marked
+    /// test code like any reference there.
     #[test]
     fn tagged_references_follow_the_calls_in_source_order() {
         let fs = crate::symbol_index::extracted(
@@ -6703,11 +6658,15 @@ pub fn f() -> u8 {
             refs,
             [
                 ("go", Some("b"), None, false),
-                ("Draw", Some("t::impl Draw for Kestrel"), None, true),
-                ("Kestrel", Some("t::impl Draw for Kestrel"), None, true),
                 ("KITE", Some("a"), Some("const"), false),
                 ("KITE", Some("b"), Some("const"), false),
-                ("Draw", Some("t::impl Draw for Kestrel"), Some("type"), true),
+                ("Draw", Some("t::impl Draw for Kestrel"), Some("impl"), true),
+                (
+                    "Kestrel",
+                    Some("t::impl Draw for Kestrel"),
+                    Some("impl"),
+                    true
+                ),
             ]
         );
     }
@@ -6943,7 +6902,7 @@ impl S {
                 "\
 1 def Type S to 1
 2 def Impl impl S to 8
-2 ref call S impl S
+2 ref impl S impl S
 3 def Method S::a to 7 in impl S
 4 ref call b S::a q S.
 5 ref call c S::a q S::
@@ -7104,7 +7063,7 @@ impl S {
                 "\
 1 def Type S to 1
 2 def Impl impl S to 6
-2 ref call S impl S
+2 ref impl S impl S
 3 def Method S::a to 5 in impl S
 4 ref call b S::a q S.
 4 ref call inner S::a
@@ -7128,7 +7087,7 @@ impl S {
 1 def Type S to 1
 2 ref call items -
 3 def Impl impl S to 5
-3 ref call S impl S
+3 ref impl S impl S
 4 def Method S::f to 4 in impl S",
             ),
             (

@@ -643,12 +643,14 @@ fn stored_mentions(graph: &common::cli::BuiltGraph, file: &str) -> Option<Vec<(S
 /// one per shape AN EXCLUDED QUALIFIER STAGES NOTHING names - a standard-library import's
 /// qualifier, in a call and in a macro's token tree, and an alias qualifier - each `(what it
 /// shows, source, its stored mentions as (name as written, leaf), the calls it lands as (caller,
-/// callee), each by id path and `extracted`)`. An impl header stages a call to its self type, so
-/// `impl Store` calling `Store` is a row's landing too.
+/// callee), and the `impl` mentions it lands as (impl, self type) `REFERENCES` edges, each by id
+/// path and `extracted`)`. An impl header stages an `impl` mention of its self type (spec 117,
+/// RUST TAGS IMPL HEADERS), so `impl Store` referencing `Store` is a row's landing too.
 #[cfg(feature = "symbols")]
 type RustQualifiedCall = (
     &'static str,
     &'static str,
+    &'static [(&'static str, &'static str)],
     &'static [(&'static str, &'static str)],
     &'static [(&'static str, &'static str)],
 );
@@ -661,24 +663,28 @@ const RUST_QUALIFIED_CALLS: [RustQualifiedCall; 9] = [
         "fn open() {}\nfn main() { Store::open(); }\n",
         &[("Store", "Store"), ("Store::open", "open")],
         &[],
+        &[],
     ),
     (
         "`a::Memo::<u8>::new()`, its turbofish type's final segment naming no type, makes no link",
         "fn new() {}\nfn main() { a::Memo::<u8>::new(); }\n",
         &[("Memo", "Memo"), ("Memo::new", "new")],
         &[],
+        &[],
     ),
     (
         "`Self::new()` inside `impl<T> Store<T>` is qualified by the self type, generics stripped",
         "struct Store<T>(T);\nimpl<T> Store<T> { fn new() {} fn make() { Self::new() } }\n",
         &[("Store", "Store"), ("Store::new", "new")],
-        &[("Store<T>::make", "Store<T>::new"), ("impl Store<T>", "Store")],
+        &[("Store<T>::make", "Store<T>::new")],
+        &[("impl Store<T>", "Store")],
     ),
     (
         "`self.file()` inside `trait CodeView` is qualified by the trait, over the free `file`",
         "trait CodeView { fn file(&self) {} fn lines(&self) { self.file() } }\nfn file() {}\n",
         &[("CodeView.file", "file")],
         &[("CodeView::lines", "CodeView::file")],
+        &[],
     ),
     (
         "`self.inner.open()`, its receiver no bare `self`, lands on its one same-file `open`",
@@ -689,22 +695,21 @@ const RUST_QUALIFIED_CALLS: [RustQualifiedCall; 9] = [
             ("Store.inner", "inner"),
             ("open", "open"),
         ],
-        &[
-            ("Store::reopen", "Inner::open"),
-            ("impl Inner", "Inner"),
-            ("impl Store", "Store"),
-        ],
+        &[("Store::reopen", "Inner::open")],
+        &[("impl Inner", "Inner"), ("impl Store", "Store")],
     ),
     (
         "`paths::module_dir()`, its segment lowercase, lands on its one same-file `module_dir`",
         "fn module_dir() {}\nfn main() { paths::module_dir(); }\n",
         &[("module_dir", "module_dir")],
         &[("main", "module_dir")],
+        &[],
     ),
     (
         "`Cursor::new(x)` under `use std::io::Cursor;`, its qualifier a standard-library import, \
          is stored as no mention and lands nowhere, where a bare `new` lands on its same-file `new`",
         "use std::io::Cursor;\nfn new() {}\nfn a(x: u8) { Cursor::new(x); }\n",
+        &[],
         &[],
         &[],
     ),
@@ -714,12 +719,14 @@ const RUST_QUALIFIED_CALLS: [RustQualifiedCall; 9] = [
         "use std::io::Cursor;\nmacro_rules! check { ($($t:tt)*) => {}; }\nfn new() {}\nfn b(c: u8, v: u8) { check!(c, Cursor::new(v)); }\n",
         &[("check", "check")],
         &[("b", "check")],
+        &[],
     ),
     (
         "`C::f()` under `use a::B as C;` is stored as `B::f`, the name the alias imports, and \
          makes no link, its qualifier naming no type of the tree",
         "use a::B as C;\nfn f() {}\nfn g() { C::f(); }\n",
         &[("B", "B"), ("B::f", "f"), ("C", "C")],
+        &[],
         &[],
     ),
 ];
@@ -754,13 +761,16 @@ fn graph_build_names_a_rust_call_by_the_qualifier_rust_writes() {
     };
     let (found, expected): (Vec<_>, Vec<_>) = RUST_QUALIFIED_CALLS
         .into_iter()
-        .map(|(shows, source, mentions, calls)| {
+        .map(|(shows, source, mentions, calls, impls)| {
             let (_project, graph) = common::cli::built_graph(&[("f.rs", source)]);
+            let id = |path| entity_id("f.rs", path);
             let mut edges: Vec<_> = (calls.iter())
                 .flat_map(|(caller, callee)| {
-                    let to = entity_id("f.rs", callee);
-                    common::fixtures::a_call_from("f.rs", caller, &to, TIER_EXTRACTED)
+                    common::fixtures::a_call_from("f.rs", caller, &id(callee), TIER_EXTRACTED)
                 })
+                .chain((impls.iter()).map(|(from, to)| {
+                    common::fixtures::reference(&id(from), &id(to), TIER_EXTRACTED)
+                }))
                 .collect();
             edges.sort();
             (
@@ -811,12 +821,13 @@ const VARIANT_USES_SOURCE: &str = "enum InstallOutcome { AlreadyCurrent }\nenum 
 ///
 /// The field row: `system_prompt` unqualified, `SpawnOpts::system_prompt` as a path and
 /// `Store.root` as a member access are `field` mentions and `opts.run()` a call alone, beside the
-/// type mentions of `SpawnOpts` and the impl headers' calls of their self types; the unqualified
-/// `system_prompt` lands on the one field of that name `inferred` though that field is in its own
-/// file, as an unqualified field use never prefers its file; `SpawnOpts::system_prompt` and
-/// `Store.root` land on it and on `Store`'s `root` `extracted`, each qualifier narrowing its
-/// candidates to the one field its struct holds; and `opts.run()` as the call's two edges onto
-/// `SpawnOpts::run`.
+/// type mentions of `SpawnOpts` and the impl headers' `impl` mentions of their self types, each
+/// landing on its type `extracted` from its impl (spec 117, RUST TAGS IMPL HEADERS); the
+/// unqualified `system_prompt` lands on the one field of that name `inferred` though that field is
+/// in its own file, as an unqualified field use never prefers its file;
+/// `SpawnOpts::system_prompt` and `Store.root` land on it and on `Store`'s `root` `extracted`,
+/// each qualifier narrowing its candidates to the one field its struct holds; and `opts.run()` as
+/// the call's two edges onto `SpawnOpts::run`.
 ///
 /// The variant row: `InstallOutcome::AlreadyCurrent` and `Located::Many(c) =>` are `variant`
 /// mentions named by their enum beside the `type` mention of that enum; `Kind::RejectRecurrence
@@ -833,7 +844,8 @@ fn graph_build_lands_each_rust_field_and_variant_use_on_its_definition_and_a_cal
     use crate::symbol_index::mention_in;
     use rigger::contextgraph::query::entity_id;
     use rigger::contextgraph::{
-        REF_KIND_FIELD, REF_KIND_TYPE, REF_KIND_VARIANT, TIER_EXTRACTED, TIER_INFERRED,
+        REF_KIND_FIELD, REF_KIND_IMPL, REF_KIND_TYPE, REF_KIND_VARIANT, TIER_EXTRACTED,
+        TIER_INFERRED,
     };
 
     let file = "f.rs";
@@ -859,17 +871,15 @@ fn graph_build_lands_each_rust_field_and_variant_use_on_its_definition_and_a_cal
                     REF_KIND_FIELD,
                     6,
                 ),
-                call_in(8, "SpawnOpts", "SpawnOpts", 2),
-                call_in(9, "Store", "Store", 4),
                 tagged_in(6, "SpawnOpts", "SpawnOpts", REF_KIND_TYPE, 5),
                 tagged_in(7, "SpawnOpts", "SpawnOpts", REF_KIND_TYPE, 6),
+                tagged_in(8, "SpawnOpts", "SpawnOpts", REF_KIND_IMPL, 2),
+                tagged_in(9, "Store", "Store", REF_KIND_IMPL, 4),
             ],
+            vec![("a", "SpawnOpts::run")],
             vec![
-                ("impl SpawnOpts", "SpawnOpts"),
-                ("impl Store", "Store"),
-                ("a", "SpawnOpts::run"),
-            ],
-            vec![
+                ("impl SpawnOpts", "SpawnOpts", TIER_EXTRACTED),
+                ("impl Store", "Store", TIER_EXTRACTED),
                 ("a", "SpawnOpts.system_prompt", TIER_INFERRED),
                 ("a", "SpawnOpts", TIER_EXTRACTED),
                 ("b", "SpawnOpts.system_prompt", TIER_EXTRACTED),
