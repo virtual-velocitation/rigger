@@ -323,6 +323,18 @@ argument (`.map(entity_block)`) when it begins lowercase, names no standard-libr
 enclosing generic parameter, and no binding in scope binds it (a parameter, a `let`, `if let` or
 `while let`, a match arm's pattern, a `for` pattern or a closure parameter); in a re-parsed token
 tree the scope is the invocation's. A function passed by name is staged in Rust alone.
+A Rust variant use is a `variant` reference qualified by the same rule: the leaf of a path that
+is no call's head, in an expression or a pattern, passed by name or in a token tree, when the leaf
+begins uppercase and holds a lowercase letter and the path writes a qualifier
+(`InstallOutcome::AlreadyCurrent` and `Located::Many(c) =>` are `AlreadyCurrent` and `Many`
+qualified by their enum, beside the `type` reference of the enum the path already stages;
+`a::Kind::Many` gives `Kind`, `Self::One` the impl's self type), and the name of a struct literal
+or pattern written `E::V` the same way (`Kind::RejectRecurrence { n } =>` is `RejectRecurrence`
+qualified by `Kind`, in place of the `type` reference of `Kind`, its field `n` qualified by
+`RejectRecurrence`). A call's head (`Hop::Frontier(cs)`) stays a call, a leaf holding no
+lowercase letter (`Mode::RO`) stays a const read, a lowercase qualifier (`models::Unit`) writes no
+variant, a path in type position (`-> Self::Target`) is a type reference alone, and a qualifier
+naming the standard library (`Ordering::Less` under `use std::cmp::Ordering`) stages none.
 A module's two lists depend only on the declaring file, so they
 are computed at extraction, an enclosing inline module's components and an explicit path attribute
 placed by the same two rules; for a file named `mod.rs`, `lib.rs` or `main.rs` the two are equal.

@@ -13,7 +13,7 @@ use crate::contextgraph::{
     CODE_KIND_FUNCTION, CODE_KIND_IMPL, CODE_KIND_MACRO, CODE_KIND_METHOD, CODE_KIND_MODULE,
     CODE_KIND_OTHER, CODE_KIND_PROPERTY, CODE_KIND_STATIC, CODE_KIND_TRAIT, CODE_KIND_TYPE,
     CODE_KIND_VARIABLE, CODE_KIND_VARIANT, REF_KIND_CONST, REF_KIND_FIELD, REF_KIND_IMPL,
-    REF_KIND_TYPE, REF_KIND_USE,
+    REF_KIND_TYPE, REF_KIND_USE, REF_KIND_VARIANT,
 };
 use crate::grounder::symbols::model::{Def, FileSymbols, Kind, Lang, Qualifier, SymRef};
 use rigger_domain::code_facts::{Bound, Recorded};
@@ -677,12 +677,12 @@ impl CompiledTags {
 /// 117, RUST STAGES FUNCTION VALUES) is a call reference at its name, staged by that same rule
 /// ([`rust_staged`]) after its tree's reference tags.
 ///
-/// Rust's const reads, type references and the leaves a `use` imports are read off the tree too
-/// ([`rust_references`], spec 117): each is a reference tagged with its `ref_kind`, pushed after
-/// every call reference of every tree so it takes its caller and test region by the same
-/// position rules, an
-/// impl header's trait row taking the self type's path when exactly one non-test definition of
-/// the file has the self type's leaf, else the impl block's.
+/// Rust's const reads, type references, variant uses and the leaves a `use` imports are read off
+/// the tree too ([`rust_references`], spec 117): each is a reference tagged with its `ref_kind`,
+/// a variant carrying the qualifier the same rule gives it (spec 117, RUST STAGES VARIANT USES),
+/// pushed after every call reference of every tree so it takes its caller and test region by the
+/// same position rules, an impl header's trait row taking the self type's path when exactly one
+/// non-test definition of the file has the self type's leaf, else the impl block's.
 ///
 /// Doc spans (spec 117, DOC FACTS): a definition's `@doc` capture gives it its span, and the
 /// first match that tags nothing and holds a capture gives the file its span, in every language;
@@ -892,6 +892,7 @@ pub fn extract(source: &str, lang: Lang, tags: &CompiledTags) -> Result<FileSymb
                     name: tagged.name,
                     line: tagged.line,
                     ref_kind: Some(tagged.kind.to_string()),
+                    qualifier: tagged.qualifier,
                     ..SymRef::default()
                 });
             }
@@ -1687,15 +1688,17 @@ const NAMED_TYPE_DEFINERS: [&str; 6] = [
 const NON_READ_FIELDS: [&str; 6] = ["name", "alias", "pattern", "function", "macro", "path"];
 
 /// One tagged reference [`rust_references`] reads off the tree: its leaf, its 1-based line, its
-/// byte position (the caller attribution and test regions key on it) and its kind, and for an
+/// byte position (the caller attribution and test regions key on it) and its kind, for an
 /// impl header's trait row the impl's byte range and its self type's leaf, which decide its
-/// `from` once every definition is known.
+/// `from` once every definition is known, and the qualifier a variant is written with
+/// ([`variant_qualifier`]), every other row's none.
 struct TaggedRef {
     name: String,
     line: u32,
     pos: usize,
     kind: &'static str,
     impl_from: Option<(std::ops::Range<usize>, String)>,
+    qualifier: Option<Qualifier>,
 }
 
 /// One imported leaf of a Rust `use` (spec 117): the name it binds (its alias, else the name it
@@ -1722,7 +1725,12 @@ impl UseLeaf<'_> {
 /// TYPE REFERENCE is a `type_identifier` that is no definition's own name, nor an impl header's
 /// self type or trait, or the final identifier of an expression or pattern path's `path` that
 /// begins with an uppercase letter; a struct literal or pattern named `Path::Name` whose path ends
-/// in an uppercase identifier stages that identifier in place of `Name`. A USE is each imported
+/// in an uppercase identifier stages that identifier in place of `Name`, unless `Name` is a
+/// variant. A VARIANT is the final identifier of a whole expression or pattern path that is no
+/// call's head ([`is_call_head`]: `InstallOutcome::AlreadyCurrent`, `Located::Many(c) =>`), or the
+/// name of such a struct literal or pattern (`Kind::RejectRecurrence { n } =>`), that
+/// [`variant_qualifier`] gives a qualifier, staged with that qualifier: a path's beside its path's
+/// type row, a struct literal's or pattern's in place of it. A USE is each imported
 /// leaf of a `use` ([`use_leaves`]). An impl header's trait is one `type` row of its own,
 /// carrying the impl's range and its self type's leaf. An attribute, a `macro_rules!` body and a
 /// visibility path stage nothing, a macro's token tree stages what its re-parse reads
@@ -1750,7 +1758,8 @@ fn rust_references(structure: &StructuralNodes, source: &[u8], scope: &Scope) ->
     let mut stage = |node: tree_sitter::Node,
                      kind: &'static str,
                      root_seg: Option<&str>,
-                     impl_from: Option<(std::ops::Range<usize>, String)>| {
+                     impl_from: Option<(std::ops::Range<usize>, String)>,
+                     qualifier: Option<Qualifier>| {
         let Ok(name) = node.utf8_text(source) else {
             return;
         };
@@ -1761,6 +1770,7 @@ fn rust_references(structure: &StructuralNodes, source: &[u8], scope: &Scope) ->
                 pos: node.start_byte(),
                 kind,
                 impl_from,
+                qualifier,
             });
         }
     };
@@ -1772,7 +1782,7 @@ fn rust_references(structure: &StructuralNodes, source: &[u8], scope: &Scope) ->
                     .filter(|u| node.byte_range().contains(&u.node.start_byte()));
                 for leaf in leaves {
                     if !leaf.roots_at_std() {
-                        stage(leaf.node, REF_KIND_USE, None, None);
+                        stage(leaf.node, REF_KIND_USE, None, None, None);
                     }
                 }
             }
@@ -1791,35 +1801,47 @@ fn rust_references(structure: &StructuralNodes, source: &[u8], scope: &Scope) ->
                         let literal = scoped.parent().is_some_and(|q| {
                             matches!(q.kind(), "struct_expression" | "struct_pattern")
                         });
+                        let root_seg = root_seg.as_deref();
                         match path.and_then(final_identifier) {
                             Some(last)
                                 if literal && begins(last, source, char::is_ascii_uppercase) =>
                             {
-                                stage(last, REF_KIND_TYPE, root_seg.as_deref(), None)
+                                match variant_qualifier(node, source, scope) {
+                                    Some(q) => {
+                                        stage(node, REF_KIND_VARIANT, root_seg, None, Some(q))
+                                    }
+                                    None => stage(last, REF_KIND_TYPE, root_seg, None, None),
+                                }
                             }
-                            _ => stage(node, REF_KIND_TYPE, root_seg.as_deref(), None),
+                            _ => stage(node, REF_KIND_TYPE, root_seg, None, None),
                         }
                     }
-                    None => stage(node, REF_KIND_TYPE, None, None),
+                    None => stage(node, REF_KIND_TYPE, None, None, None),
                 }
             }
             "scoped_identifier" if is_whole_expression_path(node) => {
                 let path = node.child_by_field_name("path");
                 let root_seg = path.and_then(|p| root_segment(p, source));
+                let root_seg = root_seg.as_deref();
                 if let Some(last) = path.and_then(final_identifier) {
                     if begins(last, source, char::is_ascii_uppercase) {
-                        stage(last, REF_KIND_TYPE, root_seg.as_deref(), None);
+                        stage(last, REF_KIND_TYPE, root_seg, None, None);
                     }
                 }
-                let primitive = root_seg.as_deref().is_some_and(is_primitive);
+                let primitive = root_seg.is_some_and(is_primitive);
                 if let Some(name) = node.child_by_field_name("name") {
                     if !primitive && is_read(node) && is_const_spelled(name, source) {
-                        stage(name, REF_KIND_CONST, root_seg.as_deref(), None);
+                        stage(name, REF_KIND_CONST, root_seg, None, None);
+                    }
+                    if !is_call_head(node) {
+                        if let Some(q) = variant_qualifier(name, source, scope) {
+                            stage(name, REF_KIND_VARIANT, root_seg, None, Some(q));
+                        }
                     }
                 }
             }
             "identifier" if is_read(node) && is_const_spelled(node, source) => {
-                stage(node, REF_KIND_CONST, None, None)
+                stage(node, REF_KIND_CONST, None, None, None)
             }
             _ => {}
         }
@@ -1842,6 +1864,7 @@ fn rust_references(structure: &StructuralNodes, source: &[u8], scope: &Scope) ->
             REF_KIND_TYPE,
             type_root(trait_node, source).as_deref(),
             Some((block.byte_range(), self_leaf.to_string())),
+            None,
         );
     }
     out
@@ -1859,11 +1882,6 @@ fn function_values<'t>(
     source: &[u8],
     scope: &Scope,
 ) -> Vec<tree_sitter::Node<'t>> {
-    let written = |node: tree_sitter::Node<'t>| {
-        node.parent()
-            .filter(|p| p.kind() == "generic_function")
-            .unwrap_or(node)
-    };
     let argument = |node: tree_sitter::Node<'t>| {
         let name = node.utf8_text(source).ok()?;
         let free = !excluded(name, None, node, source, scope) && !bound(name, node, source, scope);
@@ -2016,7 +2034,7 @@ fn enclosing_generics<'a>(
 
 /// RUST'S QUALIFIER (spec 117, RUST REFERENCES): the qualifier a Rust reference is written
 /// with, read off the parent of `leaf`, its name node. A name written under a path - a scoped
-/// path's, or a struct literal's or pattern's field under the struct's name
+/// path's or scoped type's, or a struct literal's or pattern's field under the struct's name
 /// ([`qualifying_path`]) - is qualified, as a path, by the segment before it
 /// ([`path_qualifier`]); a member's name whose receiver node is exactly `self` is qualified, as a
 /// member access, by the type or trait `self` names there ([`self_qualifier`]). A qualifier
@@ -2052,8 +2070,8 @@ fn rust_qualifier(leaf: tree_sitter::Node, source: &[u8], scope: &Scope) -> Opti
 
 /// A Rust reference staged at `leaf`, its name node: the qualifier it is written with
 /// ([`rust_qualifier`]), or `None` when it stages nothing, the qualifier of the path it is written
-/// under excluded ([`excluded_qualifier`]) - the one rule a tagged call, a tagged field and a
-/// function value ([`function_values`]) all stage by.
+/// under excluded ([`excluded_qualifier`]) - the one rule a tagged call, a tagged field, a
+/// function value ([`function_values`]) and a variant ([`variant_qualifier`]) all stage by.
 fn rust_staged(leaf: tree_sitter::Node, source: &[u8], scope: &Scope) -> Option<Option<Qualifier>> {
     (!excluded_qualifier(leaf, source, scope)).then(|| rust_qualifier(leaf, source, scope))
 }
@@ -2078,15 +2096,16 @@ fn excluded_qualifier(leaf: tree_sitter::Node, source: &[u8], scope: &Scope) -> 
             .is_some_and(|written| std_named(written, root, scope))
 }
 
-/// The path the Rust name node `leaf` is written under, read off its parent: a scoped path's
-/// `path`, and under a struct literal's or pattern's field the struct's name (`T` of `T { f }`,
-/// `T { f: v }` and `T { f: p }`), which stands before the field as a scoped path's does before
-/// its name; `None` under any other parent. Its callers pass a reference's name, never a field's
-/// value or pattern.
+/// The path the Rust name node `leaf` is written under, read off its parent: a scoped path's or
+/// scoped type's `path` (`E` of `E::V` and of a struct literal's `E::V { f }`), and under a
+/// struct literal's or pattern's field the struct's name (`T` of `T { f }`, `T { f: v }` and
+/// `T { f: p }`), which stands before the field as a scoped path's does before its name; `None`
+/// under any other parent. Its callers pass a reference's name, never a field's value or
+/// pattern.
 fn qualifying_path(leaf: tree_sitter::Node) -> Option<tree_sitter::Node> {
     let parent = leaf.parent()?;
     match parent.kind() {
-        "scoped_identifier" => parent.child_by_field_name("path"),
+        "scoped_identifier" | "scoped_type_identifier" => parent.child_by_field_name("path"),
         "field_initializer" | "shorthand_field_initializer" => {
             parent.parent()?.parent()?.child_by_field_name("name")
         }
@@ -2175,6 +2194,34 @@ fn is_whole_expression_path(node: tree_sitter::Node) -> bool {
     })
 }
 
+/// Where the Rust path `node` is written: the `generic_function` a turbofish writes it in
+/// (`Hop::Frontier::<u8>`), else `node` itself.
+fn written(node: tree_sitter::Node) -> tree_sitter::Node {
+    node.parent()
+        .filter(|p| p.kind() == "generic_function")
+        .unwrap_or(node)
+}
+
+/// Whether `node`, a whole `scoped_identifier`, is a call's head (`Hop::Frontier(cs)`), written
+/// with a turbofish or without ([`written`]).
+fn is_call_head(node: tree_sitter::Node) -> bool {
+    field_of(written(node)) == Some("function")
+}
+
+/// THE RUST VARIANT RULE (spec 117, RUST REFERENCES): the qualifier a variant's name `leaf` is
+/// written with, `None` when `leaf` names no variant. A variant's name begins uppercase and holds
+/// a lowercase letter ([`is_variant_spelled`]: `AlreadyCurrent`, never `IO`), and the path it is
+/// written under has a qualifier ([`rust_staged`]): an uppercase segment or a `Self`, as
+/// [`path_qualifier`] writes it, whose path no [`excluded_qualifier`] holds. A lowercase,
+/// `crate`, `self` or `super` segment, a generic parameter and a qualifier naming the standard
+/// library give none.
+fn variant_qualifier(leaf: tree_sitter::Node, source: &[u8], scope: &Scope) -> Option<Qualifier> {
+    if !is_variant_spelled(leaf, source) {
+        return None;
+    }
+    rust_staged(leaf, source, scope).flatten()
+}
+
 /// The field of its parent `node` sits under, `None` for an unnamed child.
 fn field_of(node: tree_sitter::Node) -> Option<&'static str> {
     let parent = node.parent()?;
@@ -2191,6 +2238,16 @@ fn is_const_spelled(node: tree_sitter::Node, source: &[u8]) -> bool {
             && t.chars()
                 .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
     })
+}
+
+/// Whether `node`'s text is spelled as a Rust enum variant: it begins uppercase ([`begins`]) and
+/// holds an ASCII lowercase letter, the `non_camel_case_types` naming a variant carries and a
+/// const ([`is_const_spelled`]) never does.
+fn is_variant_spelled(node: tree_sitter::Node, source: &[u8]) -> bool {
+    begins(node, source, char::is_ascii_uppercase)
+        && node
+            .utf8_text(source)
+            .is_ok_and(|t| t.chars().any(|c| c.is_ascii_lowercase()))
 }
 
 /// Whether `node`'s text begins with a character of the case `case` tests: ASCII uppercase, the
@@ -5375,13 +5432,14 @@ fn n(v: u8) {
 5 ref call map n",
             ),
             (
-                "an uppercase name or leaf is no function value",
+                "an uppercase name or leaf is no function value, an uppercase leaf a variant",
                 "fn o(v: u8) {\n    v.map(Some);\n    v.map(Kind::Unit);\n}\n",
                 "\
 1 def Function o to 4
 2 ref call map o
 3 ref call map o
-3 ref type Kind o",
+3 ref type Kind o
+3 ref variant Unit o q Kind::",
             ),
             (
                 "a call's head is no function value: the call stages once",
@@ -6163,10 +6221,11 @@ class K
         assert_eq!(paths, ["a", "b"], "adjacent definitions sit side by side");
     }
 
-    /// Spec 117, RUST REFERENCES: `extract` tags a Rust const read, a type reference and
-    /// each imported leaf of a `use` with its `ref_kind`, after the call references it already
-    /// records, and every name the spec excludes stages nothing. Each case is a source and the
-    /// tagged references it extracts, whole ([`crate::symbol_index::assert_tagged_refs`]).
+    /// Spec 117, RUST REFERENCES: `extract` tags a Rust const read, a type reference, a field use,
+    /// a variant use and each imported leaf of a `use` with its `ref_kind`, after the call
+    /// references it already records, and every name the spec excludes stages nothing. Each case
+    /// is a source and the tagged references it extracts, whole
+    /// ([`crate::symbol_index::assert_tagged_refs`]).
     #[test]
     fn rust_references_are_tagged_by_kind_and_every_excluded_name_stages_nothing() {
         let cases = [
@@ -6248,13 +6307,16 @@ impl Draw for Gizmo {}
 7 type Draw impl Draw for Twin
 11 type Draw Gizmo",
             ),
-            // A struct literal and a struct pattern stage one `type` row of their name: of the
-            // path's final identifier when it begins with an uppercase letter (`Enum::Variant
-            // { .. }`), else of the name (`module::Type { .. }`); a tuple-struct pattern and a
-            // unit pattern stage their path's final uppercase identifier, and a const pattern
-            // stages no const read; each field a literal names is a `field` row beside its type.
+            // A struct literal and a struct pattern stage one row of their name: a `variant` row
+            // of a variant written under an uppercase path (`Enum::Variant { .. }`,
+            // [`variant_qualifier`]), else a `type` row of the path's final identifier when it
+            // begins with an uppercase letter, else of the name (`module::Type { .. }`); a
+            // tuple-struct pattern and a unit pattern stage their path's final uppercase
+            // identifier and their variant, and a const pattern stages no const read; each field
+            // a literal names is a `field` row beside its name's row.
             (
-                "struct literals and patterns stage one type row each",
+                "struct literals and patterns stage one type or variant row each, a path pattern \
+                 its type and its variant",
                 "\
 fn f(k: Kind) {
     let a = Foo { a: 1 };
@@ -6273,12 +6335,14 @@ fn f(k: Kind) {
 1 type Kind f
 2 type Foo f
 2 field a f
-3 type Enum f
+3 variant Variant f
 3 field a f
 4 type Type f
 4 field a f
-6 type Enum f
+6 variant Variant f
 7 type Enum f
+7 variant Variant f
+8 variant Constant f
 8 type Kind f
 9 type Foo f",
             ),

@@ -1674,6 +1674,8 @@ fn pile() -> Vec<u32> { vec![helper(QUOTA_CAP)] }
 use crate::store::Ledger as Book; fn drain() { Book::open(); String::new(); }
 fn route(v: Vec<Kestrel>) -> Vec<u32> { v.iter().map(Kestrel::grow).map(helper).collect() }
 fn hatch(k: Kestrel) -> Kestrel { let Kestrel { size } = k; Kestrel { size: k.size + size } }
+enum Molt { Shed, Grown { size: u32 } }
+fn shed(m: Molt) -> u32 { match m { Molt::Shed => 0, Molt::Grown { size } => size } }
 ",
         ),
         ("rs", "fn whole() { helper(); }\nfn broken( {\n"),
@@ -1931,17 +1933,20 @@ def raw():
     /// generation table's generations joined in its order. The fixtures set an implementation
     /// reference, the tagged reference kind a Python base class records, and every part a snapshot
     /// stores, the stored inputs of the derived out-of-line module row and each tagged reference
-    /// kind a registered language records (a const read, a type reference, a use and a field use)
-    /// and a reference's qualifier included, so a change to any of them moves a digest.
+    /// kind a registered language records (a const read, a type reference, a use, a field use and
+    /// a variant use) and a reference's qualifier included, so a change to any of them moves a
+    /// digest.
     #[test]
     fn an_extraction_change_ships_with_a_grammar_tags_version_bump() {
-        use crate::contextgraph::{REF_KIND_CONST, REF_KIND_FIELD, REF_KIND_TYPE, REF_KIND_USE};
+        use crate::contextgraph::{
+            REF_KIND_CONST, REF_KIND_FIELD, REF_KIND_TYPE, REF_KIND_USE, REF_KIND_VARIANT,
+        };
         use crate::grounder::symbols::model::{FileSymbols, GRAMMAR_TAGS_VERSION};
         // One row per line with a comment line between rows, so units re-pinning different
         // languages' rows merge clean.
         const PINNED: [(&str, &str, &str); 7] = [
             // Rust
-            ("rs", "rust-tags-v7", "7acbc7c1270eb89b"),
+            ("rs", "rust-tags-v8", "b3c616ecb35019e2"),
             // C#
             ("cs", "csharp-tags-v5", "ff1a724ddef62a08"),
             // TypeScript
@@ -2018,6 +2023,7 @@ def raw():
             ),
             ("a use", tagged(REF_KIND_USE)),
             ("a field use", tagged(REF_KIND_FIELD)),
+            ("a variant use", tagged(REF_KIND_VARIANT)),
             ("a partial file", extracted.iter().any(|(_, fs)| fs.partial)),
             (
                 "a definition's doc span",
