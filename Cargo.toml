@@ -110,6 +110,12 @@ path = "tests/kurrentdb_store_threads.rs"
 name = "product_binary_authority_periphery"
 path = "tests/product_binary_authority_periphery.rs"
 
+# A suite that times the release binary: its own executable, so no sibling suite shares the
+# machine while it measures.
+[[test]]
+name = "read_budgets"
+path = "tests/read_budgets.rs"
+
 [[test]]
 name = "registry_refresh_driver_courier_convergence_periphery"
 path = "tests/registry_refresh_driver_courier_convergence_periphery.rs"
