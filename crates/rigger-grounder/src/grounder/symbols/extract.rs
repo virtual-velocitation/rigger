@@ -5450,6 +5450,163 @@ fn q(v: u8) {
         }
     }
 
+    /// Spec 117, RUST STAGES FIELD USES: a field read or assigned without a call (`x.f`) is a
+    /// `field` mention, qualified as a member by the type `self` names when its receiver is
+    /// exactly `self`, and unqualified off any other receiver; a field a struct literal or pattern
+    /// names (`T { f }`, `T { f: v }`, `T { ref f, f: p, .. }`) is one qualified by the struct's
+    /// path - its final segment, generics stripped, and `Self` as the impl's self type. A method
+    /// call stays a call alone, a tuple index and an integer field stage nothing, a struct whose
+    /// name is excluded stages no field, and a token tree's field uses read as the code's do.
+    #[test]
+    fn rust_stages_field_uses() {
+        let cases = [
+            (
+                "a field assigned without a call is a field mention, unqualified",
+                "fn a(opts: u8, x: u8) {\n    opts.system_prompt = x;\n}\n",
+                "\
+1 def Function a to 3
+2 ref field system_prompt a",
+            ),
+            (
+                "a struct literal's shorthand field is a field mention qualified by the struct",
+                "fn b(system_prompt: u8) {\n    SpawnOpts { system_prompt };\n}\n",
+                "\
+1 def Function b to 3
+2 ref field system_prompt b q SpawnOpts::
+2 ref type SpawnOpts b",
+            ),
+            (
+                "a field read off self is a member field mention qualified by the impl's self type",
+                "\
+struct Store;
+impl Store {
+    fn at(&self) -> u8 {
+        self.root
+    }
+}
+",
+                "\
+1 def Type Store to 1
+2 def Impl impl Store to 6
+2 ref call Store impl Store
+3 def Method Store::at to 5 in impl Store
+4 ref field root Store::at q Store.",
+            ),
+            (
+                "a method call is a call alone, a turbofish's alike",
+                "fn c(opts: u8) {\n    opts.run();\n    opts.run::<u8>();\n}\n",
+                "\
+1 def Function c to 4
+2 ref call run c
+3 ref call run c",
+            ),
+            (
+                "a tuple index and an integer field initializer stage no field",
+                "fn d(x: u8) {\n    x.0;\n    Pair { 0: x };\n}\n",
+                "\
+1 def Function d to 4
+3 ref type Pair d",
+            ),
+            (
+                "a struct pattern's and a struct literal's fields are qualified by the struct",
+                "\
+fn e() {
+    let Opts { ref root, depth: d, .. } = Opts { root: 1, depth: 2 };
+}
+",
+                "\
+1 def Function e to 3
+2 ref field depth e q Opts::
+2 ref field depth e q Opts::
+2 ref field root e q Opts::
+2 ref field root e q Opts::
+2 ref type Opts e
+2 ref type Opts e",
+            ),
+            (
+                "a scoped or turbofish struct name qualifies its fields by its final segment",
+                "\
+fn f() {
+    a::Opts { root: 1 };
+    Wrap::<u8> { inner: 1 };
+    a::Wrap::<u8> { inner: 1 };
+}
+",
+                "\
+1 def Function f to 5
+2 ref field root f q Opts::
+2 ref type Opts f
+3 ref field inner f q Wrap::
+3 ref type Wrap f
+4 ref field inner f q Wrap::",
+            ),
+            (
+                "a Self literal's fields are qualified by the impl's self type",
+                "\
+struct Store;
+impl Store {
+    fn new() -> Self {
+        Self { root: 1 }
+    }
+}
+",
+                "\
+1 def Type Store to 1
+2 def Impl impl Store to 6
+2 ref call Store impl Store
+3 def Method Store::new to 5 in impl Store
+4 ref field root Store::new q Store::",
+            ),
+            (
+                "a struct named by a standard-library import or path stages no field",
+                "\
+use std::ops::Range;
+fn g(r: Range<u8>) {
+    Range { start: 0, end: 1 };
+    std::ops::Range { start: 0, end: 1 };
+    let Range { start, .. } = r;
+}
+",
+                "2 def Function g to 6",
+            ),
+            (
+                "a receiver chain off self qualifies the field read off self alone",
+                "\
+struct Store;
+impl Store {
+    fn at(&self) {
+        self.inner.open();
+        self.inner.depth;
+    }
+}
+",
+                "\
+1 def Type Store to 1
+2 def Impl impl Store to 7
+2 ref call Store impl Store
+3 def Method Store::at to 6 in impl Store
+4 ref call open Store::at
+4 ref field inner Store::at q Store.
+5 ref field depth Store::at
+5 ref field inner Store::at q Store.",
+            ),
+            (
+                "a field use inside a macro's token tree is read",
+                "fn h(opts: u8) {\n    dbg!(opts.root);\n    vec![Opts { root: 1 }];\n}\n",
+                "\
+1 def Function h to 4
+2 ref call dbg h
+2 ref field root h
+3 ref call vec h
+3 ref field root h q Opts::
+3 ref type Opts h",
+            ),
+        ];
+        for (why, src, expected) in cases {
+            assert_eq!(read_lines(src), expected, "{why}");
+        }
+    }
+
     #[test]
     fn malformed_tags_query_surfaces_as_err_not_panic() {
         let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
