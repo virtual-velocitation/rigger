@@ -1,7 +1,8 @@
 //! The honesty label (6.1) heads every graph answer the CLI prints: the commit the answer
 //! describes, or the caller's worktree over it when the two differ, and what it withheld when the
-//! worktree cannot be compared. Under it the lookup names each entity's referrers by kind, and
-//! marks `?` a referrer whose mention gave the entity no single edge.
+//! worktree cannot be compared. Under it the lookup names each entity's referrers by kind, its test
+//! referrers only under `--tests include` or `only`, and marks `?` a referrer whose mention gave the entity
+//! no single edge.
 
 use crate::common;
 use common::cli::{run_rigger, run_rigger_ok, temp_project};
@@ -627,9 +628,9 @@ fn a_workflow_node_of_a_differing_definition_describes_the_worktree() {
 }
 
 /// A source file whose documented constant `LIMIT` is read by two product functions (`spill`
-/// before `fits`, so source order is not name order), by a `#[test]` function and by the
-/// `#[cfg(test)]` twin of the product `helper`, and whose type `Bin` is named in `spill`'s
-/// signature.
+/// before `fits`, so source order is not name order), by a `#[test]` function of the test module
+/// that imports it and by the `#[cfg(test)]` twin of the product `helper`, and whose type `Bin` is
+/// named in `spill`'s signature.
 /// Its function `ready` is called on a body line of `start`, then on two of `begin`'s (source order
 /// again not name order), and by a `#[test]` function.
 const READERS: &str = "\
@@ -741,7 +742,7 @@ fn the_lookup_names_referrers_by_kind() {
             ],
         ),
     ];
-    lookup_prints_blocks(root, &cases);
+    lookup_prints_blocks(root, &[], &cases);
 }
 
 /// GIVEN a built project whose constant `LIMIT` is defined in two files and read by one function
@@ -812,20 +813,68 @@ fn an_ambiguous_referrer_is_marked() {
             ],
         ),
     ];
-    lookup_prints_blocks(root, &cases);
+    lookup_prints_blocks(root, &[], &cases);
 }
 
-/// Each case's term looked up through the binary in the built project at `root`: the printed
-/// lines from the term's heading on, as many as the case holds, are exactly the case's block.
-fn lookup_prints_blocks(root: &std::path::Path, cases: &[(&str, &[&str])]) {
+/// GIVEN a built project holding [`READERS`], WHEN `rigger graph --lookup` reads the constant with
+/// no `--tests` option, under `--tests exclude` and under `--tests include`, THEN its `reads:` line
+/// names the two product functions alone unless tests are included. Under include it names the
+/// test readers after them too, in mention order, each marked `[test]`: the `#[cfg(test)]` twin
+/// under the product `helper`'s id, then the `#[test]` function; and an `imported by:` line names
+/// the test module whose `use` imports the constant, marked `[test]` too.
+#[test]
+fn a_test_referrer_is_hidden_by_default() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_text(root, "src/lib.rs", READERS);
+    git_commit_all(root, "source");
+    run_rigger_ok(root, &["graph", "build"]);
+    let product: &[&str] = &[
+        "### LIMIT",
+        "exact match: 1 entity",
+        "- src/lib.rs:3 src/lib.rs::LIMIT (constant)",
+        "  The most widgets one bin holds.",
+        "  reads: src/lib.rs:11 src/lib.rs::spill (function); src/lib.rs:16 src/lib.rs::fits (function)",
+        "",
+        "## text",
+    ];
+    let every: &[&str] = &[
+        "### LIMIT",
+        "exact match: 1 entity",
+        "- src/lib.rs:3 src/lib.rs::LIMIT (constant)",
+        "  The most widgets one bin holds.",
+        "  reads: src/lib.rs:11 src/lib.rs::spill (function); src/lib.rs:16 src/lib.rs::fits (function); src/lib.rs:21 src/lib.rs::helper (function) [test]; src/lib.rs:34 src/lib.rs::tests::the_bound_holds (method) [test]",
+        "  imported by: src/lib.rs:30 src/lib.rs::tests (module) [test]",
+        "",
+        "## text",
+    ];
+    // (the options the lookup passes, the constant's block from its heading to the next section's)
+    let rows: [(&[&str], &[&str]); 3] = [
+        (&[], product),
+        (&["--tests", "exclude"], product),
+        (&["--tests", "include"], every),
+    ];
+    for (options, block) in rows {
+        lookup_prints_blocks(root, options, &[("LIMIT", block)]);
+    }
+}
+
+/// Each case's term looked up through the binary in the built project at `root`, `options` passed
+/// after it: the printed lines from the term's heading on, as many as the case holds, are exactly
+/// the case's block.
+fn lookup_prints_blocks(root: &std::path::Path, options: &[&str], cases: &[(&str, &[&str])]) {
     for (term, block) in cases {
-        let (out, err, ok) = run_rigger(root, &["graph", "--lookup", term]);
-        assert!(ok, "{term} answers; stderr:\n{err}");
+        let args: Vec<&str> = ["graph", "--lookup", term]
+            .into_iter()
+            .chain(options.iter().copied())
+            .collect();
+        let (out, err, ok) = run_rigger(root, &args);
+        assert!(ok, "{term} {options:?} answers; stderr:\n{err}");
         let heading = format!("### {term}");
         let printed: Vec<&str> = (out.lines())
             .skip_while(|l| *l != heading)
             .take(block.len())
             .collect();
-        assert_eq!(printed, *block, "{term}:\n{out}");
+        assert_eq!(printed, *block, "{term} {options:?}:\n{out}");
     }
 }
