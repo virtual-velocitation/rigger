@@ -671,7 +671,10 @@ impl CompiledTags {
 /// the qualifier it is written with ([`CompiledTags::split_leaf`]). A Rust tag's name is that leaf
 /// already, so a Rust reference carries the qualifier the Rust rule reads off the tree around its
 /// name ([`rust_qualifier`], spec 117, RUST REFERENCES) instead, and one whose path's qualifier
-/// names the standard library or a primitive type stages nothing ([`excluded_qualifier`]).
+/// names the standard library or a primitive type stages nothing ([`excluded_qualifier`]). A
+/// function a Rust tree passes by name ([`function_values`], spec 117, RUST STAGES FUNCTION
+/// VALUES) is a call reference at its name, staged by that same rule ([`rust_call`]) after its
+/// tree's reference tags.
 ///
 /// Rust's const reads, type references and the leaves a `use` imports are read off the tree too
 /// ([`rust_references`], spec 117): each is a reference tagged with its `ref_kind`, pushed after
@@ -806,11 +809,12 @@ pub fn extract(source: &str, lang: Lang, tags: &CompiledTags) -> Result<FileSymb
                             let leaf = read
                                 .root
                                 .descendant_for_byte_range(tag.leaf.start, tag.leaf.end);
-                            if leaf.is_some_and(|leaf| excluded_qualifier(leaf, bytes, read.scope))
-                            {
+                            let Some(qualifier) =
+                                leaf.map_or(Some(None), |leaf| rust_call(leaf, bytes, read.scope))
+                            else {
                                 continue;
-                            }
-                            leaf.and_then(|leaf| rust_qualifier(leaf, bytes, read.scope))
+                            };
+                            qualifier
                         }
                         _ => tag.qualifier,
                     };
@@ -825,6 +829,23 @@ pub fn extract(source: &str, lang: Lang, tags: &CompiledTags) -> Result<FileSymb
                     });
                 }
             }
+        }
+        // Spec 117 (RUST STAGES FUNCTION VALUES): a function passed by name is a call at its
+        // site, staged as a tagged call is and after the read's; the nodes it is read from are
+        // gathered for Rust alone.
+        for leaf in function_values(&read.structure, bytes, read.scope) {
+            let (Ok(name), Some(qualifier)) =
+                (leaf.utf8_text(bytes), rust_call(leaf, bytes, read.scope))
+            else {
+                continue;
+            };
+            ref_positions.push(leaf.start_byte());
+            refs.push(SymRef {
+                name: name.to_string(),
+                line: leaf.start_position().row as u32 + 1,
+                qualifier,
+                ..SymRef::default()
+            });
         }
         def_reads.resize(def_ranges.len(), at_read);
     }
@@ -1221,9 +1242,9 @@ fn impl_blocks(impls: &[tree_sitter::Node], source: &[u8]) -> Vec<ImplBlock> {
 /// list in source order and holding only nodes within the byte ranges the tree is read over
 /// ([`kept`]): every `use_declaration` and every `impl_item` ([`rust_references`],
 /// [`impl_blocks`]), every [`GATED_NON_DEFINITIONS`] node ([`test_regions`]), and, for Rust, every
-/// node [`rust_references`] reads, a macro invocation among them ([`reparse_invocations`]) - each
-/// one outside an [`OPAQUE_KINDS`] subtree, a `use_declaration` read whole by its leaves and never
-/// descended.
+/// node [`rust_references`] and [`function_values`] read, a macro invocation among them
+/// ([`reparse_invocations`]) - each one outside an [`OPAQUE_KINDS`] subtree, a `use_declaration`
+/// read whole by its leaves and never descended.
 struct StructuralNodes<'t> {
     uses: Vec<tree_sitter::Node<'t>>,
     impls: Vec<tree_sitter::Node<'t>>,
@@ -1286,13 +1307,14 @@ impl<'t> StructuralNodes<'t> {
     }
 }
 
-/// The context one read tree's references stage with ([`rust_references`], [`rust_qualifier`]):
-/// the names the FILE imports from the standard library ([`std_imports`]) and the aliases its
-/// `use` declarations bind ([`use_aliases`]) and, for a token tree's re-parse (spec 117, MACRO
-/// TOKEN TREES), its invocation's: the names of the generic parameters enclosing it
-/// ([`enclosing_generics`]), the type or trait `Self` and `self` name there ([`self_qualifier`])
-/// and the inline modules holding it, outermost first ([`inline_modules`]). The file's own read
-/// has the first two alone.
+/// The context one read tree's references stage with ([`rust_references`], [`rust_qualifier`],
+/// [`function_values`]): the names the FILE imports from the standard library ([`std_imports`])
+/// and the aliases its `use` declarations bind ([`use_aliases`]) and, for a token tree's re-parse
+/// (spec 117, MACRO TOKEN TREES), its invocation's: the names of the generic parameters enclosing
+/// it ([`enclosing_generics`]), the type or trait `Self` and `self` name there
+/// ([`self_qualifier`]), the inline modules holding it, outermost first ([`inline_modules`]), and
+/// the names the bindings in scope there bind ([`bindings_at`]). The file's own read has the
+/// first two alone.
 #[derive(Clone, Default)]
 struct Scope {
     std_imports: Vec<String>,
@@ -1300,13 +1322,15 @@ struct Scope {
     generics: Vec<String>,
     owner: Option<String>,
     modules: Vec<String>,
+    bindings: Vec<String>,
 }
 
 impl Scope {
     /// The scope the token tree of `invocation`, a macro invocation in a tree read with this
     /// scope, is re-parsed with: the file's standard-library imports and aliases, the generic
     /// parameters enclosing `invocation` and then this scope's, the owner `Self` names at
-    /// `invocation`, and this scope's inline modules followed by those holding `invocation`.
+    /// `invocation`, this scope's inline modules followed by those holding `invocation`, and the
+    /// names the bindings in scope at `invocation` bind and then this scope's.
     fn at(&self, invocation: tree_sitter::Node, source: &[u8]) -> Scope {
         Scope {
             std_imports: self.std_imports.clone(),
@@ -1321,6 +1345,10 @@ impl Scope {
                 .iter()
                 .cloned()
                 .chain(inline_modules(invocation, source))
+                .collect(),
+            bindings: bindings_at(invocation, source)
+                .into_iter()
+                .chain(self.bindings.iter().cloned())
                 .collect(),
         }
     }
@@ -1763,7 +1791,9 @@ fn rust_references(structure: &StructuralNodes, source: &[u8], scope: &Scope) ->
                             matches!(q.kind(), "struct_expression" | "struct_pattern")
                         });
                         match path.and_then(final_identifier) {
-                            Some(last) if literal && begins_upper(last, source) => {
+                            Some(last)
+                                if literal && begins(last, source, char::is_ascii_uppercase) =>
+                            {
                                 stage(last, REF_KIND_TYPE, root_seg.as_deref(), None)
                             }
                             _ => stage(node, REF_KIND_TYPE, root_seg.as_deref(), None),
@@ -1776,7 +1806,7 @@ fn rust_references(structure: &StructuralNodes, source: &[u8], scope: &Scope) ->
                 let path = node.child_by_field_name("path");
                 let root_seg = path.and_then(|p| root_segment(p, source));
                 if let Some(last) = path.and_then(final_identifier) {
-                    if begins_upper(last, source) {
+                    if begins(last, source, char::is_ascii_uppercase) {
                         stage(last, REF_KIND_TYPE, root_seg.as_deref(), None);
                     }
                 }
@@ -1816,8 +1846,116 @@ fn rust_references(structure: &StructuralNodes, source: &[u8], scope: &Scope) ->
     out
 }
 
+/// RUST STAGES FUNCTION VALUES (spec 117): the name nodes of the functions the tree `structure`
+/// was gathered from passes by name, in source order, each a call at its site ([`extract`]):
+/// the final identifier of a whole expression path that is read ([`is_read`]: never a call's
+/// head) and begins lowercase (`.map(Store::open)`), and a bare identifier passed as a call's
+/// argument (`.map(entity_block)`) that begins lowercase, that [`excluded`] under `scope` does
+/// not hold and that no binding in scope binds ([`bound`]); either one written with a turbofish
+/// (`.map(Store::open::<u8>)`) sits where its `generic_function` does.
+fn function_values<'t>(
+    structure: &StructuralNodes<'t>,
+    source: &[u8],
+    scope: &Scope,
+) -> Vec<tree_sitter::Node<'t>> {
+    let written = |node: tree_sitter::Node<'t>| {
+        node.parent()
+            .filter(|p| p.kind() == "generic_function")
+            .unwrap_or(node)
+    };
+    let argument = |node: tree_sitter::Node<'t>| {
+        let name = node.utf8_text(source).ok()?;
+        let free = !excluded(name, None, node, source, scope) && !bound(name, node, source, scope);
+        free.then_some(node)
+    };
+    structure
+        .references
+        .iter()
+        .filter_map(|&node| match node.kind() {
+            "scoped_identifier" if is_whole_expression_path(node) && is_read(written(node)) => node
+                .child_by_field_name("name")
+                .filter(|leaf| begins(*leaf, source, char::is_ascii_lowercase)),
+            "identifier"
+                if written(node)
+                    .parent()
+                    .is_some_and(|p| p.kind() == "arguments")
+                    && begins(node, source, char::is_ascii_lowercase) =>
+            {
+                argument(node)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Whether a binding in scope at `node` binds `name`: one of [`bindings_at`], or of the
+/// invocation a re-parsed `node` was read from ([`Scope::bindings`]).
+fn bound(name: &str, node: tree_sitter::Node, source: &[u8], scope: &Scope) -> bool {
+    scope
+        .bindings
+        .iter()
+        .chain(&bindings_at(node, source))
+        .any(|binding| binding == name)
+}
+
+/// The names the bindings in scope at `node` bind: THE BINDING WALK ([`bound_names`] over
+/// [`RUST_PATTERN_BINDINGS`]) of the patterns of each construct enclosing `node` - a function's
+/// or closure's parameters, a match arm's pattern but its guard, a `for` pattern, each `let` of
+/// an `if`'s or `while`'s condition, a let chain's among them, and each `let` of a block that
+/// ends before `node` starts.
+fn bindings_at<'t>(node: tree_sitter::Node<'t>, source: &[u8]) -> Vec<String> {
+    let named = |of: Option<tree_sitter::Node<'t>>| {
+        of.map(|of| {
+            let mut cursor = of.walk();
+            of.named_children(&mut cursor).collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+    };
+    let mut patterns = Vec::new();
+    for ancestor in std::iter::successors(node.parent(), |n| n.parent()) {
+        let field = |name| ancestor.child_by_field_name(name);
+        match ancestor.kind() {
+            "function_item" | "closure_expression" => patterns.extend(
+                named(field("parameters"))
+                    .into_iter()
+                    .map(|p| p.child_by_field_name("pattern").unwrap_or(p)),
+            ),
+            "match_arm" => patterns.extend(
+                named(field("pattern"))
+                    .into_iter()
+                    .filter(|p| field_of(*p) != Some("condition")),
+            ),
+            "for_expression" => patterns.extend(field("pattern")),
+            "if_expression" | "while_expression" => {
+                let condition = field("condition");
+                patterns.extend(
+                    condition
+                        .into_iter()
+                        .chain(named(condition))
+                        .filter(|c| c.kind() == "let_condition")
+                        .filter_map(|c| c.child_by_field_name("pattern")),
+                );
+            }
+            // A `let` is the one statement of a block that holds a `pattern` field.
+            "block" => patterns.extend(
+                named(Some(ancestor))
+                    .into_iter()
+                    .filter(|s| s.end_byte() <= node.start_byte())
+                    .filter_map(|s| s.child_by_field_name("pattern")),
+            ),
+            _ => {}
+        }
+    }
+    let mut names = Vec::new();
+    for pattern in patterns {
+        bound_names(pattern, &RUST_PATTERN_BINDINGS, source, &mut names);
+    }
+    names.into_iter().map(|(_, name, _)| name).collect()
+}
+
 /// Whether the leaf `name`, read at `node` under a path whose root segment is `root_seg`, stages
-/// no tagged reference (spec 117): `Self`, a name of the standard library ([`std_named`]), and a
+/// no tagged reference, nor a function value passed by its bare name ([`function_values`]) (spec
+/// 117): `Self`, a name of the standard library ([`std_named`]), and a
 /// generic or const generic parameter of an item enclosing `node` ([`names_enclosing_generic`]).
 fn excluded(
     name: &str,
@@ -1913,6 +2051,14 @@ fn rust_qualifier(leaf: tree_sitter::Node, source: &[u8], scope: &Scope) -> Opti
     Some(Qualifier { name, path })
 }
 
+/// A Rust call staged at `leaf`, its name node: the qualifier it is written with
+/// ([`rust_qualifier`]), or `None` when it stages nothing, its path's qualifier excluded
+/// ([`excluded_qualifier`]) - the one rule a tagged call and a function value ([`function_values`])
+/// both stage by.
+fn rust_call(leaf: tree_sitter::Node, source: &[u8], scope: &Scope) -> Option<Option<Qualifier>> {
+    (!excluded_qualifier(leaf, source, scope)).then(|| rust_qualifier(leaf, source, scope))
+}
+
 /// AN EXCLUDED QUALIFIER (spec 117, RUST REFERENCES): whether `leaf`, a reference's name node,
 /// is the name of a scoped path that stages no mention - one whose qualifier as written
 /// ([`qualifier_segment`], before any alias is read) names the standard library ([`std_named`])
@@ -1946,7 +2092,7 @@ fn path_qualifier(path: tree_sitter::Node, source: &[u8], scope: &Scope) -> Opti
     let segment = qualifier_segment(path)?;
     match segment.utf8_text(source).ok()? {
         "Self" => self_qualifier(path, source, scope),
-        text => begins_upper(segment, source).then(|| text.to_string()),
+        text => begins(segment, source, char::is_ascii_uppercase).then(|| text.to_string()),
     }
 }
 
@@ -1982,9 +2128,10 @@ fn self_qualifier(node: tree_sitter::Node, source: &[u8], scope: &Scope) -> Opti
     Some(named.utf8_text(source).ok()?.to_string())
 }
 
-/// Whether `node`, an `identifier` or a whole `scoped_identifier`, is an expression READ (spec
-/// 117): outside every pattern - but a match arm's guard, its `condition`, is read - a closure's
-/// parameters, a lifetime and a label, and not under a parent field of [`NON_READ_FIELDS`] (a
+/// Whether `node`, an `identifier`, a whole `scoped_identifier` or the `generic_function` a
+/// turbofish writes one in ([`function_values`]), is an expression READ (spec 117): outside every
+/// pattern - but a match arm's guard, its `condition`, is read - a closure's parameters, a
+/// lifetime and a label, and not under a parent field of [`NON_READ_FIELDS`] (a
 /// `scoped_identifier`'s segments among them: a path is read whole).
 fn is_read(node: tree_sitter::Node) -> bool {
     node.parent().is_some_and(|parent| {
@@ -2030,11 +2177,12 @@ fn is_const_spelled(node: tree_sitter::Node, source: &[u8]) -> bool {
     })
 }
 
-/// Whether `node`'s text begins with an ASCII uppercase letter (the `non_camel_case_types`
-/// naming a type path segment carries).
-fn begins_upper(node: tree_sitter::Node, source: &[u8]) -> bool {
+/// Whether `node`'s text begins with a character of the case `case` tests: ASCII uppercase, the
+/// `non_camel_case_types` naming a type path segment carries, or ASCII lowercase, the
+/// `non_snake_case` naming a function carries.
+fn begins(node: tree_sitter::Node, source: &[u8], case: fn(&char) -> bool) -> bool {
     node.utf8_text(source)
-        .is_ok_and(|t| t.starts_with(|c: char| c.is_ascii_uppercase()))
+        .is_ok_and(|t| t.starts_with(|c: char| case(&c)))
 }
 
 /// The final segment of a Rust path node: an `identifier` itself, a `scoped_identifier`'s
@@ -2321,6 +2469,28 @@ const JS_PATTERN_BINDINGS: [(&str, Binds); 8] = [
     ("pair_pattern", Binds::Field("value")),
     ("assignment_pattern", Binds::Field("left")),
     ("object_assignment_pattern", Binds::Field("left")),
+];
+
+/// The Rust pattern node kinds and what each binds (spec 117, RUST STAGES FUNCTION VALUES): a
+/// bare identifier and a struct pattern's shorthand (`S { a }`) bind themselves; every other
+/// pattern holding patterns is walked down. A field pattern's name (`S { a: b }`), a struct
+/// pattern's type and a range pattern are unlisted kinds and bind nothing. A tuple struct
+/// pattern's type is walked with it, so a bare one binds its own name (`Some` of `Some(x)`): a
+/// type's name, uppercase by the `non_camel_case_types` naming, never one [`function_values`]
+/// asks [`bound`] after, each of those beginning lowercase.
+const RUST_PATTERN_BINDINGS: [(&str, Binds); 12] = [
+    ("identifier", Binds::Itself),
+    ("shorthand_field_identifier", Binds::Itself),
+    ("tuple_pattern", Binds::Children),
+    ("slice_pattern", Binds::Children),
+    ("tuple_struct_pattern", Binds::Children),
+    ("struct_pattern", Binds::Children),
+    ("field_pattern", Binds::Children),
+    ("ref_pattern", Binds::Children),
+    ("mut_pattern", Binds::Children),
+    ("reference_pattern", Binds::Children),
+    ("captured_pattern", Binds::Children),
+    ("or_pattern", Binds::Children),
 ];
 
 /// THE BINDING WALK (spec 116): every bare identifier `pattern` binds under `table`, a
@@ -5026,6 +5196,260 @@ impl Local for Vec<u8> {
         }
     }
 
+    /// Spec 117, RUST STAGES FUNCTION VALUES: a function passed by name is a call at its site,
+    /// qualified as a call is - a scoped path with a lowercase leaf outside a call
+    /// (`.map(Store::open)`), and a bare identifier passed as a call's argument
+    /// (`.map(entity_block)`) that starts lowercase, that no exclusion holds and that no binding
+    /// in scope binds. A parameter, a `let` after its own value, an `if let`, a `while let`, a let
+    /// chain, a match arm (in its guard too, the guard's own names binding nothing), a `for` and a
+    /// closure parameter bind, through every pattern a binding writes; a call's head stages once,
+    /// and in a token tree the scope is the invocation's.
+    #[test]
+    fn rust_stages_function_values() {
+        let cases = [
+            (
+                "a function passed by name is a call at its site",
+                "fn a(v: u8) {\n    v.map(entity_block);\n}\n",
+                "\
+1 def Function a to 3
+2 ref call entity_block a
+2 ref call map a",
+            ),
+            (
+                "a scoped path with a lowercase leaf outside a call is a call, qualified by its path",
+                "fn b(v: u8) {\n    v.map(Store::open);\n}\n",
+                "\
+1 def Function b to 3
+2 ref call map b
+2 ref call open b q Store::
+2 ref type Store b",
+            ),
+            (
+                "a parameter passed by name is no call",
+                "fn c(x: u8, v: u8) {\n    v.map(x);\n}\n",
+                "\
+1 def Function c to 3
+2 ref call map c",
+            ),
+            (
+                "a match arm's binding passed by name is no call, the variant's own call staging",
+                "\
+fn d(r: u8) -> u8 {
+    match r {
+        Err(e) => Err(e),
+        _ => r,
+    }
+}
+",
+                "\
+1 def Function d to 6
+3 ref call Err d",
+            ),
+            (
+                "a let binds the names after it, never in its own value",
+                "fn e(v: u8) {\n    let f = v.map(f);\n    v.map(f);\n}\n",
+                "\
+1 def Function e to 4
+2 ref call f e
+2 ref call map e
+3 ref call map e",
+            ),
+            (
+                "a closure's parameters bind in its body, typed or not",
+                "fn g(v: u8) {\n    v.map(|f, h: u8| w(f, h));\n}\n",
+                "\
+1 def Function g to 3
+2 ref call map g
+2 ref call w g",
+            ),
+            (
+                "a for pattern binds in its body",
+                "fn h(v: u8) {\n    for f in v {\n        w(f);\n    }\n}\n",
+                "\
+1 def Function h to 5
+3 ref call w h",
+            ),
+            (
+                "an if let binds in its body",
+                "fn i(v: u8) {\n    if let Some(f) = v {\n        w(f);\n    }\n}\n",
+                "\
+1 def Function i to 5
+3 ref call w i",
+            ),
+            (
+                "a while let binds in its body",
+                "fn j(v: u8) {\n    while let Some(f) = v {\n        w(f);\n    }\n}\n",
+                "\
+1 def Function j to 5
+3 ref call w j",
+            ),
+            (
+                "each let of a let chain binds in its body",
+                "\
+fn k(v: u8) {
+    if v && let Some(f) = v && let Some(g) = f {
+        w(f, g);
+    }
+}
+",
+                "\
+1 def Function k to 5
+3 ref call w k",
+            ),
+            (
+                "a match arm's pattern binds in its guard, the guard's own names binding nothing",
+                "\
+fn l(r: u8) {
+    match r {
+        Some(f) if ok(f) => w(f),
+        _ if g => w(g),
+    }
+}
+",
+                "\
+1 def Function l to 6
+3 ref call ok l
+3 ref call w l
+4 ref call g l
+4 ref call w l",
+            ),
+            (
+                "every pattern a binding writes binds its names",
+                "\
+fn m(v: u8) {
+    let (S { a, b: ref c }, [d], &e, g @ Some(mut h), Ok(i) | Err(i)) = v;
+    w(a, c, d, e, g, h, i);
+}
+",
+                "\
+1 def Function m to 4
+2 ref type S m
+3 ref call w m",
+            ),
+            (
+                "a standard-library import, a prelude path and a primitive path stage no call",
+                "\
+use std::mem::take;
+fn n(v: u8) {
+    v.map(take);
+    v.map(String::from);
+    v.map(u32::from);
+}
+",
+                "\
+2 def Function n to 6
+3 ref call map n
+4 ref call map n
+5 ref call map n",
+            ),
+            (
+                "an uppercase name or leaf is no function value",
+                "fn o(v: u8) {\n    v.map(Some);\n    v.map(Kind::Unit);\n}\n",
+                "\
+1 def Function o to 4
+2 ref call map o
+3 ref call map o
+3 ref type Kind o",
+            ),
+            (
+                "a call's head is no function value: the call stages once",
+                "fn p(x: u8) {\n    Store::open(x);\n    helper(x);\n}\n",
+                "\
+1 def Function p to 4
+2 ref call open p q Store::
+2 ref type Store p
+3 ref call helper p",
+            ),
+            (
+                "a lowercase-rooted or crate path stages unqualified, as its call does",
+                "fn r(v: u8) {\n    v.map(paths::module_dir);\n    v.map(crate::helper);\n}\n",
+                "\
+1 def Function r to 4
+2 ref call map r
+2 ref call module_dir r
+3 ref call helper r
+3 ref call map r",
+            ),
+            (
+                "a bare name read outside a call's arguments is no function value",
+                "fn s() {\n    let y = helper;\n}\n",
+                "1 def Function s to 3",
+            ),
+            (
+                "in a token tree the scope is the invocation's, a nested invocation's included",
+                "\
+fn t(x: u8) {
+    let a = 1;
+    vec![a, x, entity_block, Store::open];
+    vec![vec![a]];
+}
+",
+                "\
+1 def Function t to 5
+3 ref call entity_block t
+3 ref call open t q Store::
+3 ref call vec t
+3 ref type Store t
+4 ref call vec t
+4 ref call vec t",
+            ),
+            (
+                "a bare uppercase name no exclusion holds is no function value",
+                "fn u(v: u8) {\n    v.map(Wrap);\n}\n",
+                "\
+1 def Function u to 3
+2 ref call map u",
+            ),
+            (
+                "a path's prefix is no function value, the path whole one",
+                "fn y(v: u8) {\n    v.map(a::b::<u8>::c);\n}\n",
+                "\
+1 def Function y to 3
+2 ref call c y
+2 ref call map y",
+            ),
+            (
+                "a `let` of an `if`'s block condition binds nothing in its body",
+                "fn z(v: bool) {\n    if { let f = v; f } {\n        w(f);\n    }\n}\n",
+                "\
+1 def Function z to 5
+3 ref call f z
+3 ref call w z",
+            ),
+            (
+                "a function value written with a turbofish is a call, as its call is",
+                "\
+fn q(v: u8) {
+    v.map(Store::open::<u8>);
+    v.map(helper::<u8>);
+    Store::open::<u8>(v);
+    helper::<u8>(v);
+}
+",
+                "\
+1 def Function q to 6
+2 ref call map q
+2 ref call open q q Store::
+2 ref type Store q
+3 ref call helper q
+3 ref call map q
+4 ref call open q q Store::
+4 ref type Store q
+5 ref call helper q",
+            ),
+            (
+                "a `let` ending where an invocation starts binds in it",
+                "fn ab(v: u8) {\n    let f = v;vec![f];\n}\n",
+                "\
+1 def Function ab to 3
+2 ref call vec ab",
+            ),
+        ];
+        for (why, src, expected) in cases {
+            assert_eq!(read_lines(src), expected, "{why}");
+        }
+    }
+
     #[test]
     fn malformed_tags_query_surfaces_as_err_not_panic() {
         let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
@@ -6076,6 +6500,7 @@ mod plat {
 1 def Module plat to 8
 2 ref call cfg_if plat
 3 ref call cfg plat
+3 ref call unix plat
 4 def Module plat::sys to 4 in plat out-of-line under plat
 7 def Module plat::plain to 7 in plat out-of-line under plat",
             ),
@@ -6198,6 +6623,7 @@ fn p() {
 1 def Function p to 6
 2 ref call m p
 2 ref call pair p
+2 ref call x p
 2 ref type A p
 2 ref type B p
 3 ref call h p
@@ -6207,6 +6633,7 @@ fn p() {
 3 ref type B p
 3 ref type Wrap p
 4 ref call pair p
+4 ref call x p
 4 ref type A p
 4 ref type B p
 5 ref call new p q Wrap::

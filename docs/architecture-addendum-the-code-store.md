@@ -308,6 +308,13 @@ enclosing impl's self type, generics stripped, or inside a trait body the trait;
 receiver is exactly `self` is a member access qualified by that same type or trait. A lowercase
 segment, a `crate`, `self` or `super` path, any other receiver (`self.a.f()`), an enclosing generic
 parameter and a self type naming no single type write none.
+A Rust function passed by name is a call at its site, named and qualified as a call is, a
+turbofish after it or not: the leaf of a path read outside a call when it begins lowercase
+(`.map(Store::open)` is `open` qualified by `Store`), and a bare identifier passed as a call's
+argument (`.map(entity_block)`) when it begins lowercase, names no standard-library item or
+enclosing generic parameter, and no binding in scope binds it (a parameter, a `let`, `if let` or
+`while let`, a match arm's pattern, a `for` pattern or a closure parameter); in a re-parsed token
+tree the scope is the invocation's. A function passed by name is staged in Rust alone.
 A module's two lists depend only on the declaring file, so they
 are computed at extraction, an enclosing inline module's components and an explicit path attribute
 placed by the same two rules; for a file named `mod.rs`, `lib.rs` or `main.rs` the two are equal.
