@@ -6,10 +6,9 @@ use std::path::Path;
 
 use crate::common;
 use common::cli::run_rigger;
+use common::fixtures::READERS;
 use common::git::{commit_files, linked_worktree};
 use common::mcp::McpSession;
-
-use crate::graph_honesty_label_cli::READERS;
 
 /// The host's limit on one tool result's text, in characters.
 const HOST_LIMIT: usize = 50_000;

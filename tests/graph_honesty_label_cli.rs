@@ -8,7 +8,7 @@
 
 use crate::common;
 use common::cli::{run_rigger, run_rigger_ok, temp_project};
-use common::fixtures::{git_commit_all, git_out, write_files, write_text};
+use common::fixtures::{git_commit_all, git_out, write_files, write_text, READERS};
 use common::git::linked_worktree;
 use rigger::contextgraph::REFERRER_LABELS;
 
@@ -639,69 +639,6 @@ fn a_workflow_node_of_a_differing_definition_describes_the_worktree() {
         "the snapshot's definition is not; stdout:\n{out}"
     );
 }
-
-/// A source file whose documented constant `LIMIT` is read by two product functions (`spill`
-/// before `fits`, so source order is not name order), by a `#[test]` function of the test module
-/// that imports it and by the `#[cfg(test)]` twin of the product `helper`, and whose type `Bin` is
-/// named in `spill`'s signature.
-/// Its function `ready` is called on a body line of `start`, then on two of `begin`'s (source order
-/// again not name order), and by a `#[test]` function.
-pub const READERS: &str = "\
-/// The most widgets one bin holds.
-/// It bounds every bin.
-pub const LIMIT: usize = 3;
-
-pub struct Bin {
-    pub count: usize,
-}
-
-pub fn spill(bin: &Bin) -> usize {
-    let over = bin.count;
-    over - LIMIT
-}
-
-pub fn fits(n: usize) -> bool {
-    let room = n;
-    room <= LIMIT
-}
-
-#[cfg(test)]
-fn helper() -> usize {
-    LIMIT
-}
-#[cfg(not(test))]
-fn helper() -> usize {
-    0
-}
-
-#[cfg(test)]
-mod tests {
-    use super::LIMIT;
-
-    #[test]
-    fn the_bound_holds() {
-        let n = LIMIT;
-    }
-}
-
-pub fn ready() -> bool {
-    true
-}
-
-pub fn start() -> bool {
-    ready()
-}
-
-pub fn begin() -> bool {
-    let first = ready();
-    first || ready()
-}
-
-#[test]
-fn it_starts() {
-    let up = ready();
-}
-";
 
 /// GIVEN a built project holding [`READERS`], WHEN `rigger graph --lookup` reads the constant and
 /// the type, THEN the lookup names each one's referrers by kind: the constant's doc's first line
