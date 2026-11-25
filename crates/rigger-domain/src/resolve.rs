@@ -2696,9 +2696,10 @@ pub(crate) mod tests {
     /// item names the enclosing definition's id and the kind that id settles to (a type's, for a
     /// mention its impl encloses), or its file's when none encloses it, the label of its tag
     /// (none for a tag no label row holds), the mention's line, and whether the mention is test
-    /// code, by its own mark or its file's scope, a test twin's sharing its product's id. An id
-    /// naming no definition of a code file has none. `Composed` answers the product items alone
-    /// under every tests setting, near or whole, and none when the worktree cannot be compared.
+    /// code, by its own mark or its file's scope, a test twin's sharing its product's id. A
+    /// mention in a file outside the code half lists under none, and an id naming no definition
+    /// of a code file has none. `Composed` answers the product items alone under every tests
+    /// setting, near or whole, and none when the worktree cannot be compared.
     #[test]
     fn a_referrer_is_listed_under_each_id_its_mention_lists() {
         let lib = code(
@@ -2782,9 +2783,19 @@ pub(crate) mod tests {
             vec![def("checks", "function", 1, None, true)],
             vec![call("helper", Some(0), 2, true)],
         );
+        let notes = FileFacts {
+            half: Half::Design,
+            ..code(
+                "docs/d.md",
+                "markdown",
+                Scope::Product,
+                vec![def("LIMIT", "constant", 1, None, false)],
+                vec![call("helper", None, 2, false)],
+            )
+        };
         let view = FactsView::new(
             stamp(),
-            vec![other("src/a.rs"), other("src/b.rs"), lib, checks],
+            vec![other("src/a.rs"), other("src/b.rs"), lib, checks, notes],
         );
         let shown = |referrers: Vec<Referrer>| -> Vec<String> {
             (referrers.iter())
@@ -2795,7 +2806,7 @@ pub(crate) mod tests {
                 .collect()
         };
         // (the id, its referrers, the product ones `Composed` answers)
-        let rows: [(&str, &[&str], &[&str]); 17] = [
+        let rows: [(&str, &[&str], &[&str]); 18] = [
             (
                 "src/lib.rs::LIMIT",
                 &[
@@ -2882,6 +2893,7 @@ pub(crate) mod tests {
             ("src/lib.rs::Nope", &[], &[]),
             ("src/lib.rs", &[], &[]),
             ("src/gone.rs::LIMIT", &[], &[]),
+            ("docs/d.md::LIMIT", &[], &[]),
         ];
         let resolver = Resolver::new(&view);
         let records = Indexed::default();
