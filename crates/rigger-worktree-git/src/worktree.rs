@@ -1576,19 +1576,19 @@ impl Worktree {
         Self::patch_id_of(&self.dir, sha)
     }
 
-    /// Search the run branch's own recent history (`self.repo`, the `window` most
-    /// recent commits reachable from its HEAD) for a commit whose [`Self::patch_id`]
-    /// matches `original_sha`'s - the RECOVERY half of ruling item (2): confirming
-    /// that an intended plan-stage commit already reached the run branch under a
-    /// DIFFERENT (cherry-pick-minted) object, without depending on ITS POSITION in
-    /// that history at all. `None` when no match is found within `window` - never a
-    /// guess beyond what was actually searched, so a caller that cannot confirm
+    /// Search the run branch's history since `since` (`self.repo`, the commits reachable
+    /// from its HEAD and not from `since`; its whole history when `since` is empty) for a
+    /// commit whose [`Self::patch_id`] matches `original_sha`'s - the RECOVERY half of
+    /// ruling item (2): confirming that an intended plan-stage commit already reached the
+    /// run branch under a DIFFERENT (cherry-pick-minted) object, without depending on ITS
+    /// POSITION in that history at all. `None` when no match is found in that range -
+    /// never a guess beyond what was actually searched, so a caller that cannot confirm
     /// simply leaves the sha pending for the next call rather than fabricating an
-    /// identity.
+    /// identity. A `since` the repository does not hold is an error.
     pub fn find_landed_by_patch_id(
         &self,
         original_sha: &str,
-        window: usize,
+        since: &str,
     ) -> Result<Option<String>, Error> {
         let target = self.patch_id(original_sha)?;
         if target.is_empty() {
@@ -1596,10 +1596,11 @@ impl Worktree {
             // for - never a guess, so this never confirms one.
             return Ok(None);
         }
-        let out = git(
-            &self.repo,
-            &["rev-list", &format!("--max-count={window}"), "HEAD"],
-        )?;
+        let range = match since {
+            "" => "HEAD".to_string(),
+            base => format!("{base}..HEAD"),
+        };
+        let out = git(&self.repo, &["rev-list", &range])?;
         for candidate in out.lines().map(str::trim).filter(|l| !l.is_empty()) {
             let candidate_id = self.patch_id(candidate)?;
             if !candidate_id.is_empty() && candidate_id == target {
@@ -7504,6 +7505,11 @@ mod tests {
         let wt_path = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
         let wt =
             Worktree::create(&repo_path, wt_path.to_str().unwrap(), "rigger/u/plan", "").unwrap();
+        // The run's recorded base: the run branch before anything landed.
+        let base = git(&repo_path, &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
 
         std::fs::create_dir_all(wt_path.join("specs")).unwrap();
         std::fs::write(wt_path.join("specs").join("98-diverged.md"), "amend\n").unwrap();
@@ -7532,7 +7538,7 @@ mod tests {
         run_git(&repo_path, &["commit", "-q", "-m", "unrelated meanwhile"]).unwrap();
 
         let recovered = wt
-            .find_landed_by_patch_id(&original, 50)
+            .find_landed_by_patch_id(&original, &base)
             .unwrap()
             .expect("content-based recovery must succeed despite the intervening commit");
         assert_eq!(
@@ -7553,23 +7559,41 @@ mod tests {
             .trim()
             .to_string();
         assert_eq!(
-            wt.find_landed_by_patch_id(&never_landed, 50).unwrap(),
+            wt.find_landed_by_patch_id(&never_landed, &base).unwrap(),
             None,
             "content that was never landed must never be confirmed - never a guess"
         );
 
-        // A window too narrow to reach the real match must also refuse to confirm -
+        // A range that starts after the landing does not reach it, so it never confirms it -
         // never a guess beyond what was actually searched.
-        std::fs::write(repo.path().join("specs").join("100-filler.md"), "y\n").unwrap();
-        run_git(&repo_path, &["add", "-A"]).unwrap();
-        run_git(&repo_path, &["commit", "-q", "-m", "filler 1"]).unwrap();
-        std::fs::write(repo.path().join("specs").join("101-filler.md"), "z\n").unwrap();
-        run_git(&repo_path, &["add", "-A"]).unwrap();
-        run_git(&repo_path, &["commit", "-q", "-m", "filler 2"]).unwrap();
         assert_eq!(
-            wt.find_landed_by_patch_id(&original, 2).unwrap(),
+            wt.find_landed_by_patch_id(&original, &landed[0]).unwrap(),
             None,
-            "a window that does not reach the real match must not confirm it"
+            "a range that starts after the landing must not confirm it"
+        );
+
+        // However much lands after it, the landing is found anywhere since the base; with no
+        // recorded base the whole history is searched.
+        for i in 0..300 {
+            run_git(
+                &repo_path,
+                &["commit", "-q", "--allow-empty", "-m", &format!("later {i}")],
+            )
+            .unwrap();
+        }
+        for since in [base.as_str(), ""] {
+            assert_eq!(
+                wt.find_landed_by_patch_id(&original, since).unwrap(),
+                Some(landed[0].clone()),
+                "a landing 300 commits back is found since {since:?}"
+            );
+        }
+
+        // A base the repository does not hold is an error, never an empty search.
+        assert!(
+            wt.find_landed_by_patch_id(&original, "0123456789abcdef0123456789abcdef01234567")
+                .is_err(),
+            "an unknown base must fail loudly"
         );
 
         wt.remove().unwrap();

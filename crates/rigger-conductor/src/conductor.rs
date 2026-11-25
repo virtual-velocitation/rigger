@@ -12142,13 +12142,12 @@ impl RunCtx<'_> {
 
         // A pending sha may ALREADY be on the run branch by CONTENT (a crash between
         // a prior call's real git success and that call's own confirmation write) -
-        // confirm by patch-id, bounded to the run branch's own recent history,
-        // before deciding anything still needs a fresh cherry-pick. `never a guess`:
+        // confirm by patch-id over the run branch's history since the run's recorded
+        // base, before deciding anything still needs a fresh cherry-pick. `never a guess`:
         // an entry this cannot confirm stays pending for the cherry-pick below.
-        const SEARCH_WINDOW: usize = 256;
         let mut still_pending: Vec<String> = Vec::new();
         for s in &pending {
-            match git_step(w.find_landed_by_patch_id(s, SEARCH_WINDOW))? {
+            match git_step(w.find_landed_by_patch_id(s, self.run_base_env()))? {
                 Some(l) => {
                     landed_map.insert(s.clone(), l);
                 }
@@ -12178,7 +12177,7 @@ impl RunCtx<'_> {
                         // branch's state AFTER this call's own mutation.
                         for orig in &still_pending {
                             if let Some(sha) =
-                                git_step(w.find_landed_by_patch_id(orig, SEARCH_WINDOW))?
+                                git_step(w.find_landed_by_patch_id(orig, self.run_base_env()))?
                             {
                                 landed_map.insert(orig.clone(), sha);
                             }

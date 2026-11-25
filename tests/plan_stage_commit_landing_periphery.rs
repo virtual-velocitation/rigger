@@ -1677,7 +1677,7 @@ fn patch_id_and_find_landed_by_patch_id_are_a_public_content_identity_api() {
     git_ok(repo.path(), &["add", "-A"]);
     git_ok(repo.path(), &["commit", "-q", "-m", "unrelated meanwhile"]);
     let recovered = wt
-        .find_landed_by_patch_id(&original, 50)
+        .find_landed_by_patch_id(&original, "")
         .unwrap()
         .expect("content-based recovery must succeed despite the intervening commit");
     assert_eq!(
@@ -1687,7 +1687,7 @@ fn patch_id_and_find_landed_by_patch_id_are_a_public_content_identity_api() {
 
     // (4) NEVER A GUESS: content that was never landed at all must never be confirmed.
     assert_eq!(
-        wt.find_landed_by_patch_id(&other, 50).unwrap(),
+        wt.find_landed_by_patch_id(&other, "").unwrap(),
         None,
         "content that was never landed must never be confirmed - never a guess"
     );
@@ -1822,10 +1822,10 @@ fn plan_intent_record_is_log_carried_before_any_git_mutation_and_names_the_origi
 /// gap 2's legacy-event test established), landing the amendment for real through the same
 /// public `Worktree::cherry_pick_onto_run_branch` a crashed prior attempt would itself have
 /// used, then adopting the SAME run (`rigger::run_store::ensure_started`, matching criteria) with a
-/// fresh `run()`. Filler commits deliberately push the landed sha beyond `find_landed_by_
-/// patch_id`'s own search window BEFORE the resumed `run()` starts, so a patch-id search alone
-/// could no longer recover it - isolating the log record as the ONLY mechanism that can produce
-/// the correct outcome, rather than merely a scenario where either mechanism happens to work.
+/// fresh `run()`. The run's recorded base is the run branch AFTER the prior landing, so the
+/// patch-id search (which covers only the history since the base) cannot reach it - isolating
+/// the log record as the ONLY mechanism that can produce the correct outcome, rather than
+/// merely a scenario where either mechanism happens to work.
 /// Proves the resumed call trusts the log record directly - no NEW cherry-pick, no successful
 /// patch-id search - and still reaches `Integrated` with the real landed sha and content a
 /// downstream stage can read.
@@ -1872,25 +1872,6 @@ fn plan_stage_resumed_with_a_pre_existing_plan_landed_record_recovers_without_an
     let landed_sha = prior_landed[0].clone();
     seed.remove().unwrap();
 
-    // Push the landed commit beyond `find_landed_by_patch_id`'s own search window (a private
-    // constant, 256, in `integrate_plan_commits`) with filler commits on the run branch - so
-    // THIS test genuinely isolates the log-record mechanism: a patch-id search alone could not
-    // recover this sha any more, only the durable `plan-landed` record can. Without this, the
-    // scenario below would ALSO resolve correctly via patch-id search alone (gap 9's mechanism),
-    // which would prove nothing distinct about the NEW fold arm this test exists to close.
-    for i in 0..260 {
-        git_ok(
-            &repo_path,
-            &[
-                "commit",
-                "-q",
-                "--allow-empty",
-                "-m",
-                &format!("filler {i}"),
-            ],
-        );
-    }
-
     let head_after_prior_landing = git_out(&repo_path, &["rev-parse", "HEAD"]);
 
     // The CRASHED PRIOR ATTEMPT'S OWN CONFIRMATION WRITE: the EXACT `DecisionMade` shape
@@ -1900,7 +1881,18 @@ fn plan_stage_resumed_with_a_pre_existing_plan_landed_record_recovers_without_an
     // read it back correctly in-process (already proven by the implementer's own conductor.rs
     // unit tests).
     let store = Store::open(":memory:").unwrap();
-    rigger::run_store::ensure_started(&store, &[]).unwrap();
+    // The run's recorded base is the run branch after the prior landing, so the patch-id
+    // search since it is empty.
+    rigger::run_store::ensure_started_pinned(
+        &store,
+        &[],
+        "",
+        false,
+        "",
+        &head_after_prior_landing,
+        "",
+    )
+    .unwrap();
     store
         .append(
             STREAM,
