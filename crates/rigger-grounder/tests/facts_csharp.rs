@@ -87,7 +87,7 @@ fn csharp_stages_its_row() {
     let field = |name: &str, leaf: &str| in_def(1, name, leaf, Some(REF_KIND_FIELD), 3);
     // A call in `K.M` on line 3, written `name` of `leaf`.
     let call = |name: &str, leaf: &str| in_def(1, name, leaf, None, 3);
-    let cases: [Case; 289] = [
+    let cases: [Case; 292] = [
         (
             "a base list, a parameter's types, a member constant, an assigned member and a doc block",
             "/// <summary>A square.</summary>\n/// <remarks>Its <c>Side</c> is fixed.</remarks>\nclass Square : IShape {\n    const int SIDES = 4;\n    int Side;\n    void Draw(List<IShape> s) { var n = Square.SIDES; s.Side = 2; }\n}\n",
@@ -1806,6 +1806,24 @@ fn csharp_stages_its_row() {
             "a `<` comparison in a switch arm, none",
             in_m!("var y = b switch { Xc < 5 => 1, _ => 0 };"),
             vec![],
+            k_m(),
+        ),
+        (
+            "a `<` comparison of two identifiers in a case label, none",
+            in_m!("switch (b) { case Xd < Yd: break; }"),
+            vec![],
+            k_m(),
+        ),
+        (
+            "a `<` comparison of two identifiers in a switch arm, none",
+            in_m!("var y = b switch { Xd < Yd => 1, _ => 0 };"),
+            vec![],
+            k_m(),
+        ),
+        (
+            "an identifier compared by `<` after `is` in an argument, then an argument comparing by `==`, its left operand none",
+            in_m!("F(p is Kg < ok, s == null);"),
+            vec![ty("Kg"), ty("ok")],
             k_m(),
         ),
         (
