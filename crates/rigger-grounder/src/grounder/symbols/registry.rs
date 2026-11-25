@@ -1481,6 +1481,7 @@ mod tests {
 }
 impl Kestrel { fn molt(&self) -> u32 { Self::grow(self) + self.grow() } }
 fn pile() -> Vec<u32> { vec![helper(QUOTA_CAP)] }
+use crate::store::Ledger as Book; fn drain() { Book::open(); String::new(); }
 ",
         ),
         ("rs", "fn whole() { helper(); }\nfn broken( {\n"),
@@ -1746,7 +1747,7 @@ def raw():
         // languages' rows merge clean.
         const PINNED: [(&str, &str, &str); 7] = [
             // Rust
-            ("rs", "rust-tags-v4", "3671ba1249789e5c"),
+            ("rs", "rust-tags-v5", "f2a9e894cb91eb6e"),
             // C#
             ("cs", "csharp-tags-v4", "e396669571843f87"),
             // TypeScript

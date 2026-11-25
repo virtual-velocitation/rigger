@@ -670,7 +670,8 @@ impl CompiledTags {
 /// staying a call ([`Capture::Class`]), named by the bare leaf its name splits to and carrying
 /// the qualifier it is written with ([`CompiledTags::split_leaf`]). A Rust tag's name is that leaf
 /// already, so a Rust reference carries the qualifier the Rust rule reads off the tree around its
-/// name ([`rust_qualifier`], spec 117, RUST REFERENCES) instead.
+/// name ([`rust_qualifier`], spec 117, RUST REFERENCES) instead, and one whose path's qualifier
+/// names the standard library or a primitive type stages nothing ([`excluded_qualifier`]).
 ///
 /// Rust's const reads, type references and the leaves a `use` imports are read off the tree too
 /// ([`rust_references`], spec 117): each is a reference tagged with its `ref_kind`, pushed after
@@ -711,6 +712,7 @@ pub fn extract(source: &str, lang: Lang, tags: &CompiledTags) -> Result<FileSymb
     let structure = StructuralNodes::of(root, lang, whole);
     let file_scope = Scope {
         std_imports: std_imports(&structure.uses, bytes),
+        aliases: use_aliases(&structure.uses, bytes),
         ..Scope::default()
     };
     // Spec 117 (MACRO TOKEN TREES): every macro invocation's token tree, re-parsed, of a Rust
@@ -797,12 +799,19 @@ pub fn extract(source: &str, lang: Lang, tags: &CompiledTags) -> Result<FileSymb
                 }
                 TagRole::Reference(ref_kind) => {
                     // A Rust reference is qualified by the Rust rule, off its name node: the Rust
-                    // query's names are leaves, so its tags carry no qualifier.
+                    // query's names are leaves, so its tags carry no qualifier. One whose path's
+                    // qualifier names the standard library or a primitive type stages nothing.
                     let qualifier = match lang {
-                        Lang::Rust => read
-                            .root
-                            .descendant_for_byte_range(tag.leaf.start, tag.leaf.end)
-                            .and_then(|leaf| rust_qualifier(leaf, bytes, read.scope)),
+                        Lang::Rust => {
+                            let leaf = read
+                                .root
+                                .descendant_for_byte_range(tag.leaf.start, tag.leaf.end);
+                            if leaf.is_some_and(|leaf| excluded_qualifier(leaf, bytes, read.scope))
+                            {
+                                continue;
+                            }
+                            leaf.and_then(|leaf| rust_qualifier(leaf, bytes, read.scope))
+                        }
                         _ => tag.qualifier,
                     };
                     ref_positions.push(tag.range.start);
@@ -1278,14 +1287,16 @@ impl<'t> StructuralNodes<'t> {
 }
 
 /// The context one read tree's references stage with ([`rust_references`], [`rust_qualifier`]):
-/// the names the FILE imports from the standard library ([`std_imports`]) and, for a token tree's
-/// re-parse (spec 117, MACRO TOKEN TREES), its invocation's: the names of the generic parameters
-/// enclosing it ([`enclosing_generics`]), the type or trait `Self` and `self` name there
-/// ([`self_qualifier`]) and the inline modules holding it, outermost first ([`inline_modules`]).
-/// The file's own read has the first alone.
+/// the names the FILE imports from the standard library ([`std_imports`]) and the aliases its
+/// `use` declarations bind ([`use_aliases`]) and, for a token tree's re-parse (spec 117, MACRO
+/// TOKEN TREES), its invocation's: the names of the generic parameters enclosing it
+/// ([`enclosing_generics`]), the type or trait `Self` and `self` name there ([`self_qualifier`])
+/// and the inline modules holding it, outermost first ([`inline_modules`]). The file's own read
+/// has the first two alone.
 #[derive(Clone, Default)]
 struct Scope {
     std_imports: Vec<String>,
+    aliases: Vec<(String, String)>,
     generics: Vec<String>,
     owner: Option<String>,
     modules: Vec<String>,
@@ -1293,12 +1304,13 @@ struct Scope {
 
 impl Scope {
     /// The scope the token tree of `invocation`, a macro invocation in a tree read with this
-    /// scope, is re-parsed with: the file's standard-library imports, the generic parameters
-    /// enclosing `invocation` and then this scope's, the owner `Self` names at `invocation`, and
-    /// this scope's inline modules followed by those holding `invocation`.
+    /// scope, is re-parsed with: the file's standard-library imports and aliases, the generic
+    /// parameters enclosing `invocation` and then this scope's, the owner `Self` names at
+    /// `invocation`, and this scope's inline modules followed by those holding `invocation`.
     fn at(&self, invocation: tree_sitter::Node, source: &[u8]) -> Scope {
         Scope {
             std_imports: self.std_imports.clone(),
+            aliases: self.aliases.clone(),
             generics: enclosing_generics(invocation, source)
                 .map(str::to_string)
                 .chain(self.generics.iter().cloned())
@@ -1532,6 +1544,19 @@ fn std_imports(uses: &[tree_sitter::Node], source: &[u8]) -> Vec<String> {
         .collect()
 }
 
+/// The aliases the `use` declarations `uses` bind, each with the name it imports (`use a::B as
+/// C` gives `(C, B)`): a file's [`Scope::aliases`], which [`rust_qualifier`] writes an alias
+/// qualifier by.
+fn use_aliases(uses: &[tree_sitter::Node], source: &[u8]) -> Vec<(String, String)> {
+    uses.iter()
+        .flat_map(|&decl| use_leaves(decl, source))
+        .filter_map(|leaf| {
+            let imported = leaf.node.utf8_text(source).ok()?;
+            (leaf.bound != imported).then(|| (leaf.bound, imported.to_string()))
+        })
+        .collect()
+}
+
 /// THE RUST PRELUDE (spec 117): the names a Rust file reaches with no `use` that no tagged
 /// reference stages - the 2021 prelude's types, traits and variants at toolchain 1.95.0
 /// (`library/std/src/prelude/v1.rs`, `library/core/src/prelude/v1.rs`, plus 2021's `TryFrom`,
@@ -1587,16 +1612,23 @@ pub const RUST_PRELUDE: [&str; 43] = [
 const STD_ROOTS: [&str; 3] = ["std", "core", "alloc"];
 
 /// Whether the root segment `segment` names the standard library ([`STD_ROOTS`]): the one test
-/// both a `use` leaf ([`UseLeaf::roots_at_std`]) and a path's leaf ([`excluded`]) read.
+/// both a `use` leaf ([`UseLeaf::roots_at_std`]) and a path ([`std_named`]) read.
 fn is_std_root(segment: &str) -> bool {
     STD_ROOTS.contains(&segment)
 }
 
-/// Rust's primitive types: a const qualified by one (`u32::MAX`) stages nothing.
+/// Rust's primitive types: a const or a call on a path rooted at one (`u32::MAX`, `u32::from`)
+/// stages nothing.
 const PRIMITIVE_TYPES: [&str; 17] = [
     "u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16", "i32", "i64", "i128", "isize", "f32",
     "f64", "bool", "char", "str",
 ];
+
+/// Whether the root segment `segment` is a primitive type ([`PRIMITIVE_TYPES`]): the one test
+/// both a const read ([`rust_references`]) and a call's path ([`excluded_qualifier`]) read.
+fn is_primitive(segment: &str) -> bool {
+    PRIMITIVE_TYPES.contains(&segment)
+}
 
 /// The grammar node kinds whose subtree the reference walk never enters (spec 117): a macro's
 /// token tree, read by re-parse instead ([`reparse_invocations`]), a `macro_rules!` body, never
@@ -1748,9 +1780,7 @@ fn rust_references(structure: &StructuralNodes, source: &[u8], scope: &Scope) ->
                         stage(last, REF_KIND_TYPE, root_seg.as_deref(), None);
                     }
                 }
-                let primitive = root_seg
-                    .as_deref()
-                    .is_some_and(|r| PRIMITIVE_TYPES.contains(&r));
+                let primitive = root_seg.as_deref().is_some_and(is_primitive);
                 if let Some(name) = node.child_by_field_name("name") {
                     if !primitive && is_read(node) && is_const_spelled(name, source) {
                         stage(name, REF_KIND_CONST, root_seg.as_deref(), None);
@@ -1787,10 +1817,8 @@ fn rust_references(structure: &StructuralNodes, source: &[u8], scope: &Scope) ->
 }
 
 /// Whether the leaf `name`, read at `node` under a path whose root segment is `root_seg`, stages
-/// no tagged reference (spec 117): `Self`, a [`RUST_PRELUDE`] name, a leaf the file imports from
-/// the standard library ([`Scope::std_imports`], an alias by its alias name), a path rooted at the
-/// standard library ([`is_std_root`]) or at such an imported leaf, and a generic or const generic
-/// parameter of an item enclosing `node` ([`names_enclosing_generic`]).
+/// no tagged reference (spec 117): `Self`, a name of the standard library ([`std_named`]), and a
+/// generic or const generic parameter of an item enclosing `node` ([`names_enclosing_generic`]).
 fn excluded(
     name: &str,
     root_seg: Option<&str>,
@@ -1798,12 +1826,21 @@ fn excluded(
     source: &[u8],
     scope: &Scope,
 ) -> bool {
-    let imported = |leaf: &str| scope.std_imports.iter().any(|bound| bound == leaf);
     name == "Self"
-        || RUST_PRELUDE.contains(&name)
+        || std_named(name, root_seg, scope)
+        || names_enclosing_generic(name, node, source, scope)
+}
+
+/// Whether `name`, under a path whose root segment is `root_seg`, names the standard library
+/// (spec 117): a [`RUST_PRELUDE`] name, a leaf the file imports from the standard library
+/// ([`Scope::std_imports`], an alias by its alias name), or a path rooted at the standard library
+/// ([`is_std_root`]) or at such an imported leaf; the one test both [`excluded`] and
+/// [`excluded_qualifier`] read.
+fn std_named(name: &str, root_seg: Option<&str>, scope: &Scope) -> bool {
+    let imported = |leaf: &str| scope.std_imports.iter().any(|bound| bound == leaf);
+    RUST_PRELUDE.contains(&name)
         || imported(name)
         || root_seg.is_some_and(|r| is_std_root(r) || imported(r))
-        || names_enclosing_generic(name, node, source, scope)
 }
 
 /// Whether `name` is a generic or const generic parameter of an item enclosing `node`: one of
@@ -1842,10 +1879,13 @@ fn enclosing_generics<'a>(
 /// with, read off the parent of `leaf`, its name node. A scoped path's name is qualified, as a
 /// path, by the segment before it ([`path_qualifier`]); a member's name whose receiver node is
 /// exactly `self` is qualified, as a member access, by the type or trait `self` names there
-/// ([`self_qualifier`]). A qualifier naming a generic parameter of an item enclosing `leaf` is
-/// none, and every other name is unqualified: a lowercase segment, a `crate`, `self` or `super`
-/// path, and any other receiver (`self.inner.open()`). A re-parsed `leaf` reads `Self`, `self`
-/// and the enclosing generics through its invocation's `scope` too.
+/// ([`self_qualifier`]). A qualifier [`excluded`] holds - a generic parameter of an item
+/// enclosing `leaf`, or a `Self` or `self` whose self type names the standard library - is none,
+/// an alias the file's `use` binds is written as the name it imports ([`Scope::aliases`]), and
+/// every other name is unqualified: a lowercase segment, a `crate`, `self` or `super` path, and
+/// any other receiver (`self.inner.open()`). A re-parsed `leaf` reads `Self`, `self`, the
+/// enclosing generics and the aliases through its invocation's `scope` too. A path whose
+/// qualifier names the standard library never reaches here ([`excluded_qualifier`]).
 fn rust_qualifier(leaf: tree_sitter::Node, source: &[u8], scope: &Scope) -> Option<Qualifier> {
     let parent = leaf.parent()?;
     let (name, path) = match parent.kind() {
@@ -1862,28 +1902,65 @@ fn rust_qualifier(leaf: tree_sitter::Node, source: &[u8], scope: &Scope) -> Opti
         }
         _ => return None,
     };
-    (!names_enclosing_generic(&name, leaf, source, scope)).then_some(Qualifier { name, path })
+    if excluded(&name, None, leaf, source, scope) {
+        return None;
+    }
+    let name = scope
+        .aliases
+        .iter()
+        .find(|(alias, _)| *alias == name)
+        .map_or(name, |(_, imported)| imported.clone());
+    Some(Qualifier { name, path })
+}
+
+/// AN EXCLUDED QUALIFIER (spec 117, RUST REFERENCES): whether `leaf`, a reference's name node,
+/// is the name of a scoped path that stages no mention - one whose qualifier as written
+/// ([`qualifier_segment`], before any alias is read) names the standard library ([`std_named`])
+/// or whose root segment ([`root_segment`]) does or is a primitive type ([`is_primitive`]),
+/// whatever the case of its other segments (`Vec::new`, `std::fs::read`, `u32::from`). A `Self`
+/// and an enclosing generic parameter are no such qualifier: their call stages, unqualified by
+/// [`rust_qualifier`].
+fn excluded_qualifier(leaf: tree_sitter::Node, source: &[u8], scope: &Scope) -> bool {
+    let Some(path) = leaf
+        .parent()
+        .filter(|parent| parent.kind() == "scoped_identifier")
+        .and_then(|parent| parent.child_by_field_name("path"))
+    else {
+        return false;
+    };
+    let root = root_segment(path, source);
+    let root = root.as_deref();
+    root.is_some_and(is_primitive)
+        || qualifier_segment(path)
+            .and_then(|segment| segment.utf8_text(source).ok())
+            .is_some_and(|written| std_named(written, root, scope))
 }
 
 /// The qualifier the `path` of a scoped path writes before its name ([`rust_qualifier`]): its
-/// final segment ([`final_identifier`]) when that begins uppercase, a turbofish's generic type
-/// by its type's final segment, a scoped path's name ([`final_identifier`]) or a bare type name
-/// ([`base_type_identifier`]) (`Memo::<K>::new` and `a::Memo::<K>::new` give `Memo`,
-/// `Memo::<K>::Inner::<J>::new` gives `Inner`), a qualified-self path by its trait
-/// (`<T as Tr>::f` gives `Tr`), and `Self` by the type or trait it names there
-/// ([`self_qualifier`]); `None` for a lowercase segment, a `crate`, `self` or `super` path and a
-/// bracketed type naming no trait (`<T>::f`).
+/// segment ([`qualifier_segment`]) when that begins uppercase (`Memo::<K>::new` and
+/// `a::Memo::<K>::new` give `Memo`, `Memo::<K>::Inner::<J>::new` gives `Inner`, `<T as Tr>::f`
+/// gives `Tr`), and `Self` by the type or trait it names there ([`self_qualifier`]); `None` for a
+/// lowercase segment, a `crate`, `self` or `super` path and a bracketed type naming no trait
+/// (`<T>::f`).
 fn path_qualifier(path: tree_sitter::Node, source: &[u8], scope: &Scope) -> Option<String> {
-    let segment = match path.kind() {
-        "generic_type" => final_identifier(path).or_else(|| base_type_identifier(path))?,
-        "bracketed_type" => {
-            base_type_identifier(path.named_child(0)?.child_by_field_name("alias")?)?
-        }
-        _ => final_identifier(path)?,
-    };
+    let segment = qualifier_segment(path)?;
     match segment.utf8_text(source).ok()? {
         "Self" => self_qualifier(path, source, scope),
         text => begins_upper(segment, source).then(|| text.to_string()),
+    }
+}
+
+/// The segment the `path` of a scoped path writes last before its name: its final segment
+/// ([`final_identifier`]), a turbofish's generic type by its type's final segment or a bare type
+/// name ([`base_type_identifier`]), and a qualified-self path's trait; `None` for a `crate`,
+/// `self` or `super` path and a bracketed type naming no trait.
+fn qualifier_segment(path: tree_sitter::Node) -> Option<tree_sitter::Node> {
+    match path.kind() {
+        "generic_type" => final_identifier(path).or_else(|| base_type_identifier(path)),
+        "bracketed_type" => {
+            base_type_identifier(path.named_child(0)?.child_by_field_name("alias")?)
+        }
+        _ => final_identifier(path),
     }
 }
 
@@ -4734,6 +4811,221 @@ fn product() {}
         }
     }
 
+    /// AN EXCLUDED QUALIFIER STAGES NOTHING (spec 117, RUST REFERENCES): a call whose path's
+    /// written qualifier is a prelude name, a standard-library import or alias, or whose path is
+    /// rooted at the standard library, at such an import or at a primitive type, stages no
+    /// mention, a macro's token tree and a qualified-self path's trait alike, while the macro's
+    /// own call stages. An alias qualifier is written as the name it imports, exclusion read on
+    /// the alias as written first; a `Self` or `self` whose self type is excluded and an enclosing
+    /// generic parameter stage the call unqualified; a qualifier no exclusion holds (a
+    /// qualified-self path's trait over a primitive or standard-library self type among them), an
+    /// unaliased import, a module's `self` import, a path with no written segment and a call with
+    /// no path stage as before.
+    #[test]
+    fn an_excluded_qualifier_stages_nothing() {
+        let cases = [
+            (
+                "a standard-library import's qualifier stages no call",
+                "use std::io::Cursor;\nfn a(x: u8) {\n    Cursor::new(x);\n}\n",
+                "2 def Function a to 4",
+            ),
+            (
+                "a standard-library import's qualifier in a token tree stages no call, the macro's \
+                 call stages",
+                "\
+use std::io::Cursor;
+fn b(c: Cursor<Vec<u8>>, v: Vec<u8>) {
+    assert_eq!(c, Cursor::new(v));
+}
+",
+                "\
+2 def Function b to 4
+3 ref call assert_eq b",
+            ),
+            (
+                "an alias qualifier is written as the name it imports",
+                "use a::B as C;\nfn g() {\n    C::f();\n}\n",
+                "\
+1 ref use B -
+2 def Function g to 4
+3 ref call f g q B::
+3 ref type C g",
+            ),
+            (
+                "an alias qualifier in a token tree is written as the name it imports",
+                "use a::B as C;\nfn g() {\n    vec![C::f()];\n}\n",
+                "\
+1 ref use B -
+2 def Function g to 4
+3 ref call f g q B::
+3 ref call vec g
+3 ref type C g",
+            ),
+            (
+                "an alias's Self and self are written as the name it imports",
+                "\
+use a::B as C;
+impl C {
+    fn g(&self) {
+        Self::f();
+        self.h();
+    }
+}
+",
+                "\
+1 ref use B -
+2 def Impl impl C to 7
+2 ref call C impl C
+3 def Method C::g to 6 in impl C
+4 ref call f C::g q B::
+5 ref call h C::g q B.",
+            ),
+            (
+                "a prelude qualifier stages no call, a turbofish's alike",
+                "\
+fn h() {
+    Vec::new();
+    String::from(\"x\");
+    Vec::<u8>::with_capacity(1);
+}
+",
+                "1 def Function h to 5",
+            ),
+            (
+                "a standard-library alias's qualifier stages no call: exclusion reads the alias \
+                 as written",
+                "use std::io::Cursor as Cur;\nfn a(x: u8) {\n    Cur::new(x);\n}\n",
+                "2 def Function a to 4",
+            ),
+            (
+                "an alias of a prelude name is written as the name it imports: exclusion reads \
+                 the alias as written",
+                "use a::Vec as V;\nfn v() {\n    V::new();\n}\n",
+                "\
+2 def Function v to 4
+3 ref call new v q Vec::
+3 ref type V v",
+            ),
+            (
+                "a standard-library-rooted path stages no call, whatever the case of its segments",
+                "\
+fn r(p: &str) {
+    std::fs::read(p);
+    ::core::mem::drop(p);
+    std::io::Cursor::new(p);
+}
+",
+                "1 def Function r to 5",
+            ),
+            (
+                "a path rooted at a standard-library import stages no call",
+                "use std::io;\nfn o() {\n    io::stdout();\n    io::Cursor::new(1);\n}\n",
+                "2 def Function o to 5",
+            ),
+            (
+                "a path rooted at a primitive type stages no call",
+                "fn p(x: u8) {\n    u32::from(x);\n    char::from(x);\n}\n",
+                "1 def Function p to 4",
+            ),
+            (
+                "a qualified-self path is qualified by its trait, a primitive or standard-library \
+                 self type excluding nothing",
+                "\
+use std::io::Cursor;
+fn t(x: u8) {
+    <u32 as Local>::f(x);
+    <Cursor as Local>::f(x);
+}
+",
+                "\
+2 def Function t to 5
+3 ref call f t q Local::
+3 ref type Local t
+4 ref call f t q Local::
+4 ref type Local t",
+            ),
+            (
+                "a qualified-self path whose trait is excluded stages no call",
+                "fn d<T: Default>() {\n    <T as Default>::default();\n}\n",
+                "1 def Function d to 3",
+            ),
+            (
+                "a module's self import is written as the module, renamed or not",
+                "\
+use a::B::{self};
+use c::D::{self as M};
+fn g() {
+    B::f();
+    M::f();
+}
+",
+                "\
+1 ref use B -
+2 ref use D -
+3 def Function g to 6
+4 ref call f g q B::
+4 ref type B g
+5 ref call f g q D::
+5 ref type M g",
+            ),
+            (
+                "a Self and a self whose self type is excluded stage the call unqualified",
+                "\
+impl Local for Vec<u8> {
+    fn f(&self) {
+        Self::new();
+        self.len();
+    }
+}
+",
+                "\
+1 def Impl impl Local for Vec<u8> to 6
+1 ref call Local impl Local for Vec<u8>
+1 ref call Vec impl Local for Vec<u8>
+1 ref type Local impl Local for Vec<u8>
+2 def Method <Vec<u8> as Local>::f to 5 in impl Local for Vec<u8>
+3 ref call new <Vec<u8> as Local>::f
+4 ref call len <Vec<u8> as Local>::f",
+            ),
+            (
+                "an enclosing generic parameter stages the call unqualified",
+                "fn d<T: Default>() {\n    T::default();\n}\n",
+                "\
+1 def Function d to 3
+2 ref call default d",
+            ),
+            (
+                "a qualifier no exclusion holds stages as before beside a standard-library import",
+                "use std::io::Cursor;\nfn s() {\n    Store::open();\n}\n",
+                "\
+2 def Function s to 4
+3 ref call open s q Store::
+3 ref type Store s",
+            ),
+            (
+                "an unaliased import's qualifier is written as itself",
+                "use a::B;\nfn g() {\n    B::f();\n}\n",
+                "\
+1 ref use B -
+2 def Function g to 4
+3 ref call f g q B::
+3 ref type B g",
+            ),
+            (
+                "a path with no written segment and a call with no path stage unqualified",
+                "fn q() {\n    ::f();\n    crate::g();\n    h();\n}\n",
+                "\
+1 def Function q to 5
+2 ref call f q
+3 ref call g q
+4 ref call h q",
+            ),
+        ];
+        for (why, src, expected) in cases {
+            assert_eq!(read_lines(src), expected, "{why}");
+        }
+    }
+
     #[test]
     fn malformed_tags_query_surfaces_as_err_not_panic() {
         let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
@@ -5571,9 +5863,7 @@ static PLAIN: RefCell<u32> = RefCell::new(0);
                 "\
 2 ref call thread_local -
 4 def Static SLOT to 4 doc 3-3
-4 ref call new SLOT q RefCell::
-7 def Static PLAIN to 7 doc 6-6
-7 ref call new PLAIN q RefCell::",
+7 def Static PLAIN to 7 doc 6-6",
             ),
             (
                 "a static inside thread_local!(..) is a definition at its line, as its plain twin \
@@ -5595,10 +5885,8 @@ static PLAIN: Cell<u32> = const { Cell::new(1) };
 4 ref call thread_local f
 5 def Static f::Y to 5 in f
 7 def Static FOO to 7
-7 ref call new FOO q Cell::
 7 ref call thread_local -
-8 def Static PLAIN to 8
-8 ref call new PLAIN q Cell::",
+8 def Static PLAIN to 8",
             ),
             (
                 "a last static thread_local! holds without its `;` is a definition at its line, as \
