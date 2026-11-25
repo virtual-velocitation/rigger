@@ -12,7 +12,8 @@
 //! The fixture's processes block reading the release FIFO (`exec 8<"$RIGGER_TEST_RELEASE"`), whose
 //! only write end the test holds, so none exits on its own while the test reads the witness.
 //! Dropping that end, at [`Witness::release`] or at drop, gives each of them end-of-file, and they
-//! exit. The two FIFOs live in a temporary directory removed when the witness drops.
+//! exit; a reader a BSD FIFO's one-shot end-of-file missed is given it again until it has. The two
+//! FIFOs live in a temporary directory removed when the witness drops.
 //!
 //! A fixture opens both FIFOs by sourcing `tests/fixtures/witness.sh`, which also gives it `up`,
 //! `held` and `holder`; [`Witness::script`] writes a shell fixture that starts that way.
@@ -141,6 +142,14 @@ impl Witness {
             if reading == Reading::Ended || Instant::now() >= deadline {
                 return reading;
             }
+            // A BSD FIFO (macOS's) clears its end-of-file once one reader has read it, so a reader
+            // still blocked in its read waits on; a write end opened and dropped raises it again.
+            drop(
+                OpenOptions::new()
+                    .write(true)
+                    .custom_flags(libc::O_NONBLOCK)
+                    .open(&self.release_path),
+            );
             std::thread::sleep(Duration::from_millis(20));
         }
     }
