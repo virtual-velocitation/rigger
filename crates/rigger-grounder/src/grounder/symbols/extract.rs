@@ -2241,8 +2241,8 @@ fn is_const_spelled(node: tree_sitter::Node, source: &[u8]) -> bool {
 }
 
 /// Whether `node`'s text is spelled as a Rust enum variant: it begins uppercase ([`begins`]) and
-/// holds an ASCII lowercase letter, the `non_camel_case_types` naming a variant carries and a
-/// const ([`is_const_spelled`]) never does.
+/// holds an ASCII lowercase letter, as a variant's CamelCase name does and a const's
+/// SCREAMING_CASE name ([`is_const_spelled`]) never does.
 fn is_variant_spelled(node: tree_sitter::Node, source: &[u8]) -> bool {
     begins(node, source, char::is_ascii_uppercase)
         && node
