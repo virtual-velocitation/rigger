@@ -2035,15 +2035,11 @@ const SCAFFOLD_WORKFLOW: &str =
 defaults:\n  \
 autonomy: auto_notify   # manual | auto_notify | silent\n  \
 grounder: symbols       # symbols (default; the structural symbol index) | grep | nop\n  \
-# The spawn-budget circuit-breaker: the hard cap on agent spawns one unattended\n  \
-# run may make. At the cap the breaker emits BudgetExhausted and aborts the run,\n  \
-# so a runaway can never spawn unboundedly. NON-ZERO on purpose - 0 = unlimited.\n  \
-budget: 60\n  \
 # The remediation depth: how many attempts a failed unit gets before it escalates\n  \
 # to a human. This is the REFINEMENT-depth knob, not a review-rigor one - raise it\n  \
 # to give a subtle unit room to CONVERGE under the full strict review instead of\n  \
 # escalating prematurely. It loosens the depth limit, never the review bar. Absent\n  \
-# falls back to 3 (the historical default); bounded by `budget` above.\n  \
+# falls back to 3 (the historical default).\n  \
 max_retries: 3\n  \
 # The per-spawn wall-clock bound in seconds: a spawn silent past it with no result is stopped and\n  \
 # recorded as an infrastructure fault, charging no attempt. 0 = unbounded.\n  \
@@ -3229,11 +3225,6 @@ mod tests {
             );
             // The default grounder, set explicitly.
             assert_eq!(cfg.workflow.defaults.grounder, "symbols", "{label}");
-            // A NON-ZERO spawn budget so an unattended `rigger run` cannot spawn unboundedly.
-            assert_eq!(
-                cfg.workflow.defaults.budget, 60,
-                "{label}: scaffold default budget"
-            );
         }
         let sets = repo_sets();
         for set in &sets {

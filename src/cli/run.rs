@@ -2179,11 +2179,10 @@ fn print_run_state(rs: &RunState, base: &str) {
 }
 
 /// The halt line a run entry prints after its run state (spec 115): `halted: <reason>` when the
-/// conductor returned a halt reason (the budget breaker's, else a plan-critique spec-defect
-/// stop's), `None` on any other stop.
+/// run stopped on a plan-critique spec defect ([`RunState::spec_defect_reason`]), `None` on any
+/// other stop.
 fn halted_line(rs: &RunState) -> Option<String> {
-    rs.budget_halt
-        .as_ref()
+    rs.spec_defect_reason()
         .map(|reason| format!("halted: {reason}"))
 }
 

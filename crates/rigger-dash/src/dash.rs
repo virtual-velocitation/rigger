@@ -941,10 +941,9 @@ pub struct StateView {
     pub position: Position,
     pub run: RunView,
     pub metrics: MetricsView,
-    /// One current-blocker line per unfinished unit, plus the run-level budget halt (spec
-    /// 19a, unit 1). Folded by the SHARED [`blocker`] classifier that `rigger status` also
-    /// renders, so the two surfaces show the SAME lines. Deterministically ordered (the
-    /// run-level budget first, then units lexically).
+    /// One current-blocker line per unfinished unit (spec 19a, unit 1). Folded by the SHARED
+    /// [`blocker`] classifier that `rigger status` also renders, so the two surfaces show the
+    /// SAME lines. Deterministically ordered (units lexically).
     pub blockers: Vec<BlockerView>,
     /// The live pending frontier + fixpoint/halt, reused verbatim from
     /// [`spawn::step_result`] (already `Serialize`).
@@ -990,9 +989,9 @@ pub struct RunView {
 /// drift; `subject` and `kind` are the same value pre-split for the page's table + styling.
 #[derive(Debug, Serialize)]
 pub struct BlockerView {
-    /// The subject: a unit id, or `run` for the run-level budget halt.
+    /// The subject: a unit id.
     pub subject: String,
-    /// A short kind tag for grouping/styling (e.g. `building`, `escalated`, `budget`).
+    /// A short kind tag for grouping/styling (e.g. `building`, `escalated`).
     pub kind: String,
     /// The kind's description, without the subject prefix.
     pub detail: String,
@@ -1389,10 +1388,10 @@ pub fn build_state(
     };
 
     // The current-blocker lines, from the SHARED classifier `rigger status` also renders
-    // (over the same projected run + the budget fold). `from_state` reuses the `run` we
+    // (over the same projected run). `from_state` reuses the `run` we
     // already projected above rather than re-projecting. The raw blockers are also the run
     // tree's live-status source, so we classify ONCE and reuse (no second derivation).
-    let raw_blockers = blocker::from_state(&run, events, configured_max_retries);
+    let raw_blockers = blocker::from_state(&run, configured_max_retries);
     let blockers = raw_blockers
         .iter()
         .map(|b| BlockerView {
@@ -2747,7 +2746,6 @@ const CONSOLE_EVENT_TYPES: &[&str] = &[
     metrics::TYPE_BLAST_RADIUS_COMPUTED,
     crate::contextgraph::TYPE_FILE_TOUCHED,
     "DefinitionSuperseded",
-    blocker::TYPE_BUDGET_EXHAUSTED,
     run::TYPE_RUN_HELD,
     run::TYPE_RUN_RELEASED,
     ledger::TYPE_DAG_RECORDED,
@@ -7204,7 +7202,6 @@ mod tests {
             "BlastRadiusComputed",
             "FileTouched",
             "DefinitionSuperseded",
-            "BudgetExhausted",
             "RunHeld",
             "RunReleased",
             "DagRecorded",

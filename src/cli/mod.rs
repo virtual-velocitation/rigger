@@ -7281,7 +7281,7 @@ mod tests {
     /// Spec 19a, unit 1 (the shared current-blocker classifier): `rigger status` and the
     /// dashboard render the SAME one-line current-blocker per unfinished unit, from ONE
     /// classifier - covering building, reject-recurrence (#n/max), approved-not-integrated,
-    /// escalated, and the run-level budget halt. Proven over the PRODUCTION render of each
+    /// and escalated. Proven over the PRODUCTION render of each
     /// surface: the exact `Vec<String>` `cmd_status` prints (via `console::fold`, spec 93
     /// criterion 4) versus the `line` field the dashboard serializes into its `/api/state`
     /// snapshot (via `dash::build_state`). Byte-identical lines are the structural proof
@@ -7291,9 +7291,7 @@ mod tests {
         use rigger::contextgraph::Graph;
         use std::collections::HashMap;
 
-        // A run holding a unit in every classifier arm, plus a live budget halt. The
-        // BudgetExhausted is LAST (highest position) so it is the current run-level blocker,
-        // not a stale one a resume progressed past.
+        // A run holding a unit in every classifier arm.
         let mut events = vec![
             Event::new(ledger::TYPE_UNIT_STARTED, br#"{"id":"u-build"}"#.to_vec()),
             Event::new(ledger::TYPE_UNIT_STARTED, br#"{"id":"u-fail"}"#.to_vec()),
@@ -7308,10 +7306,6 @@ mod tests {
             ),
             Event::new(ledger::TYPE_UNIT_STARTED, br#"{"id":"u-esc"}"#.to_vec()),
             Event::new(ledger::TYPE_UNIT_ESCALATED, br#"{"id":"u-esc"}"#.to_vec()),
-            Event::new(
-                conductor::TYPE_BUDGET_EXHAUSTED,
-                br#"{"budget":200,"spawns":200}"#.to_vec(),
-            ),
         ];
         for (i, e) in events.iter_mut().enumerate() {
             e.position = (i + 1) as u64;
@@ -7344,12 +7338,10 @@ mod tests {
             "rigger status and the dashboard must render identical current-blocker lines"
         );
 
-        // Every required kind is covered, deterministically ordered (run-level budget first,
-        // then units lexically).
+        // Every required kind is covered, deterministically ordered (units lexically).
         assert_eq!(
             status_lines,
             vec![
-                "run: budget spent 200/200 (raise defaults.budget and resume)".to_string(),
                 "u-appr: approved, not yet integrated (review passed; integration pending)"
                     .to_string(),
                 "u-build: building (attempt 1)".to_string(),
@@ -9818,9 +9810,8 @@ mod tests {
     // ---- `rigger result` refuses to replace the result of an ended spawn (gap 108) ----
 
     /// The two checked-in workflows that ship with the repo - the self-hosted
-    /// `.rigger/workflow.yml` and `examples/demo` - must each carry a NON-ZERO spawn
-    /// budget (FIX 3): a shipped, unattended config must cap its own spawns. A 0
-    /// (unlimited) budget here is what let a runaway loop churn for hours.
+    /// `.rigger/workflow.yml` and `examples/demo` - each load and validate, so neither
+    /// carries a retired key such as `defaults.budget`.
     #[test]
     // Reads relative paths (`.`, `..`) so it depends on the process CWD. Another test
     // (`cmd_stats_on_a_never_run_project...`) temporarily `set_current_dir`s to a temp
@@ -9829,7 +9820,7 @@ mod tests {
     // process-global, so a restore guard in the other test does not close the window -
     // the two must be mutually exclusive. Both share the `cwd` serial key.
     #[serial_test::serial(cwd)]
-    fn shipped_workflows_carry_a_non_zero_spawn_budget() {
+    fn shipped_workflows_load_and_validate() {
         for root in ["..", "../examples/demo", ".", "examples/demo"] {
             // The test runs from the crate root in CI and from the workspace root
             // locally; probe both layouts and skip a path that does not resolve to a
@@ -9838,13 +9829,8 @@ mod tests {
             if !path.join(RIGGER_DIR).join("workflow.yml").exists() {
                 continue;
             }
-            let cfg = config_store::load(root)
+            config_store::load(root)
                 .unwrap_or_else(|e| panic!("shipped workflow at {root:?} must load: {e}"));
-            assert!(
-                cfg.workflow.defaults.budget > 0,
-                "shipped workflow at {root:?} must cap spawns with a non-zero budget; was {}",
-                cfg.workflow.defaults.budget
-            );
         }
     }
 

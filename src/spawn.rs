@@ -14,9 +14,7 @@
 //! A driver that reaches an UNRECORDED spawn at the frontier PARKS the call: the
 //! request is persisted to the run's event log as a [`TYPE_SPAWN_REQUESTED`] event
 //! (this module owns that serialization). A driver answers an already-recorded spawn
-//! from the log, and the spawn-budget breaker counts those same DISTINCT requests
-//! (via [`recorded`], deduped by id - a re-parked id is never double-counted) - so both
-//! derive from the log rather than process memory, and the breaker binds across every
-//! conductor process the run spans.
+//! from the log ([`recorded`], deduped by id), so the answer derives from the log rather
+//! than process memory and holds across every conductor process the run spans.
 
 pub use rigger_domain::spawn::*;

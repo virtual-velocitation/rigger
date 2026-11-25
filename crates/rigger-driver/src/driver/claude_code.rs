@@ -1735,7 +1735,7 @@ impl AgentDriver for Driver<'_> {
     /// and no `resumed_from`, so a restarted run does not run a finished agent again. A spawn
     /// whose only result is a liveness fault, or one only a prior run ended, is launched. A
     /// spawn whose request does not stand in the run is parked first, stamped with the run and
-    /// this host's scratch root, so the budget's admission finds every spawn this host ran. The
+    /// this host's scratch root, so the log names every spawn this host ran and its scratch. The
     /// first launch resumes the session this run's latest launch of the id left `interrupted`,
     /// after a release or a restart alike, telling it which ([`Driver::first_launch`]).
     ///

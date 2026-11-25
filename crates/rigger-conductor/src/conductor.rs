@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::Mutex;
 
 use serde::Deserialize;
@@ -87,14 +87,10 @@ pub const TYPE_GATE_DEMOTED: &str = ledger::TYPE_GATE_DEMOTED;
 /// criterion, or a same-id refine whose text resolves to a criterion its unit does not serve.
 /// A re-export of `ledger::TYPE_SCOPE_CREEP`, the single source of the string.
 pub const TYPE_SCOPE_CREEP: &str = ledger::TYPE_SCOPE_CREEP;
-pub use crate::blocker::TYPE_BUDGET_EXHAUSTED;
 /// The run is halting because the plan left a spec criterion uncovered - the
 /// coverage gap is a spec defect, not something to silently deviate around (§4.4). A re-export
 /// of `ledger::TYPE_SPEC_DEFECT`, the single source of the string.
 pub const TYPE_SPEC_DEFECT: &str = ledger::TYPE_SPEC_DEFECT;
-/// The run aborted: un-integrated work is dropped, integrated work is kept (§4.4). A re-export
-/// of `ledger::TYPE_TASK_ABORTED`, the single source of the string.
-pub const TYPE_TASK_ABORTED: &str = ledger::TYPE_TASK_ABORTED;
 /// A Manual-autonomy gate pauses its unit awaiting human review (§4.3). The ledger folds
 /// it into `RunState::manual_review` (the action-needed inbox), so the string lives there
 /// as the single source and this is a re-export. Kept in sync with
@@ -130,17 +126,6 @@ const GROUNDED_SEED_K: usize = 8;
 /// ignore it (like [`contextgraph::META_ACTOR`]); only [`RunCtx::emit_keyed`] and the gate-verdict
 /// replay read it.
 pub use crate::ingest::META_REPLAY_KEY;
-
-/// The replay keys under which the spawn-budget breaker records its halt (Gap 13): a run
-/// halts on budget AT MOST ONCE, so the single `BudgetExhausted` + `TaskAborted` pair is
-/// keyed - like the green/verified/reviewed lifecycle - and lands exactly once. The
-/// cross-step spawn fold makes a resume DETERMINISTICALLY re-reach the spent budget and
-/// re-trip the breaker every step; keying dedups those re-trips (`replayed_keys` is seeded
-/// from the log at run start), so the audit trail never double-counts the one halt
-/// (finding adv-budget-exhausted-dup-across-steps). Fixed strings, not coordinate-derived:
-/// there is one breaker per run.
-const BUDGET_EXHAUSTED_KEY: &str = "budget-exhausted";
-const TASK_ABORTED_KEY: &str = "task-aborted";
 
 pub use crate::metrics::META_MODEL_ALIAS;
 
@@ -2638,7 +2623,7 @@ pub(crate) fn is_store_fault(e: &Error) -> bool {
     carries_marker(e, STORE_FAULT_MARKER)
 }
 
-/// Whether `e` carries the sentinel `marker` ([`PARKED_MARKER`], [`BUDGET_MARKER`],
+/// Whether `e` carries the sentinel `marker` ([`PARKED_MARKER`],
 /// [`DEGENERATE_MARKER`], [`MISMATCH_MARKER`], [`PLAN_LANDING_MARKER`],
 /// [`LAND_REFUSED_MARKER`], [`PROBE_FAULT_MARKER`] or [`GIT_STEP_MARKER`], each a halt's signal,
 /// [`EMIT_REFUSED_MARKER`], the emit guard's
@@ -2710,37 +2695,11 @@ fn rerun_once_on_refusal<T>(
     }
 }
 
-/// The sentinel a REVIEW-TIER spawn (lens/adversary/adjudicator) embeds in its refusal
-/// error when [`reserve_spawn`](RunCtx::reserve_spawn) denies it because the CUMULATIVE
-/// spawn budget is spent (§4.4, §8). Like [`PARKED_MARKER`] it uses control characters no
-/// real error text carries, so [`carries_marker`] (with [`BUDGET_MARKER`]) recognizes it even after the review
-/// site or the wave collapse wraps the error with stage/agent context.
-///
-/// A budget-refused review spawn is NOT a stage failure - it is symmetric with the
-/// implementer's `Ok(false)` refusal in [`run_single_stage`](RunCtx::run_single_stage).
-/// The refusal already set `budget_broke` on the [`RunCtx`], so once this sentinel unwinds
-/// the unit CLEANLY (`run_wave` treats it as not-a-failure, mirroring a park), the run
-/// loop's mid-wave `budget_broke()` check trips the ONE breaker path
-/// ([`trip_budget_breaker`](RunCtx::trip_budget_breaker)): the run halts with a
-/// `BudgetExhausted` event, never a raw error. That is what makes a run exceeding
-/// `defaults.budget` at ANY spawn site - the implementer OR any review tier - abort
-/// identically (spec 04, criterion 5; findings budget-review-tier-no-exhausted,
-/// adv-confirm-review-tier-no-budgetexhausted, adv-budget-guard-cannot-assemble-reviewed-unit).
-const BUDGET_MARKER: &str = "\u{1}rigger:spawn-budget-exhausted\u{1}";
-
 /// Which LOUD spawn-level signal [`spawn_halt`] constructs for a refused or faulted
 /// spawn of `tier` (the refused review tier, or `"planner"`/`"implementer"`) and `agent`
 /// in `stage`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SpawnHalt {
-    /// The budget-refusal signal a spawn returns when
-    /// [`reserve_spawn`](RunCtx::reserve_spawn) denies it: `tier` and `agent` name the
-    /// refused spawn (for the audit trail), and the embedded [`BUDGET_MARKER`] lets
-    /// [`carries_marker`] (with [`BUDGET_MARKER`]) recognize it through the conductor's own `format!("... {}", e.0)`
-    /// error wrapping. Only [`reserve_spawn`] returning `false` produces this - and it sets
-    /// `budget_broke` before it does - so the sentinel and the breaker flag always travel
-    /// together.
-    BudgetRefused,
     /// The LOUD-HALT error a GATING spawn returns when its result carries NO verdict line
     /// yet it emitted an approve-shaped verdict via `rigger_emit` during the spawn (spec 18,
     /// unit 3). This BACKSTOPS a persona that passed the static lint (spec 18, unit 1) but
@@ -2761,9 +2720,6 @@ enum SpawnHalt {
 /// Construct the [`SpawnHalt`] signal `kind` for `agent`'s `tier` spawn in `stage`.
 fn spawn_halt(kind: SpawnHalt, stage: &str, tier: &str, agent: &str) -> Error {
     match kind {
-        SpawnHalt::BudgetRefused => Error(format!(
-            "{BUDGET_MARKER} stage {stage:?} {tier} {agent:?}: spawn budget exhausted"
-        )),
         SpawnHalt::VerdictChannelMismatch => Error(format!(
             "{MISMATCH_MARKER}stage {stage:?} {tier} {agent:?} returned NO verdict line on its result \
              output, yet emitted an approve-shaped verdict via rigger_emit during the spawn: the gate \
@@ -2776,27 +2732,14 @@ fn spawn_halt(kind: SpawnHalt, stage: &str, tier: &str, agent: &str) -> Error {
     }
 }
 
-/// Whether `e` is a park (a driver's unrecorded frontier, [`is_parked`]) OR the refusal `refusal`
-/// marks, as opposed to any other spawn failure: with [`BUDGET_MARKER`] a NON-TERMINAL unwind
-/// (spec 64 criterion 1), with [`EMIT_REFUSED_MARKER`] an error its site hands on unchanged.
-///
-/// With [`BUDGET_MARKER`], a review-tier budget refusal, both dispositions get the SAME treatment
-/// everywhere a worktree-keep decision reads them: a park leaves the spawn to a later pass that
-/// resumes in this exact tree, and a budget refusal is symmetric with the implementer's
-/// `Ok(false)` refusal (also worktree-preserving) - neither is a crash a caller should tear a
-/// worktree down over. With [`EMIT_REFUSED_MARKER`], the emit guard's refusal of a record the
-/// spawn emitted, both are what the SDET author's spawn site surfaces and the held-run decorator
-/// hands to the conductor unchanged with no result recorded, and two of the three errors the
-/// conflict resolver propagates where any other spends its round (the third, a store fault, as a
-/// [`spawn_crash`]).
-///
-/// One predicate, so every site that answers "should this unwind KEEP the worktree" (or, negated,
-/// "is this the genuine error to prioritize over a co-chunked park/refusal") reads it from ONE
-/// place instead of hand-spelling the disjunct (or its De Morgan negation) at each call site - the
-/// exact duplication that let round 2 and round 3's masking defects hide
-/// (arch-u1c1-r3-predicate-now-also-negated).
-pub(crate) fn is_parked_or_refused(e: &Error, refusal: &str) -> bool {
-    is_parked(e) || carries_marker(e, refusal)
+/// Whether `e` is a park (a driver's unrecorded frontier, [`is_parked`]) OR the emit guard's
+/// refusal of a record the spawn emitted ([`EMIT_REFUSED_MARKER`]), as opposed to any other spawn
+/// failure: both are what the SDET author's spawn site surfaces and the held-run decorator hands
+/// to the conductor unchanged with no result recorded, and two of the three errors the conflict
+/// resolver propagates where any other spends its round (the third, a store fault, as a
+/// [`spawn_crash`]). One predicate, so every such site reads the disjunct from ONE place.
+pub(crate) fn is_parked_or_refused(e: &Error) -> bool {
+    is_parked(e) || carries_marker(e, EMIT_REFUSED_MARKER)
 }
 
 /// The number of times a reviewer whose result is DEGENERATE (empty or whitespace-only)
@@ -2908,8 +2851,8 @@ enum ReviewerOutput {
 
 /// The sentinel a degenerate-reviewer HALT (Gap 18, spec 07) embeds in its error so
 /// [`run_wave`](RunCtx::run_wave) recognizes it through its own error wrapping and routes
-/// it through its halt arm over [`HALT_MARKERS`] - like [`PARKED_MARKER`] and
-/// [`BUDGET_MARKER`] it uses control characters no real error text carries. That arm
+/// it through its halt arm over [`HALT_MARKERS`] - like [`PARKED_MARKER`] it uses control
+/// characters no real error text carries. That arm
 /// propagates the loud halt but emits NO per-unit lesson: a lesson there would misattribute
 /// the OPERATOR's broken reviewer to the unit under review (finding adv-u2gap18-halt-lesson-
 /// misattribution). The marker is STRIPPED before it surfaces ([`without_halt_markers`]), so
@@ -3259,7 +3202,7 @@ fn keyed_events_lost(lost: usize, handed: usize) -> Error {
 }
 
 /// The sentinel a sdet-author or review-tier spawn crash embeds in its error: a spawn error that
-/// is no park, no budget refusal and no refused record (and, for the sdet-author, its opts
+/// is no park and no refused record (and, for the sdet-author, its opts
 /// guard's error too), or a review round whose window ends with a recorded spawn error among its
 /// spawns ([`RunCtx::run_reviewer`]). The single lane ([`RunCtx::run_single_stage`]) reads it through
 /// [`infra_crash`] as an outage of the unit's stage and reruns the stage uncharged under the F3
@@ -3544,8 +3487,8 @@ struct UnitProposed {
 /// DERIVES from the config (unit lifecycle, review routing, escalation, decisions).
 ///
 /// Re-driving exactly these under a CANDIDATE config in an isolated namespace lets the
-/// conductor re-derive the run's SHAPE (which stages, which review tier, which budget,
-/// which gates it reaches) over the SAME agent behaviour and gate outcomes - so a config
+/// conductor re-derive the run's SHAPE (which stages, which review tier, which gates it
+/// reaches) over the SAME agent behaviour and gate outcomes - so a config
 /// edit's effect on first-pass yield / escalation / review is measurable against the
 /// recorded baseline without re-running a live campaign. A spawn the candidate config
 /// introduces that the trajectory never recorded simply parks (no answer to replay), so
@@ -3678,23 +3621,6 @@ fn drive(
     // ([`crate::ingest::entry_of_batch`]). `prior_events` is the read of the run this function
     // already took - no extra store round-trip.
     let replayed_keys = crate::replay_keys::ReplayKeys::seeded(prior_events);
-    // Cross-process spawn budget (spec 04, criterion 5 / finding adv-budget-per-step-resets):
-    // the authoritative spawn count is DERIVED from the log, not an in-memory counter that
-    // resets every conductor process. Fold the DISTINCT spawn requests already recorded (keyed
-    // by deterministic id, so a re-parked id is not double-counted) into `base_spawns` and
-    // seed the running counter with it, so the breaker sees the run's WHOLE spawn history
-    // and `defaults.budget` binds no matter how many conductor processes the run spans.
-    // Their ids seed `recorded_spawn_ids` so `reserve_spawn` can tell a REPLAY of an
-    // already-recorded spawn (admit free) from a genuinely new one, without re-reading the
-    // whole stream per spawn. The headless host parks each spawn before its first launch
-    // too, so a restarted `rigger run` folds every spawn an earlier process parked, the
-    // budget binding across `rigger run` processes, and admits each one it
-    // answers from the log free; a spawn whose result the log holds with no request is
-    // charged as new when answered. The cli driver records no spawn
-    // request, so both are empty for it and their in-process spawns are the whole count.
-    let recorded_spawns = spawn::recorded(prior_events).map_err(|e| Error(e.to_string()))?;
-    let base_spawns = recorded_spawns.len() as u32;
-    let recorded_spawn_ids: HashSet<String> = recorded_spawns.into_keys().collect();
     // Gate-verdict replay cache (finding arch-gate-verdict-redundant-scan): seed the
     // key -> (pass, evidence) map ONCE here from the same prior log, so re-reaching an
     // already-run inline/deferred gate replays its verdict via an O(1) map lookup rather
@@ -3822,13 +3748,8 @@ fn drive(
         run_id,
         gate_tracker: Mutex::new(HashMap::new()),
         integrate_mu: Mutex::new(()),
-        spawns: AtomicU32::new(base_spawns),
-        base_spawns,
-        recorded_spawn_ids,
-        budget_broke: std::sync::atomic::AtomicBool::new(false),
         parked: std::sync::atomic::AtomicBool::new(false),
         manual_review: std::sync::atomic::AtomicBool::new(false),
-        budget_halted: std::sync::atomic::AtomicBool::new(false),
         prior_status,
         prior_attempts,
         prior_resume_bound,
@@ -4022,8 +3943,8 @@ fn drive(
             // adversary + adjudicator BEFORE any implementer runs. A reject loops the planner
             // (bounded by the remediation depth); only an approve releases the fan-out. This
             // runs synchronously here - not as a main-loop stage - because its reject re-runs
-            // the PLANNER, a coupling the per-stage scheduler does not express. Park/budget/
-            // halt from its reviewer or re-plan spawns are routed exactly like a wave's.
+            // the PLANNER, a coupling the per-stage scheduler does not express. A park or a
+            // halt from its reviewer or re-plan spawns is routed exactly like a wave's.
             if let Some(gate) = gate {
                 // Resume short-circuit: a gate that already RESOLVED in a prior step must not
                 // re-run (it would re-spawn its reviewers and re-emit UnitIntegrated). An
@@ -4055,9 +3976,6 @@ fn drive(
                             ctx.parked.store(true, Ordering::SeqCst);
                             fan_out_released = false;
                         }
-                        // A budget-refused gate spawn already set `budget_broke`; hold the
-                        // fan-out and let the breaker trip below (like the wave's handling).
-                        Err(e) if carries_marker(&e, BUDGET_MARKER) => fan_out_released = false,
                         // Any other error propagates and ends the step: a halt - a degenerate
                         // gate reviewer, a verdict-less or mismatched gate adjudicator, a gate
                         // reviewer's crash ([`SPAWN_CRASH_MARKER`]), which has no infra retry
@@ -4075,13 +3993,6 @@ fn drive(
             return settle_run_state(&ctx);
         }
         ctx.check_coverage_or_flag(&stages, &deps.criteria)?;
-
-        // A held fan-out (the plan-critique gate did not release, or a gate spawn was parked/
-        // budget-refused) must still trip the breaker if a gate spawn exhausted the budget -
-        // the main wave loop below is skipped, so it cannot.
-        if !fan_out_released && ctx.budget_broke.load(Ordering::SeqCst) {
-            ctx.trip_budget_breaker()?;
-        }
 
         // The wave loop runs only once the plan-critique gate released the fan-out (or the
         // workflow wires no gate, so it stayed released). A held gate leaves the frontier
@@ -4112,13 +4023,6 @@ fn drive(
                 if ready.is_empty() {
                     break;
                 }
-                // checkBudget circuit-breaker (§4.4, §8): before each wave, if the spawn
-                // budget is spent, trip the breaker - record it, abort the task, and pause
-                // the loop. Resume replays the ledger and continues from where it stopped.
-                if ctx.budget_tripped() {
-                    ctx.trip_budget_breaker()?;
-                    break;
-                }
                 frontier.check(&stages, &ready)?;
                 // A wave that admits nothing is a fixpoint for this process: every slot is held
                 // by a unit still in flight off-process, and nothing below can free one, so the
@@ -4131,13 +4035,6 @@ fn drive(
                     &mut terminal,
                     &mut in_flight,
                 )? {
-                    break;
-                }
-                // The breaker also trips at SPAWN granularity, mid-wave (item 9): a single
-                // wide wave can exhaust the budget partway through, refusing later spawns.
-                // Record the breaker and stop here too, not only at the next wave boundary.
-                if ctx.budget_broke.load(Ordering::SeqCst) {
-                    ctx.trip_budget_breaker()?;
                     break;
                 }
                 ctx.harvest_proposed(&mut stages, &mut proposed, &mut integrated, &mut terminal)?;
@@ -4161,11 +4058,9 @@ fn drive(
         // partial one - exactly when NO unit is in a TRANSIENT pending state: none PARKED
         // (a driver's unrecorded frontier a later step drains and integrates), none
         // MANUAL-REVIEW-PAUSED (awaiting a human who will approve+integrate it on a later
-        // step), and no BUDGET HALT that left ready units unscheduled (a resume with a
-        // fresh in-process budget completes them). Recording a run-scoped deferred verdict
-        // against any of those partial trees would lock that result in forever - every
-        // later step replays it and the assembled tree is never validated (findings
-        // adv-deferred-replay-locks-partial-tree, rf-converged-ignores-budget-refusal,
+        // step). Recording a run-scoped deferred verdict against either partial tree would
+        // lock that result in forever - every later step replays it and the assembled tree is
+        // never validated (findings adv-deferred-replay-locks-partial-tree,
         // adv-confirm-converged-nonpark-partial-tree). When the tree is not yet final the
         // deferred gate is DEFERRED to the step that drains the last pending unit.
         //
@@ -4179,9 +4074,8 @@ fn drive(
         // transiently pending, every remaining unit is settled - integrated, escalated,
         // verified-but-does-not-integrate, or blocked-forever behind such a unit - so the
         // as-assembled tree IS final and the deferred gate runs against it, once.
-        let converged = !ctx.parked.load(Ordering::SeqCst)
-            && !ctx.manual_review.load(Ordering::SeqCst)
-            && !ctx.budget_halted.load(Ordering::SeqCst);
+        let converged =
+            !ctx.parked.load(Ordering::SeqCst) && !ctx.manual_review.load(Ordering::SeqCst);
         ctx.run_deferred_gates(&stages, converged)?;
 
         settle_run_state(&ctx)
@@ -4219,16 +4113,11 @@ fn serving<T>(ctx: &RunCtx, channel: Option<&dyn GateChannel>, drive: impl FnOnc
 
 /// The caller-visible [`RunState`] a `run()` call returns (its normal end, and a plan-critique
 /// gate's spec-defect stop, which returns before the coverage check - spec 112, criterion 5):
-/// this run's slice projected, stamped with the halt reason ([`RunCtx::halt_reason`] over that
-/// fold) and whether the pass parked.
+/// this run's slice projected, stamped with whether the pass parked.
 fn settle_run_state(ctx: &RunCtx) -> Result<RunState, Error> {
     let (current_events, _) = crate::run::read::read_current_run(ctx.deps.store, STREAM)?;
-    // Project the caller-visible run state from ONLY this run's slice (Gap 11, unit 1), then
-    // stamp its whole HALT reason: the budget breaker's from its IN-PROCESS state (Gap 13: a
-    // resume with a raised budget clears it), else the spec-defect stop's from this fold (spec
-    // 112, criterion 5).
+    // Project the caller-visible run state from ONLY this run's slice (Gap 11, unit 1).
     let mut rs = ledger::project(&current_events).map_err(|e| Error(e.to_string()))?;
-    rs.budget_halt = ctx.halt_reason(&rs);
     rs.parked = ctx.parked.load(Ordering::SeqCst);
     Ok(rs)
 }
@@ -4321,40 +4210,6 @@ struct RunCtx<'a> {
     run_id: String,
     gate_tracker: Mutex<HashMap<String, Gate>>,
     integrate_mu: Mutex<()>,
-    /// The CUMULATIVE spawn count for the budget circuit-breaker (§4.4, §8), across
-    /// every conductor process the run spans: `base_spawns` (the distinct spawn requests
-    /// already recorded in the log when this process started) plus the NEW spawns this
-    /// process admits. Seeded from the log rather than reset to 0 each process, so
-    /// `defaults.budget` binds across every process a resumed run spans (spec 04,
-    /// criterion 5 / finding adv-budget-per-step-resets). A replayed
-    /// spawn (an id already recorded) never increments this - its budget was spent when
-    /// it was first parked. The cli driver records no spawn request, so
-    /// `base_spawns` is 0 for it and this counts its in-process spawns; the headless host
-    /// parks each spawn before its launch, so a restarted `rigger run` starts from every spawn
-    /// its earlier processes ran.
-    spawns: AtomicU32,
-    /// The spawn count already recorded in the log when this process started - the value
-    /// `spawns` is seeded to. The pre-wave breaker only halts a process that has itself
-    /// admitted a NEW spawn beyond budget (`spawns > base_spawns`), so a resume whose
-    /// ready frontier is entirely REPLAYS of already-recorded spawns is never aborted
-    /// before it can replay and integrate that already-paid work; a genuinely new
-    /// over-budget spawn is refused mid-wave by [`reserve_spawn`](RunCtx::reserve_spawn),
-    /// which trips the breaker there instead.
-    base_spawns: u32,
-    /// The deterministic ids of the spawn requests already recorded in the log when this
-    /// process started (the keys of [`spawn::recorded`]). Seeded ONCE at run start so
-    /// [`reserve_spawn`](RunCtx::reserve_spawn) can classify a spawn as a REPLAY (id
-    /// already recorded by an earlier step - admit free, its budget was already spent) or
-    /// a genuinely NEW spawn (count it against the cumulative budget) with an O(1) lookup,
-    /// rather than re-reading and re-folding the whole stream on every spawn. A spawn this
-    /// process parks is not added here: it is reached only once per process (every spawn
-    /// site has a distinct id, and a unit the replay driver parked unwinds), so the
-    /// prior-only set is sufficient.
-    recorded_spawn_ids: HashSet<String>,
-    /// Set the moment a spawn is REFUSED because the budget is spent (item 9): the
-    /// breaker now trips at spawn granularity, mid-wave, not only at wave boundaries.
-    /// The run loop checks this after each wave to record the breaker and stop.
-    budget_broke: std::sync::atomic::AtomicBool,
     /// Set the moment any in-flight spawn PARKS (its driver hit an unrecorded frontier,
     /// [`is_parked`]). A parked wave loop empties with units still un-integrated, so the run
     /// has NOT genuinely converged: a later step over the same log will drain the park and
@@ -4373,15 +4228,6 @@ struct RunCtx<'a> {
     /// result in forever (findings rf-converged-ignores-budget-refusal /
     /// adv-confirm-converged-nonpark-partial-tree).
     manual_review: std::sync::atomic::AtomicBool,
-    /// Set the moment the spawn-budget breaker HALTS the run with ready units still
-    /// unscheduled ([`trip_budget_breaker`](RunCtx::trip_budget_breaker), the single
-    /// chokepoint for BOTH the pre-wave and mid-wave trip). A budget-halted run left
-    /// work undone that a resume (with a fresh in-process budget) picks up, so the tree
-    /// is NOT final. Like the manual-review case this is a TRANSIENT non-park pending
-    /// state that terminal-inserts a non-integrated unit without setting `parked`, so
-    /// the phase boundary holds the DEFERRED gate rather than record it against the
-    /// partial tree the halt left behind (same finding pair as `manual_review`).
-    budget_halted: std::sync::atomic::AtomicBool,
     /// Each unit's LAST recorded status from the folded prior log (resume-continuity):
     /// a non-integrated, non-terminal unit that ran in a prior window has a status
     /// here (green/verified/reviewed/...), which `run_single_stage` uses to CONTINUE
@@ -4566,17 +4412,6 @@ impl<'a> RunCtx<'a> {
     /// A bare RunCtx for unit-testing pure helpers (e.g. the cwd-isolation guard) that
     /// only read `cfg`/`deps` - no prior log, no spawns. Not for driving a run.
     fn for_test(cfg: &'a Config, deps: &'a Deps<'a>) -> Self {
-        // Mirror `run`'s log-derived seeding so budget tests can pre-park spawn requests
-        // and see the breaker fold them from the store, exactly as a resumed run
-        // would. An empty store seeds 0 - the historical value for the pure-helper tests.
-        let recorded_spawns = deps
-            .store
-            .read_stream(STREAM, 0, Direction::Forward)
-            .ok()
-            .and_then(|events| spawn::recorded(&events).ok())
-            .unwrap_or_default();
-        let base_spawns = recorded_spawns.len() as u32;
-        let recorded_spawn_ids: HashSet<String> = recorded_spawns.into_keys().collect();
         RunCtx {
             cfg,
             deps,
@@ -4585,13 +4420,8 @@ impl<'a> RunCtx<'a> {
             run_id: String::new(),
             gate_tracker: Mutex::new(HashMap::new()),
             integrate_mu: Mutex::new(()),
-            spawns: AtomicU32::new(base_spawns),
-            base_spawns,
-            recorded_spawn_ids,
-            budget_broke: std::sync::atomic::AtomicBool::new(false),
             parked: std::sync::atomic::AtomicBool::new(false),
             manual_review: std::sync::atomic::AtomicBool::new(false),
-            budget_halted: std::sync::atomic::AtomicBool::new(false),
             prior_status: HashMap::new(),
             prior_attempts: HashMap::new(),
             prior_resume_bound: HashMap::new(),
@@ -5573,149 +5403,6 @@ impl RunCtx<'_> {
             .max(plain)
     }
 
-    /// Whether the pre-wave spawn-budget breaker has tripped (§4.4, §8): a positive
-    /// `defaults.budget`, the CUMULATIVE spawn count (across steps) has reached it, AND
-    /// this process itself admitted a NEW spawn beyond `base_spawns`.
-    ///
-    /// The `spawns > base_spawns` guard is what keeps a RESUME correct: a step whose
-    /// ready frontier is entirely replays of already-recorded spawns has `spawns ==
-    /// base_spawns`, so the breaker does NOT abort the step at its very first wave, before
-    /// it has run any agent - it is free to replay that already-paid work in-process. A
-    /// genuinely new over-budget spawn is refused mid-wave by
-    /// [`reserve_spawn`](RunCtx::reserve_spawn), which trips the breaker there - so the cap
-    /// is still enforced, just at the spawn that actually exceeds it.
-    ///
-    /// This guard is NOT a completion guarantee: assembling a REVIEWED unit needs NEW
-    /// lens/adversary/adjudicator spawns whose ids are not yet recorded, so once the
-    /// implementer replays free and the unit reaches `verified`, the first review-tier
-    /// spawn is a new spawn that `reserve_spawn` refuses at a spent budget. That refusal
-    /// now unwinds cleanly and trips the breaker (a `BudgetExhausted` event via
-    /// [`SpawnHalt::BudgetRefused`]/[`carries_marker`] (with [`BUDGET_MARKER`]) + the mid-wave `budget_broke()` check),
-    /// exactly as the implementer's `Ok(false)` refusal does - so a run that exceeds
-    /// `defaults.budget` at ANY spawn site aborts with `BudgetExhausted` (criterion 5).
-    /// Completing such a unit requires the operator to raise `defaults.budget`; the count
-    /// binds across steps, so the resume then has room for the review spawns and finishes
-    /// integrating the unit (findings adv-budget-guard-cannot-assemble-reviewed-unit,
-    /// budget-review-tier-no-exhausted).
-    fn budget_tripped(&self) -> bool {
-        let budget = self.cfg.workflow.defaults.budget;
-        let spawns = self.spawns.load(Ordering::SeqCst);
-        budget > 0
-            && spawns > self.base_spawns
-            && safety::budget_exhausted(budget as i64, spawns as i64)
-    }
-
-    /// Whether `spawn_id` was already parked in the run log by an EARLIER process of the run
-    /// (a `rigger run` whose headless host parked it before its launch) - i.e. this spawn
-    /// is a REPLAY whose budget was spent when it was first parked. An O(1) lookup into
-    /// `recorded_spawn_ids`, seeded once at run start; the cli driver records no
-    /// spawn request, so this is always `false` for it and every one of its spawns counts
-    /// against the budget.
-    fn spawn_is_recorded(&self, spawn_id: &str) -> bool {
-        self.recorded_spawn_ids.contains(spawn_id)
-    }
-
-    /// Atomically reserve one spawn against the CUMULATIVE budget at SPAWN granularity
-    /// (item 9), binding across conductor processes (spec 04, criterion 5). Returns `true`
-    /// when the spawn is admitted and `false` when it is refused (the budget is spent);
-    /// on refusal it sets `budget_broke` so the run loop records the breaker and halts.
-    ///
-    /// A spawn whose `spawn_id` is ALREADY recorded is a REPLAY: its budget was spent
-    /// when it was first parked (it is already folded into `base_spawns`), so it is
-    /// admitted WITHOUT counting again and can NEVER be refused - the already-paid work
-    /// must be free to replay and integrate on a resume. A genuinely NEW spawn is
-    /// reserved with a `try_update` on `spawns` (seeded to `base_spawns`): the
-    /// check-and-increment is atomic, so concurrent lenses in one wide wave never
-    /// overshoot, and the cap counts the run's WHOLE spawn history, not just this
-    /// process's. A zero budget means unlimited - every spawn is admitted (new spawns
-    /// still counted, so `spawns` stays an accurate cumulative total for reporting).
-    fn reserve_spawn(&self, spawn_id: &str) -> bool {
-        if self.spawn_is_recorded(spawn_id) {
-            return true;
-        }
-        let budget = self.cfg.workflow.defaults.budget;
-        if budget == 0 {
-            self.spawns.fetch_add(1, Ordering::SeqCst);
-            return true;
-        }
-        let admitted = self
-            .spawns
-            .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
-                if n < budget {
-                    Some(n + 1)
-                } else {
-                    None
-                }
-            })
-            .is_ok();
-        if !admitted {
-            self.budget_broke.store(true, Ordering::SeqCst);
-        }
-        admitted
-    }
-
-    /// Trip the spawn-budget circuit-breaker (§4.4, §8): record `BudgetExhausted` with the
-    /// budget and the spawns made, then record the `TaskAborted` that halts the run (abortTask,
-    /// §4.4: integrated work is already committed and every per-stage worktree is removed as
-    /// its stage finishes, so there is no un-integrated worktree left to discard - the abort
-    /// is a durable audit record; the loop stops, a pause the resume replays past). Shared by
-    /// the pre-wave check and the mid-wave (spawn-granularity, item 9) trip so both halt the
-    /// run the same way, with one audit trail.
-    fn trip_budget_breaker(&self) -> Result<(), Error> {
-        // The breaker halts the run with ready units still unscheduled (the wave loop
-        // only reaches here while `ready_stages` is non-empty). Flag it FIRST, before the
-        // (possibly-deduped) emits below: `halt_reason` reads this in-process flag so
-        // `rigger run` SURFACES the halt on its `halted:` line on EVERY tripping pass - even a
-        // resume whose keyed `BudgetExhausted` is a replay that appends nothing. The flag
-        // also tells the phase boundary the tree is NOT final, so it DEFERS the deferred gate
-        // - a resume (once the operator raises `defaults.budget`, since the count binds
-        // across processes) schedules the remaining work, and only the pass that assembles the
-        // full tree records the whole-tree verdict.
-        self.budget_halted.store(true, Ordering::SeqCst);
-        // Record the halt IDEMPOTENTLY (finding adv-budget-exhausted-dup-across-steps). The
-        // cross-process spawn fold makes a resume deterministically re-reach the spent budget and
-        // re-trip the breaker, so a NON-keyed emit would append a duplicate BudgetExhausted +
-        // TaskAborted on each re-tripping step, double-reporting the ONE halt in the audit
-        // trail. Keying both (like green/verified/reviewed) records the halt exactly once;
-        // both route through the single `append_and_fold` authority, so nothing diverges.
-        self.emit_keyed(
-            BUDGET_EXHAUSTED_KEY,
-            TYPE_BUDGET_EXHAUSTED,
-            json!({
-                "budget": self.cfg.workflow.defaults.budget,
-                "spawns": self.spawns.load(Ordering::SeqCst),
-            }),
-        )?;
-        self.emit_keyed(
-            TASK_ABORTED_KEY,
-            TYPE_TASK_ABORTED,
-            json!({ "reason": "spawn budget exhausted" }),
-        )
-    }
-
-    /// The run's live HALT reason over `run`, the fold of the current run slice, or `None` when
-    /// the run converged cleanly. First the spawn-budget breaker's when it stopped this process
-    /// with ready work unscheduled (Gap 13), read from the IN-PROCESS `budget_halted` flag (set
-    /// by [`trip_budget_breaker`](RunCtx::trip_budget_breaker)), NOT from the durable
-    /// `BudgetExhausted` event: a resume with a raised `defaults.budget` - which admits the
-    /// spawn and never trips the breaker - reports no budget halt, even though the earlier
-    /// halt's `BudgetExhausted` still sits in the log. Else the spec-defect stop's halt text,
-    /// carried by the log as the stopped unit's escalation reason
-    /// ([`RunState::spec_defect_reason`], spec 112 criterion 5), so every step of a stopped run
-    /// reports it and a crash-resumed step derives it once it has completed the stop's records.
-    /// `rigger run` prints it as its `halted:` line, so a halted run stops LOUDLY instead of
-    /// reading as a clean completion.
-    fn halt_reason(&self, run: &RunState) -> Option<String> {
-        if self.budget_halted.load(Ordering::SeqCst) {
-            return Some(format!(
-                "budget exhausted: {}/{} spawns",
-                self.spawns.load(Ordering::SeqCst),
-                self.cfg.workflow.defaults.budget,
-            ));
-        }
-        run.spec_defect_reason().map(str::to_string)
-    }
-
     /// The coverage gate, routed through flagSpecDefect (§3.2, §4.4, §8): a remaining
     /// gap is a spec defect, so emit a SpecDefect event with the reason, then halt by
     /// returning the error (the conductor never silently deviates around a gap). The error
@@ -5842,8 +5529,7 @@ impl RunCtx<'_> {
     /// `frontier` now finds ready that the wave has not `offered`, checked against the fan-out
     /// gate invariant, with the co-scheduling radii recomputed over every ready stage the way
     /// [`Self::wave_radii`] computes them at a wave's start. `None` when nothing joins: no new
-    /// stage is ready, the spawn budget is spent (the run loop trips the breaker once the wave
-    /// ends), or a review queued a compensation (the run loop drains it once the wave ends, and
+    /// stage is ready, or a review queued a compensation (the run loop drains it once the wave ends, and
     /// a stage that needs the condemned unit must not start before that).
     fn landing_joins(
         &self,
@@ -5854,10 +5540,7 @@ impl RunCtx<'_> {
         terminal: &HashSet<String>,
         in_flight: &HashSet<String>,
     ) -> Result<Option<(Vec<String>, WaveRadii)>, Error> {
-        if self.budget_tripped()
-            || self.budget_broke.load(Ordering::SeqCst)
-            || !self.compensations.lock().unwrap().is_empty()
-        {
+        if !self.compensations.lock().unwrap().is_empty() {
             return Ok(None);
         }
         let ready = frontier.ready(stages, integrated, terminal);
@@ -5907,23 +5590,6 @@ impl RunCtx<'_> {
                 in_flight.insert(name);
                 self.parked.store(true, Ordering::SeqCst);
             }
-            // A budget-refused review-tier spawn (lens/adversary/adjudicator) is
-            // NOT a stage failure either: [`reserve_spawn`] already set
-            // `budget_broke` before returning the refusal, so - exactly like the
-            // implementer's `Ok(false)` refusal - we unwind the unit cleanly here
-            // (no lesson, no first_err collapse) and let the run loop's mid-wave
-            // `budget_broke()` check trip the ONE breaker path, which records
-            // `BudgetExhausted` and halts. Without this branch a review-tier
-            // refusal would collapse the wave to a raw error that propagates out of
-            // `run` BEFORE the `budget_broke()` check, aborting with NO
-            // `BudgetExhausted` event and asymmetric with the implementer path -
-            // the exact defect the criterion 5 fold makes load-bearing once a
-            // resume starts with the budget already spent on a recorded implementer
-            // and then reaches its first review tier (findings
-            // budget-review-tier-no-exhausted,
-            // adv-confirm-review-tier-no-budgetexhausted,
-            // adv-budget-guard-cannot-assemble-reviewed-unit).
-            Err(e) if carries_marker(&e, BUDGET_MARKER) => {}
             // A HALT - any of the [`HALT_MARKERS`] (a degenerate reviewer, a gating
             // persona's verdict-channel mismatch, a plan-stage commit-landing fault, a
             // landing refused by the run checkout's local changes, a unit's infra reruns
@@ -6140,7 +5806,7 @@ impl RunCtx<'_> {
         // kind, applied here one level up for the UNIT-worktree kind. `run_single_stage`
         // threads this straight through to `review_unit`'s lens tier
         // (`run_review_agents_concurrently`), which sets it the moment ANY lens in ANY
-        // concurrent chunk parks or is budget-refused - independently of which single
+        // concurrent chunk parks - independently of which single
         // `Result` this call ultimately propagates. Without this, a genuine terminal error
         // from one lens in a chunk (correctly prioritized over a co-chunked park by the
         // swap in `run_review_agents_concurrently`) would read as a plain non-parked Err
@@ -6179,7 +5845,7 @@ impl RunCtx<'_> {
         // desynchronizes the gate-verdict cache from its artifacts: a build gate
         // cache-hits on an unchanged digest while its `target/debug` binary is gone,
         // and every test spawning the binary fails NotFound - unconvergeable by
-        // construction. So a parked (or budget-refused) unwind KEEPS worktree, cache,
+        // construction. So a parked unwind KEEPS worktree, cache,
         // and branch; teardown happens on the TERMINAL returns only. The full
         // phase-aware lifecycle (ensure-on-park, sweep liveness) is specced separately;
         // this is the minimal keep that lets the loop converge at all.
@@ -6187,8 +5853,8 @@ impl RunCtx<'_> {
         // `parked_unwind` reads `any_parked` FIRST, apart from whichever single Result
         // `run_single_stage` propagates - a chunk with a genuine error AND a park answers
         // this independently of which one the swap prioritized (see the comment above).
-        let parked_unwind = any_parked.load(Ordering::SeqCst)
-            || matches!(&result, Err(e) if is_parked_or_refused(e, BUDGET_MARKER));
+        let parked_unwind =
+            any_parked.load(Ordering::SeqCst) || matches!(&result, Err(e) if is_parked(e));
         if let Some(w) = &wt {
             if !parked_unwind && !kept_for_retry && !holds_work {
                 self.remove_or_say(w);
@@ -6615,7 +6281,7 @@ impl RunCtx<'_> {
     /// errors and that error is (correctly) what this function's `?` propagates - the exact
     /// mirror, one level up, of the review-worktree fix `run_fan_out_stage` already applies to
     /// `run_fan_out_review_loop`. The adversary and adjudicator are single sequential spawns (no
-    /// concurrent chunk to mask), so a park/budget-refusal from either of THEM still shows up
+    /// concurrent chunk to mask), so a park from either of THEM still shows up
     /// directly on the propagated `Result`, unchanged. `run_speculation`'s call site does not
     /// read the signal back (an Err from ANY step here already propagates out of its phase-B
     /// loop via `?` without touching any candidate's worktree, so it is already conservative);
@@ -6988,7 +6654,7 @@ impl RunCtx<'_> {
     /// unrecorded frontier, [`is_parked`]), so THIS call could not have left new residue,
     /// and the caller must unwind with the tree untouched for a later step to resume - the
     /// guard is skipped entirely rather than risk disturbing a still in-flight round. Every
-    /// other error (a genuine crash, or a budget refusal - neither of which is "parked")
+    /// other error (a genuine crash, which is not "parked")
     /// guards the tree exactly like the success path does, restoring it to
     /// `round_start_sha` and naming any residue in a lesson first.
     ///
@@ -7028,7 +6694,7 @@ impl RunCtx<'_> {
     /// (K > 1) is NOT a silent hole in the guarantee: whichever candidate wins ships with
     /// its periphery tests in the tree its gates judged. Implementing it once over the shared
     /// abstraction (not a second parallel construction in each lifecycle) keeps the cwd-safety
-    /// guard, the budget authority, and the parked-spawn discipline identical on both paths.
+    /// guard and the parked-spawn discipline identical on both paths.
     ///
     /// The declared id is resolved through the SAME `AgentDef` / `build_system_prompt`
     /// agent-loading path as every other role, so the agent spawned and the persona it is
@@ -7052,7 +6718,7 @@ impl RunCtx<'_> {
     /// worktree of its own).
     ///
     /// Returns `Ok(())` when the caller may proceed to its commit: a handed-over result (files
-    /// authored), no declared test author, or a budget refusal. Returns the PARK signal
+    /// authored) or no declared test author. Returns the PARK signal
     /// `Err(parked)` when the spawn parked (a driver's unrecorded frontier); the caller
     /// unwinds per its own discipline - the single lane propagates it (holding the unit, no
     /// commit), a speculation lane collects it into `any_parked` and does NOT commit that
@@ -7064,7 +6730,7 @@ impl RunCtx<'_> {
     /// and a speculation candidate loses. Returns the stage error naming the refusal when the emit
     /// guard refused the re-run's record too: a refusal is a defect in what the sdet printed, never
     /// an outage to rerun, so the single lane fails its stage with it and a speculation candidate
-    /// loses. Returns the stage error naming the role and the id, before any budget slot, when the
+    /// loses. Returns the stage error naming the role and the id, before any spawn, when the
     /// declared id names no defined agent, which only a config that never went through a load
     /// holds: the single lane fails its stage with it and a speculation candidate loses.
     ///
@@ -7090,8 +6756,7 @@ impl RunCtx<'_> {
     ) -> Result<Option<HandoverMiss>, Error> {
         // Worktree gate: an empty `dir` is a repo-less / `isolation: none` unit with no
         // committed tree for periphery tests to land in, and a write-capable agent must never
-        // run in the live main checkout. Skip BEFORE reserving so no budget slot is spent on a
-        // spawn that cannot happen.
+        // run in the live main checkout. Skip before any spawn.
         if dir.is_empty() {
             return Ok(None);
         }
@@ -7101,7 +6766,7 @@ impl RunCtx<'_> {
             return Ok(None);
         };
         // A load refuses a declared id no agent defines (`Config::validate`); a config that never
-        // went through one fails here, before any budget slot, as an unknown review agent does.
+        // went through one fails here, before any spawn, as an unknown review agent does.
         let sdet_def = self.stage_agent(st, ROLE_SDET_AUTHOR, author)?;
         // The SDET-author spawn is part of the IMPLEMENT lifecycle stage (the build seam), reached
         // only for a non-producer unit (after the producer early-return in `run_single_stage`), so it
@@ -7160,17 +6825,6 @@ impl RunCtx<'_> {
         let crashed = |e: &Error| spawn_crash_of(&st.name, "sdet author", e);
         rerun_once_on_refusal(window, |retry, refused| {
             let sdet_id = spawn_retry_id(&st.name, ROLE_SDET_AUTHOR, attempt, retry);
-            // Budget breaker at spawn granularity: reserve the sdet spawn against the run budget
-            // FIRST, exactly like the implementer and every reviewer tier, so it funnels through
-            // the single spawn-budget mutation authority - it respects/trips the breaker instead
-            // of spawning past it, and the cross-step budget symmetry d-budget-folds-from-log
-            // guarantees (cumulative = base_spawns + admitted-this-process) holds. Keyed on the
-            // deterministic id so a REPLAY of an already-recorded sdet spawn is admitted free
-            // (spawn_is_recorded). Refused at a spent budget => do not spawn (proceed
-            // author-less).
-            if !self.reserve_spawn(&sdet_id) {
-                return Ok(None);
-            }
             let opts = match self.reviewer_spawn_opts(
                 &sdet_id,
                 ROLE_SDET_AUTHOR,
@@ -7233,7 +6887,7 @@ impl RunCtx<'_> {
                 // surface the park so the caller unwinds cleanly - no UnitFailed, no
                 // remediation - and a later step over the log replays the result. A refused record
                 // surfaces too: the first re-runs above, a second fails the stage below.
-                Err(e) if is_parked_or_refused(&e, EMIT_REFUSED_MARKER) => Err(e),
+                Err(e) if is_parked_or_refused(&e) => Err(e),
                 // A crash (a non-zero exit, a live host's wall-clock stop) is an outage of the
                 // seam, never a tree to gate: it surfaces marked for the caller's crash
                 // disposition.
@@ -7510,7 +7164,7 @@ impl RunCtx<'_> {
         // log records an integrate attempt) and its branch carries the committed, approved
         // code - only the merge was interrupted. Skip BOTH implement and review and integrate
         // the existing work directly. No implementer, no lenses/adversary/adjudicator spawn:
-        // the approval is settled, re-reviewing would re-litigate it and re-spend the budget.
+        // the approval is settled, re-reviewing would re-litigate it and re-spend its spawns.
         // A `none`-on_pass unit (verified-but-never-merged by design) still does not merge.
         if phase == ResumePhase::Reviewed {
             if !integrates(st) {
@@ -7715,11 +7369,6 @@ impl RunCtx<'_> {
                         st.name, st.agent
                     ))
                 })?;
-                // Budget breaker at spawn granularity (item 9): refuse this spawn if
-                // the budget is spent. A refused implementer spawn stops the unit
-                // (Ok(false), not escalated); the run loop records BudgetExhausted. The
-                // reservation is keyed by the spawn's deterministic id so a REPLAY of an
-                // already-recorded implementer (a resumed step) is admitted free.
                 // An infra rerun (F3) spawns under its retry ordinal's id, so a crashed or
                 // halted run's recorded result is never replayed as this run's.
                 let implementer_id = spawn_retry_id(
@@ -7728,9 +7377,6 @@ impl RunCtx<'_> {
                     attempts,
                     implementer_retry(infra.ordinal),
                 );
-                if !self.reserve_spawn(&implementer_id) {
-                    return Ok(false);
-                }
                 // This spawn block is SHARED by the implementer AND the producer/planner (a producer
                 // is handled after the spawn, at the `is_producer` early-return below). Spec 36 trims
                 // ONLY the implement stage, so the slice is keyed on the implement stage specifically
@@ -8663,8 +8309,7 @@ impl RunCtx<'_> {
     ///
     /// PHASE A parks/spawns all K candidates, COLLECTING parks rather than propagating the
     /// first, so under a parking driver all K park in ONE step and a later step answers them
-    /// together. Each candidate's implementer spawn is reserved against the global
-    /// spawn budget, so the breaker counts every candidate. PHASE B evaluates the candidates in
+    /// together. PHASE B evaluates the candidates in
     /// deterministic lane order and integrates the first gate-green adjudicator-approved one;
     /// if none wins, the unit escalates (its K candidates were its attempts) rather than
     /// re-fanning-out forever.
@@ -8726,15 +8371,8 @@ impl RunCtx<'_> {
         // winner records why it lost for its re-entry.
         let mut lost = LostLanes::default();
         for lane in 0..width {
-            // Budget at spawn granularity (item 9): reserve THIS candidate's implementer
-            // spawn. A refusal (the budget is spent) sets `budget_broke` and unwinds the unit
-            // cleanly - the run loop trips the ONE breaker path - exactly like the single-lane
-            // implementer's `Ok(false)` refusal.
             let attempt = base + lane;
             let impl_id = spawn_id(&st.name, ROLE_IMPLEMENTER, attempt);
-            if !self.reserve_spawn(&impl_id) {
-                return Ok(false);
-            }
             let wt = self.speculation_lane_worktree(st, lane)?;
             let dir = wt.dir.clone();
             // While the candidate drives its lane's worktree, a `rigger gate <id>` request from
@@ -8801,9 +8439,8 @@ impl RunCtx<'_> {
                 // seam authority. So the committed tree PHASE B's gates judge (and the winner
                 // integrates) carries the periphery tests for WHICHEVER candidate wins - a
                 // speculation-built unit is not a silent hole in the "no boundary surface lands
-                // untested" guarantee. Each lane reserves its OWN sdet id (keyed on the lane's
-                // attempt), so the budget breaker counts every candidate's sdet exactly as it counts
-                // every candidate's implementer.
+                // untested" guarantee. Each lane spawns its OWN sdet id (keyed on the lane's
+                // attempt).
                 //
                 // A PARKED sdet (a driver's unrecorded frontier) takes the park arm below -
                 // like the implementer park - and this candidate is NOT committed, so all K park
@@ -8946,8 +8583,8 @@ impl RunCtx<'_> {
             // A throwaway `AtomicBool` for the any-parked out-param (spec 64 c1 round 4,
             // see `review_unit`'s doc comment): this phase-B loop already never tears a
             // candidate's worktree down on an `Err` from `review_unit` - the `?` below
-            // propagates straight out of `run_speculation` on ANY error (park, budget
-            // refusal, or genuine crash) without reaching the per-candidate/final cleanup
+            // propagates straight out of `run_speculation` on ANY error (park or genuine
+            // crash) without reaching the per-candidate/final cleanup
             // loops, so every candidate's worktree already survives regardless. The signal
             // has no consumer to correct here.
             let lane_any_parked = std::sync::atomic::AtomicBool::new(false);
@@ -9410,7 +9047,7 @@ impl RunCtx<'_> {
         // so `dir` stays empty there (the project cwd, guarded by `assert_isolated_cwd`
         // which is a no-op when no repo is configured). The worktree is torn down on
         // every TERMINAL exit path here, including the early-return ones inside the
-        // loop - but NOT on a parked (or budget-refused) unwind (spec 64 criterion 1):
+        // loop - but NOT on a parked unwind (spec 64 criterion 1):
         // a reviewer/adjudicator spawn parks and resumes in a LATER conductor process,
         // in this SAME throwaway worktree, exactly like a unit's own worktree - the
         // identical defect class `run_stage`'s split (below `parked_unwind`) fixes for
@@ -9429,7 +9066,7 @@ impl RunCtx<'_> {
         // Out-of-band any-parked signal (spec 64 c1 round 3,
         // adv-u1c1-r2-park-swap-swallows-concurrent-genuine-error): set by
         // `run_review_agents_concurrently` whenever ANY lens in a concurrent chunk
-        // parks/budget-refuses, independently of which single `Result` that call
+        // parks, independently of which single `Result` that call
         // propagates - so a genuine terminal error from a co-chunked sibling still
         // reaches `result` below for `run_wave`'s dedicated halt handling, while the
         // worktree-keep decision reads this flag directly instead of inferring "did
@@ -9438,14 +9075,14 @@ impl RunCtx<'_> {
         let result = self.run_fan_out_review_loop(st, &dir, &any_lens_parked);
         // `any_lens_parked` covers the concurrent lens fan-out; the adversary and
         // adjudicator are single, sequential spawns within the same loop (no concurrent
-        // chunk to mask), so a park/budget-refusal from either of THEM still shows up
+        // chunk to mask), so a park from either of THEM still shows up
         // directly on `result` - the `matches!` disjunct below still catches those.
-        let parked_unwind = any_lens_parked.load(Ordering::SeqCst)
-            || matches!(&result, Err(e) if is_parked_or_refused(e, BUDGET_MARKER));
+        let parked_unwind =
+            any_lens_parked.load(Ordering::SeqCst) || matches!(&result, Err(e) if is_parked(e));
         if let Some(w) = &review_wt {
             // A read-only review worktree carries no work to checkpoint, so a TERMINAL
             // return removes the transient dir AND its throwaway branch unconditionally,
-            // exactly as before. A PARKED (or budget-refused) unwind keeps both - the
+            // exactly as before. A PARKED unwind keeps both - the
             // out-of-process reviewer runs BETWEEN conductor processes in this exact tree.
             if !parked_unwind {
                 self.remove_or_say(w);
@@ -9684,7 +9321,7 @@ impl RunCtx<'_> {
     ///
     /// `any_parked` is an OUT-OF-BAND signal (adv-u1c1-r2-park-swap-swallows-concurrent-
     /// genuine-error, spec 64 criterion 1 round 3): set to `true` the moment ANY lens in
-    /// ANY chunk parks or is budget-refused, independently of which single `Result` this
+    /// ANY chunk parks, independently of which single `Result` this
     /// function returns. Two concerns share one concurrent chunk and neither may answer
     /// the other:
     ///   - "did anything here park" (the worktree-keep decision `run_fan_out_stage` makes
@@ -9753,25 +9390,25 @@ impl RunCtx<'_> {
             // being the one propagated (see the doc comment above).
             if chunk_results
                 .iter()
-                .any(|r| matches!(r, Err(e) if is_parked_or_refused(e, BUDGET_MARKER)))
+                .any(|r| matches!(r, Err(e) if is_parked(e)))
             {
                 any_parked.store(true, Ordering::SeqCst);
             }
             // `chunk_results` arrives in FIXED agent-list index order (the `map` above
             // preserves `chunk`'s order across the thread join), not completion order.
-            // Prefer propagating a GENUINE terminal error over a park/budget-refused
+            // Prefer propagating a GENUINE terminal error over a parked
             // sibling from the SAME chunk, regardless of index, by moving it to the front
             // before the index-ordered `?` loop below - so a real crash or a Gap-18
             // degenerate-reviewer HALT still reaches `run_wave`'s dedicated halt arms even
             // when a sibling lens in the same chunk parked (the worktree survives anyway,
             // answered above via `any_parked`, so masking is no longer needed to protect
-            // it). When the chunk has NO genuine error - every Err is a park/budget-
-            // refusal, or there is no Err at all - this is a no-op and plain index order
+            // it). When the chunk has NO genuine error - every Err is a park, or there is
+            // no Err at all - this is a no-op and plain index order
             // decides exactly as before, so a pure-park (or pure-success) chunk is
             // unaffected.
             if let Some(pos) = chunk_results
                 .iter()
-                .position(|r| matches!(r, Err(e) if !is_parked_or_refused(e, BUDGET_MARKER)))
+                .position(|r| matches!(r, Err(e) if !is_parked(e)))
             {
                 chunk_results.swap(0, pos);
             }
@@ -9794,7 +9431,7 @@ impl RunCtx<'_> {
     /// prompt plus the review_protocol, so it EMITS each finding it raises to the shared context
     /// graph (the cross-agent memory), where every later step and its fellow lenses retrieve it.
     /// Its stdout is no longer captured to thread into another agent's prompt - the graph is the
-    /// channel. Budget-refused spawns (item 9) surface as an error so the run halts.
+    /// channel.
     ///
     /// A lens step's lenses run side by side and judge the diff directly. An adversary step is one
     /// sequential spawn that tries to prove the steps before it wrong: it runs AFTER them, so
@@ -9899,8 +9536,7 @@ impl RunCtx<'_> {
     /// reviewer's isolation-opt (lenses run in parallel); `output` selects the tier-specific
     /// degeneracy signal (see
     /// [`reviewer_result_is_degenerate`](RunCtx::reviewer_result_is_degenerate)); `prompt`
-    /// is the tier's already-grounded prompt. A budget-refused respawn surfaces the budget
-    /// sentinel exactly like the original spawn. Every spawn's task, `prompt` or the
+    /// is the tier's already-grounded prompt. Every spawn's task, `prompt` or the
     /// `resume_task`, closes on the [`round_findings_block`] of the findings its round already
     /// recorded: every one when `whole_round` is set (a unit's adjudicator), else the role's own. `reviews` is the routed review roster
     /// (spec 67, criterion 4) this spawn's `SpawnOpts` carries verbatim - empty for a lens,
@@ -9976,14 +9612,6 @@ impl RunCtx<'_> {
             } else {
                 opts
             };
-            if !self.reserve_spawn(&id) {
-                return Err(spawn_halt(
-                    SpawnHalt::BudgetRefused,
-                    &st.name,
-                    tier,
-                    agent_id,
-                ));
-            }
             // Ensure-on-park, defense in depth (spec 64 criterion 3, round 4,
             // adv-u3c3r3-ensure-present-covers-only-the-first-tier, UPHELD): `run_reviewer`
             // is the ONE shared authority every tier (lens/adversary/adjudicator) and every
@@ -10050,9 +9678,9 @@ impl RunCtx<'_> {
                     // taxonomy's infra limit halts the step
                     // (op-105-errored-review-window-joins-the-infra-retry).
                     //
-                    // A driver PARK (the replay frontier) or a BUDGET refusal unwinds the unit
-                    // cleanly and PROPAGATES unchanged (its marker survives the `format!` wrapping,
-                    // so `is_parked`/`carries_marker(.., BUDGET_MARKER)` still recognize it upstream).
+                    // A driver PARK (the replay frontier) unwinds the unit cleanly and PROPAGATES
+                    // unchanged (its marker survives the `format!` wrapping, so `is_parked` still
+                    // recognizes it upstream).
                     // The headless host RECORDS its result, and on
                     // `rigger run` the decorator records an unmarked error the host hands back
                     // for a spawn the run has not ended, so a failed hosted review re-drives
@@ -10062,25 +9690,20 @@ impl RunCtx<'_> {
                     // reruns the whole review uncharged under its F3 infra retry
                     // (op-105-sdet-seam-joins-the-infra-retry) while every other caller halts
                     // on it.
-                    if !is_parked_or_refused(&e, BUDGET_MARKER) && self.review_spawn_errored(&id)? {
+                    if !is_parked(&e) && self.review_spawn_errored(&id)? {
                         errored = Some(failed(&e));
                         continue;
                     }
                     // adj-u104c5 REQUIRED FIX 2: `strip_failure_marker` drops only its own
                     // `\u{2}`-bracketed class and the emit guard's refusal marker, so a
-                    // PARKED_MARKER/BUDGET_MARKER error still passes through byte-for-byte
-                    // unchanged here - `is_parked`/`carries_marker(.., BUDGET_MARKER)` upstream
-                    // are unaffected. A park, a budget refusal or a refused record is no crash.
+                    // PARKED_MARKER error still passes through byte-for-byte unchanged here -
+                    // `is_parked` upstream is unaffected. A park or a refused record is no crash.
                     let message = failed(&e);
-                    return Err(
-                        if is_parked_or_refused(&e, BUDGET_MARKER)
-                            || carries_marker(&e, EMIT_REFUSED_MARKER)
-                        {
-                            Error(message)
-                        } else {
-                            spawn_crash(message)
-                        },
-                    );
+                    return Err(if is_parked_or_refused(&e) {
+                        Error(message)
+                    } else {
+                        spawn_crash(message)
+                    });
                 }
             };
             // A substantive result folds into the review; a degenerate one loops to respawn
@@ -10432,7 +10055,7 @@ impl RunCtx<'_> {
     /// DAG (Unit 1, spec 10: "a reject feeds back to the planner"). The re-plan spawn id
     /// is deterministic (`plan/replan#<critique-attempt>`), distinct from the plan stage's
     /// own `plan/implementer#0`, so a driver parks it or answers it from the log exactly
-    /// like any other spawn; its budget is reserved through the same breaker. A re-plan whose
+    /// like any other spawn. A re-plan whose
     /// record the emit guard refused re-runs once as `plan/replan#<critique-attempt>~retry1`,
     /// told why ([`rerun_once_on_refusal`]); a second refusal is the gate's error, unmarked. The
     /// planner (`isolation: none`) runs in the project cwd like its first-wave spawn. Its revised
@@ -10454,14 +10077,6 @@ impl RunCtx<'_> {
         let build_env = self.build_env()?;
         rerun_once_on_refusal(review_retry_window(0), |retry, refused| {
             let id = spawn_retry_id(plan_name, ROLE_REPLAN, critique_attempt, retry);
-            if !self.reserve_spawn(&id) {
-                return Err(spawn_halt(
-                    SpawnHalt::BudgetRefused,
-                    plan_name,
-                    "planner",
-                    &plan_st.agent,
-                ));
-            }
             // spec 72 round-2 REJECT fix (adv-u72c1-metaspawn-remedy-viable-but-undercosted):
             // stamp META_SPAWN with THIS re-plan spawn's own deterministic id, mirroring the
             // matching fix at the initial planner spawn site (`run_single_stage`) - see its
@@ -10528,7 +10143,7 @@ impl RunCtx<'_> {
         .map_err(|e| {
             // adj-u104c5 REQUIRED FIX 2: strip a FAILURE_MARKER-bracketed class (or an emit
             // refusal's marker) before it reaches this wrapped, operator-visible text - a no-op
-            // for park/budget (they survive, see the review-tier site's own comment) and every
+            // for a park (it survives, see the review-tier site's own comment) and every
             // marker-free driver error.
             Error(format!(
                 "plan-critique re-plan {:?}: {}",
@@ -10588,7 +10203,7 @@ impl RunCtx<'_> {
         // driver's unrecorded frontier) and resumes in a LATER conductor process, in this
         // exact throwaway worktree - the identical defect class `run_fan_out_stage` and
         // `run_stage` both fix with the same `parked_unwind` guard, mirrored here.
-        let parked_unwind = matches!(&result, Err(e) if is_parked_or_refused(e, BUDGET_MARKER));
+        let parked_unwind = matches!(&result, Err(e) if is_parked(e));
         if let Some(w) = &review_wt {
             if !parked_unwind {
                 self.remove_or_say(w);
@@ -13194,8 +12809,7 @@ impl RunCtx<'_> {
     /// retries under the infra limit, so it spends no round and blocks nothing. An unmarked error
     /// of a launched spawn, from a live session or answered from the log, spends the round like
     /// one that resolved nothing: the caller re-merges and, still conflicting, moves to the next
-    /// `~retry` with no attempt charged, blocking past [`CONFLICT_RESOLVE_BOUND`]. The budget's
-    /// refusal is returned before the spawn and propagates as ever.
+    /// `~retry` with no attempt charged, blocking past [`CONFLICT_RESOLVE_BOUND`].
     fn spawn_conflict_resolution_implementer(
         &self,
         st: &Stage,
@@ -13206,14 +12820,6 @@ impl RunCtx<'_> {
         refused: &RefusedRecord,
     ) -> Result<(), Error> {
         let id = spawn_retry_id(&st.name, ROLE_IMPLEMENTER, attempt, retry);
-        if !self.reserve_spawn(&id) {
-            return Err(spawn_halt(
-                SpawnHalt::BudgetRefused,
-                &st.name,
-                "implementer",
-                &st.agent,
-            ));
-        }
         let agent_def = self.cfg.agents.get(&st.agent).ok_or_else(|| {
             Error(format!(
                 "stage {:?} references unknown agent {:?}",
@@ -13275,7 +12881,7 @@ impl RunCtx<'_> {
         );
         // The merge the caller re-attempts, never this round's outcome, decides what follows.
         match spawned {
-            Err(e) if is_parked_or_refused(&e, EMIT_REFUSED_MARKER) => Err(e),
+            Err(e) if is_parked_or_refused(&e) => Err(e),
             Err(e) if is_store_fault(&e) => Err(spawn_crash_of(&st.name, "conflict resolver", &e)),
             _ => Ok(()),
         }
@@ -17591,6 +17197,7 @@ mod tests {
     };
     use crate::test_support::{MergeBreakDriver, MERGE_BREAK_BASE, REJECT_FEATURE};
     use std::path::Path;
+    use std::sync::atomic::AtomicU32;
     use std::sync::mpsc;
 
     /// Shared test doubles and case bodies for this module's same-shaped tests.
@@ -28623,13 +28230,8 @@ stage "implement" adjudicator "adj" failed
             run_id: String::new(),
             gate_tracker: Mutex::new(HashMap::new()),
             integrate_mu: Mutex::new(()),
-            spawns: AtomicU32::new(0),
-            base_spawns: 0,
-            recorded_spawn_ids: HashSet::new(),
-            budget_broke: std::sync::atomic::AtomicBool::new(false),
             parked: std::sync::atomic::AtomicBool::new(false),
             manual_review: std::sync::atomic::AtomicBool::new(false),
-            budget_halted: std::sync::atomic::AtomicBool::new(false),
             prior_status: HashMap::new(),
             prior_attempts: HashMap::new(),
             prior_resume_bound: HashMap::new(),
@@ -28895,7 +28497,7 @@ stage "implement" adjudicator "adj" failed
         // Resume-continuity: a unit whose log shows review APPROVED (`reviewed`) but no
         // UnitIntegrated - the merge was interrupted - must integrate on resume with NO
         // lens/adversary/adjudicator spawns. The verdict was already settled; re-review
-        // would re-litigate it and re-spend the budget.
+        // would re-litigate it and spawn the panel again.
         let driver = Stub::new();
         assert_resume_integrates_s(
             approved_but_unmerged_s(),
@@ -30306,41 +29908,6 @@ stage "implement" adjudicator "adj" failed
             occurrences(&driver.call_order, "adj"),
             1,
             "only the winning candidate is adjudicated; the loser is cancelled un-reviewed"
-        );
-    }
-
-    #[test]
-    fn speculation_budget_accounts_for_every_candidate_spawn() {
-        // Budget accounting (done-when): each parked candidate counts against the global
-        // spawn budget. With width 2 and budget 1 the FIRST candidate is admitted and the
-        // SECOND is refused - the breaker trips with BudgetExhausted, exactly like any
-        // over-budget spawn.
-        let repo = temp_git_project_with_commit();
-        let repo_path = repo.path().to_str().unwrap().to_string();
-        let mut cfg = spec_cfg(2);
-        cfg.workflow.defaults.budget = 1;
-        let store = Store::open(":memory:").unwrap();
-        let driver = Stub {
-            write_file: Some("feature.rs".into()),
-            output: r#"{"verdict":"approve"}"#.into(),
-            ..Stub::new()
-        };
-        let deps = Deps {
-            run_branch: branch_of(&repo_path),
-            repo: repo_path.clone(),
-            ..stub_deps(&store, &driver, Vec::new())
-        };
-        run_isolated(&cfg, &deps).expect("a tripped budget halts the run, it does not error");
-
-        assert_eq!(
-            occurrences(&driver.call_order, "worker"),
-            1,
-            "budget 1 admits exactly one candidate; the second is refused over budget"
-        );
-        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
-        assert!(
-            events.iter().any(|e| e.type_ == TYPE_BUDGET_EXHAUSTED),
-            "the over-budget second candidate trips the breaker with BudgetExhausted"
         );
     }
 
@@ -36583,230 +36150,6 @@ stage "implement" adjudicator "adj" failed
         cfg
     }
 
-    /// A run over budget 1 with two independent units: one spawn is admitted, the second is
-    /// refused and trips the breaker, so the run halts with the spent count over the budget.
-    fn budget_of_one_over_two_units() -> RunState {
-        let mut cfg = agent_a_cfg(vec![gated_by_ok("w1", &[]), gated_by_ok("w2", &[])]);
-        cfg.workflow.defaults.budget = 1;
-        run_logged(&cfg, &Stub::new()).0
-    }
-
-    /// A spawn budget of 1 over two stages in sequential waves (`s2` needs `s1`).
-    fn budget_of_one_over_a_chain() -> Config {
-        let mut cfg = agent_a_cfg(vec![gated_by_ok("s1", &[]), gated_by_ok("s2", &["s1"])]);
-        cfg.workflow.defaults.budget = 1;
-        cfg
-    }
-
-    #[test]
-    fn budget_breaker_stops_the_run_after_the_first_wave() {
-        // Two stages in sequential waves (s2 needs s1). A spawn budget of 1 lets the
-        // first wave run, then the pre-wave checkBudget (§4.4, §8) trips before the
-        // second wave: s1 integrates, s2 never starts.
-        let (rs, events) = run_logged(&budget_of_one_over_a_chain(), &Stub::new());
-        assert_eq!(rs.units["s1"].status, ledger::Status::Integrated);
-        assert!(
-            !rs.units.contains_key("s2"),
-            "the budget breaker must stop the second wave before it starts"
-        );
-        assert!(
-            count_of_type(&events, TYPE_BUDGET_EXHAUSTED) > 0,
-            "tripping the budget must emit a BudgetExhausted event"
-        );
-    }
-
-    #[test]
-    fn budget_exhaustion_aborts_the_task() {
-        let (_rs, events) = run_logged(&budget_of_one_over_a_chain(), &Stub::new());
-        assert!(
-            count_of_type(&events, TYPE_TASK_ABORTED) > 0,
-            "a tripped budget must abort the task"
-        );
-    }
-
-    #[test]
-    fn a_budget_halt_surfaces_its_reason_on_the_run_state() {
-        // Gap 13: a budget halt is a RUNTIME condition of this run process, surfaced on the
-        // returned RunState so `rigger run` prints a halt reason on its `halted:` line,
-        // DISTINCT from convergence, and stops loudly on it.
-        let rs = budget_of_one_over_two_units();
-        assert_eq!(
-            rs.budget_halt.as_deref(),
-            Some("budget exhausted: 1/1 spawns"),
-            "a budget-halted run must surface its halt reason on the RunState"
-        );
-    }
-
-    #[test]
-    fn a_run_within_budget_surfaces_no_halt_reason() {
-        // The halt signal is ABSENT on a run that did not trip the breaker: `rigger run`
-        // then prints no `halted:` line and reports a clean completion. A budget of 0 is unlimited,
-        // so the single unit never trips.
-        let cfg = one_gated_stage_cfg("w");
-        let (rs, _) = run_logged(&cfg, &Stub::new());
-        assert_eq!(
-            rs.budget_halt, None,
-            "a run that never tripped the breaker reports no halt reason"
-        );
-    }
-
-    /// A fresh process's `RunCtx` under a spawn budget of 2 over a log in which earlier steps
-    /// parked one implementer spawn request per unit of `recorded`, handed to `check`.
-    fn with_budget_two_ctx_over(recorded: &[&str], check: impl FnOnce(&RunCtx)) {
-        let st = Store::open(":memory:").unwrap();
-        for unit in recorded {
-            spawn_store::park_in_run(
-                &st,
-                &crate::spawn::test_request(unit, unit, ROLE_IMPLEMENTER, 0, "p"),
-                "",
-                "",
-            )
-            .unwrap();
-        }
-        let mut cfg = Config::default();
-        cfg.agents.insert("a".into(), agent("a"));
-        cfg.workflow.defaults.budget = 2;
-        let driver = Stub::new();
-        let deps = stub_deps(&st, &driver, Vec::new());
-        check(&RunCtx::for_test(&cfg, &deps));
-    }
-
-    #[test]
-    fn the_spawn_budget_folds_from_recorded_spawn_requests_across_steps() {
-        // Criterion 5 / finding adv-budget-per-step-resets: the spawn count is DERIVED
-        // from the recorded spawn-request events, not a per-process in-memory counter
-        // that resets with every conductor process. Two earlier passes parked two spawn requests;
-        // a fresh process building a new RunCtx folds them from the log, so with a budget
-        // of 2 it already sees the budget spent - even though its own counter started at
-        // zero.
-        with_budget_two_ctx_over(&["u1", "u2"], |c| {
-            // The cumulative count was folded from the log, not reset to 0.
-            assert_eq!(
-                c.spawns.load(Ordering::SeqCst),
-                2,
-                "the spawn count seeds from spawn::recorded(log).len(), not 0"
-            );
-            // At-budget with only recorded spawns pending, the pre-wave breaker HOLDS: the
-            // already-paid work must still be free to replay and integrate on this step.
-            assert!(
-                !c.budget_tripped(),
-                "a resume whose frontier is entirely replays does not pre-wave-trip"
-            );
-
-            // A REPLAY of an already-recorded spawn is admitted for FREE (its budget was
-            // spent when it was first parked) and is never counted again.
-            assert!(
-                c.reserve_spawn(&spawn_id("u1", ROLE_IMPLEMENTER, 0)),
-                "a recorded spawn replays free, even at budget"
-            );
-            assert_eq!(
-                c.spawns.load(Ordering::SeqCst),
-                2,
-                "a replay does not re-spend the budget"
-            );
-
-            // A genuinely NEW spawn is refused: the log already holds `budget` spawns.
-            assert!(
-                !c.reserve_spawn(&spawn_id("u3", ROLE_IMPLEMENTER, 0)),
-                "a new spawn beyond the folded count is refused"
-            );
-            assert!(
-                c.budget_broke.load(Ordering::SeqCst),
-                "refusing a new over-budget spawn trips the breaker"
-            );
-        });
-    }
-
-    #[test]
-    fn the_pre_wave_breaker_trips_only_on_a_new_over_budget_spawn() {
-        // The pre-wave breaker must not abort a resume before it can replay its recorded
-        // work, but it MUST trip once this process admits a NEW spawn that reaches the
-        // budget (spawns > base_spawns). One spawn recorded, budget 2.
-        with_budget_two_ctx_over(&["u1"], |c| {
-            // Nothing new spent yet - the recorded frontier is free to replay.
-            assert!(
-                !c.budget_tripped(),
-                "one recorded spawn under a budget of 2 does not pre-wave-trip"
-            );
-            // Admit one NEW spawn: there is room, and it reaches the budget.
-            assert!(
-                c.reserve_spawn(&spawn_id("u2", ROLE_IMPLEMENTER, 0)),
-                "there is room for one new spawn"
-            );
-            // Now the pre-wave breaker trips: this process spent a new spawn to reach the cap.
-            assert!(
-                c.budget_tripped(),
-                "reaching the budget via a new spawn trips the pre-wave breaker"
-            );
-        });
-    }
-
-    #[test]
-    fn a_review_tier_budget_refusal_aborts_with_budgetexhausted_not_a_raw_error() {
-        // Criterion 5, the review-tier arm (findings budget-review-tier-no-exhausted,
-        // adv-confirm-review-tier-no-budgetexhausted): a run that exceeds `defaults.budget`
-        // at a REVIEW spawn must abort with BudgetExhausted, exactly like the implementer
-        // path - NOT propagate a raw error out of `run` before the breaker records it.
-        //
-        // Budget of 1: the implementer spawn consumes the whole budget, the unit reaches
-        // `verified` (empty gates pass), then the first review tier (the lens) is a NEW
-        // spawn `reserve_spawn` refuses. Before the fix that refusal returned a raw Err
-        // that `run_wave` collapsed and `run` propagated BEFORE the mid-wave budget_broke
-        // check, so the run aborted with a raw error and emitted no BudgetExhausted.
-        let mut cfg = Config::default();
-        cfg.agents.insert("worker".into(), agent("worker"));
-        cfg.agents.insert("lens".into(), agent("lens"));
-        cfg.workflow.defaults.budget = 1;
-        cfg.workflow.defaults.review = config::ReviewPanel {
-            lenses: vec!["lens".into()],
-            ..Default::default()
-        };
-        cfg.workflow.stages.insert(
-            "u".into(),
-            Stage {
-                name: "u".into(),
-                agent: "worker".into(),
-                ..Default::default()
-            },
-        );
-        let st = Store::open(":memory:").unwrap();
-        let driver = Stub::new();
-        let deps = stub_deps(&st, &driver, Vec::new());
-
-        // The run HALTS cleanly - the review-tier refusal must not surface as a run error.
-        run_isolated(&cfg, &deps)
-            .expect("a review-tier budget refusal halts the run, it does not error");
-
-        let events = st
-            .read_all(0, Direction::Forward, &Filter::default())
-            .unwrap();
-        assert!(
-            events.iter().any(|e| e.type_ == TYPE_BUDGET_EXHAUSTED),
-            "a review-tier budget refusal must emit BudgetExhausted, like the implementer path"
-        );
-        assert!(
-            events.iter().any(|e| e.type_ == TYPE_TASK_ABORTED),
-            "the breaker aborts the task on a review-tier refusal too"
-        );
-        // The implementer spent the budget and the unit reached `verified`; the lens was
-        // then REFUSED before it ever spawned - the review spawn was over budget.
-        assert!(
-            driver.spawned("worker"),
-            "the implementer runs (it is admitted under the budget)"
-        );
-        assert!(
-            !driver.spawned("lens"),
-            "the over-budget lens spawn is refused before it runs"
-        );
-        assert!(
-            events.iter().any(|e| {
-                e.type_ == ledger::TYPE_UNIT_STATUS
-                    && String::from_utf8_lossy(&e.data).contains("\"status\":\"verified\"")
-            }),
-            "the unit reaches verified before the review tier is refused"
-        );
-    }
-
     // NO UNGATED FAN-OUT UNIT PASSES SILENTLY (spec 103, criterion 2). These test
     // `assert_no_ungated_fanout_unit` DIRECTLY, with hand-built `stages`/
     // `fanout_criteria`/`fanout_template_gates`, never through `harvest_proposed`:
@@ -37643,13 +36986,8 @@ stage "implement" adjudicator "adj" failed
             run_id: String::new(),
             gate_tracker: Mutex::new(HashMap::new()),
             integrate_mu: Mutex::new(()),
-            spawns: AtomicU32::new(0),
-            base_spawns: 0,
-            recorded_spawn_ids: HashSet::new(),
-            budget_broke: std::sync::atomic::AtomicBool::new(false),
             parked: std::sync::atomic::AtomicBool::new(false),
             manual_review: std::sync::atomic::AtomicBool::new(false),
-            budget_halted: std::sync::atomic::AtomicBool::new(false),
             prior_status: HashMap::new(),
             prior_attempts: HashMap::new(),
             prior_resume_bound: HashMap::new(),
@@ -38417,8 +37755,7 @@ stage "implement" adjudicator "adj" failed
     #[test]
     fn a_units_worktree_cache_and_branch_are_all_reclaimed_on_a_successful_integrate() {
         // Spec 64, criterion 2 (TERMINAL TEARDOWN IS UNCHANGED): criterion 1's
-        // phase-aware split only ever SKIPS teardown on a parked_unwind (a park or a
-        // budget refusal, `run_stage` conductor.rs ~3141-3157); a genuinely TERMINAL
+        // phase-aware split only ever SKIPS teardown on a parked_unwind (a park); a genuinely TERMINAL
         // return - here, a full integrate - must tear down EXACTLY as it did before
         // that split existed: worktree removed, its `cargo-target-<slug>` cache
         // sibling reclaimed with it, AND (the one half of "identical to today's
@@ -41803,13 +41140,12 @@ stage "implement" adjudicator "adj" failed
             .collect()
     }
 
-    /// Run a standalone review stage `review` over `lenses` (plus `adversary` when non-empty,
-    /// under a spawn `budget` when set) in a fresh repo under `driver`; returns the run's
+    /// Run a standalone review stage `review` over `lenses` (plus `adversary` when non-empty)
+    /// in a fresh repo under `driver`; returns the run's
     /// outcome, the repo and the store.
     fn standalone_review_run(
         lenses: &[&str],
         adversary: &str,
-        budget: Option<u32>,
         driver: &Stub,
     ) -> (Result<RunState, Error>, tempfile::TempDir, Store) {
         let repo = temp_git_project_with_commit();
@@ -41818,9 +41154,6 @@ stage "implement" adjudicator "adj" failed
             if !a.is_empty() {
                 cfg.agents.insert(a.to_string(), agent(a));
             }
-        }
-        if let Some(budget) = budget {
-            cfg.workflow.defaults.budget = budget;
         }
         cfg.workflow.stages.insert(
             "review".into(),
@@ -41856,7 +41189,7 @@ stage "implement" adjudicator "adj" failed
     }
 
     /// The run `outcome` halted loudly (`why`) with an error naming a genuine mid-spawn crash
-    /// (`crash_why`), never masked by a sibling's park or budget refusal.
+    /// (`crash_why`), never masked by a sibling's park.
     fn assert_genuine_crash_halts(outcome: Result<RunState, Error>, why: &str, crash_why: &str) {
         let err = outcome.err().expect(why);
         assert!(
@@ -41878,7 +41211,7 @@ stage "implement" adjudicator "adj" failed
             park_spawn_ids: review_lens_ids(&["lens"]),
             ..Stub::new()
         };
-        let (outcome, repo, _store) = standalone_review_run(&["lens"], "", None, &driver);
+        let (outcome, repo, _store) = standalone_review_run(&["lens"], "", &driver);
         outcome.unwrap();
         assert!(
             driver.spawned("lens"),
@@ -41911,7 +41244,7 @@ stage "implement" adjudicator "adj" failed
         //      silently drops a real terminal error with zero trace, contradicting spec
         //      19c ("a wedge or a hang always surfaces as a loud error").
         // The two are answered independently: `any_parked` (an out-of-band signal set
-        // whenever ANY chunk entry parks/budget-refuses, read by `run_fan_out_stage`
+        // whenever ANY chunk entry parks, read by `run_fan_out_stage`
         // apart from whichever single Result this function returns) answers (1), while
         // the propagated Result still prefers a GENUINE error over a park within the
         // chunk so (2) reaches `run_wave`'s dedicated halt arms
@@ -41921,7 +41254,7 @@ stage "implement" adjudicator "adj" failed
             park_spawn_ids: review_lens_ids(&["b"]),
             ..Stub::new()
         };
-        let (outcome, repo, _store) = standalone_review_run(&["a", "b"], "", None, &driver);
+        let (outcome, repo, _store) = standalone_review_run(&["a", "b"], "", &driver);
         // Requirement (2): the genuine crash still propagates and halts the run - it must
         // NOT be silently swallowed by "b"'s park in the same chunk.
         assert_genuine_crash_halts(
@@ -41967,7 +41300,7 @@ stage "implement" adjudicator "adj" failed
             park_spawn_ids: review_lens_ids(&["b"]),
             ..Stub::new()
         };
-        let (outcome, repo, store) = standalone_review_run(&["a", "b"], "", None, &driver);
+        let (outcome, repo, store) = standalone_review_run(&["a", "b"], "", &driver);
         let err = outcome.err().expect(
             "\"a\"'s exhausted degenerate-reviewer HALT must still halt the run loudly, \
              not be masked by \"b\"'s park in the same concurrent chunk",
@@ -42012,7 +41345,7 @@ stage "implement" adjudicator "adj" failed
         // adv2-u1c1-r4-swap-index-independence-upheld-by-mutation): round 3's whole point
         // was that `run_review_agents_concurrently`'s swap-to-front
         // (conductor.rs:`chunk_results.swap(0, pos)`) prioritizes a genuine terminal error
-        // over a park/budget-refused sibling REGARDLESS OF INDEX - but every test up to
+        // over a parked sibling REGARDLESS OF INDEX - but every test up to
         // this point only ever exercised the trivial `pos == 0` case (the genuine error
         // already at the front, where the swap is a no-op). Neutralizing the swap entirely
         // left the whole suite green, proving the position-independence claim itself was
@@ -42027,7 +41360,7 @@ stage "implement" adjudicator "adj" failed
             park_spawn_ids: review_lens_ids(&["x", "z"]),
             ..Stub::new()
         };
-        let (outcome, repo, _store) = standalone_review_run(&["x", "y", "z"], "", None, &driver);
+        let (outcome, repo, _store) = standalone_review_run(&["x", "y", "z"], "", &driver);
         assert_genuine_crash_halts(
             outcome,
             "\"y\"'s genuine terminal crash (at chunk index 1, neither first nor last) \
@@ -42046,86 +41379,6 @@ stage "implement" adjudicator "adj" failed
             &repo,
             "PARKED siblings must keep the shared review worktree even when the NON-ZERO-\
              INDEXED lens in the same chunk crashed terminally",
-        );
-    }
-
-    #[test]
-    fn a_budget_refused_lens_beside_a_genuinely_crashing_sibling_in_one_chunk() {
-        // sdet-u1c1-r3-budget-refused-arm-untested-in-concurrent-chunk (upheld by mutation:
-        // adv2-u1c1-r4-budget-refused-arm-upheld-by-mutation): round 3 added TWO NEW
-        // `carries_marker(.., BUDGET_MARKER)` occurrences inside `run_review_agents_concurrently` (the
-        // `any_parked` scan and the swap-exclusion predicate) - distinct from the
-        // pre-existing single-spawn budget tests below
-        // (`a_budget_refused_standalone_review_spawn_keeps_its_worktree`,
-        // `a_budget_refused_plan_critique_gate_keeps_its_review_worktree`), which both
-        // budget-refuse the ADVERSARY - a single SEQUENTIAL spawn outside this function -
-        // and so cannot reach either of these two call sites at all. Dropping the
-        // `carries_marker(.., BUDGET_MARKER)` disjunct from both left the full suite green, proving the
-        // gap is real: two lenses RACE the SAME shared budget mid-chunk, and neither test
-        // ever put a budget refusal on that race.
-        //
-        // `defaults.budget = 1`: the ONE unit of budget the standalone review stage itself
-        // needs zero of (it has no implementer/sdet spawn ahead of the lenses), so both
-        // lenses "a" and "b" race for it; whichever wins is ADMITTED and (both are marked
-        // `fail_spawn_ids`) crashes genuinely, and the other is refused deterministically
-        // by the shared atomic budget counter - regardless of which one wins the race, the
-        // outcome (one crash, one budget-refusal) is the same, so this test needs no
-        // control over thread scheduling to be deterministic.
-        let driver = Stub {
-            fail_spawn_ids: review_lens_ids(&["a", "b"]),
-            ..Stub::new()
-        };
-        let (outcome, repo, _store) = standalone_review_run(&["a", "b"], "", Some(1), &driver);
-        // Exactly one of the two lenses is admitted by the budget and genuinely crashes;
-        // the swap-exclusion predicate must not let the OTHER's budget-refusal win the
-        // propagated Result over the genuine crash.
-        assert_genuine_crash_halts(
-            outcome,
-            "the admitted lens's genuine terminal crash must still halt the run loudly, \
-             not be masked by its sibling's budget refusal in the same concurrent chunk",
-            "the propagated error must be the admitted lens's genuine crash, not the \
-             refused sibling's budget-refusal sentinel",
-        );
-        // The shared review worktree survives anyway - the OTHER lens was genuinely
-        // budget-refused, the SAME worktree-preserving disposition as a park (spec 64 c1):
-        // the `any_parked` scan's `carries_marker(.., BUDGET_MARKER)` arm must have caught it.
-        assert_review_worktree_kept(
-            &repo,
-            "a BUDGET-REFUSED sibling must keep the shared review worktree even when the \
-             lens that raced ahead of it crashed terminally",
-        );
-    }
-
-    #[test]
-    fn a_budget_refused_standalone_review_spawn_keeps_its_worktree() {
-        // sdet-u1c1-budget-refused-arm-untested: `run_fan_out_stage`'s `parked_unwind`
-        // guard is `is_parked(e) || carries_marker(e, BUDGET_MARKER)` - an OR of two disjuncts - but
-        // no test had ever driven the `carries_marker(.., BUDGET_MARKER)` arm to a REAL refusal at this
-        // call site, so a regression that dropped it back to `is_parked`-only (the exact
-        // mutant that survived every pre-existing test here) would pass silently.
-        // `defaults.budget = 1`: the lens's own spawn consumes the whole budget, and the
-        // adversary runs AFTER the lenses (sequentially, within the SAME
-        // `run_fan_out_stage` call - `spend` and `review` in two separate WAVES would
-        // trip the pre-wave `budget_tripped` breaker before `review` ever started,
-        // proving nothing about THIS call site's guard), so the adversary's spawn is a
-        // genuinely NEW, over-budget spawn `reserve_spawn` refuses deterministically (one
-        // spawn attempted at a time here - no race, unlike two concurrent lenses would be).
-        let driver = Stub::answering("reviewed the diff");
-        let (outcome, repo, _store) = standalone_review_run(&["lens"], "adv", Some(1), &driver);
-        outcome.expect("a budget-refused review spawn halts the run cleanly, it does not error");
-        assert!(
-            driver.spawned("lens"),
-            "the lens must actually spend the budget, or this test proves nothing"
-        );
-        assert!(
-            !driver.spawned("adv"),
-            "the over-budget adversary must be refused before it ever spawns, or this proves \
-             nothing about the refusal arm"
-        );
-        assert_review_worktree_kept(
-            &repo,
-            "a budget-refused standalone-review spawn must KEEP its throwaway review \
-             worktree exactly like a parked one",
         );
     }
 
@@ -44004,65 +43257,6 @@ stage "implement" adjudicator "adj" failed
         assert!(
             names_with_lessons[1],
             "the second erroring stage (s2) must ALSO leave a record - errors after the first must not be dropped"
-        );
-    }
-
-    #[test]
-    fn single_wide_wave_overruns_budget_and_is_stopped() {
-        // Item 9: the budget breaker must trip at SPAWN granularity, mid-wave. Three
-        // INDEPENDENT implementer stages form one wide wave; with a budget of 1, only
-        // one may spawn - the other two are refused, the breaker trips, and the run is
-        // actually stopped. Fewer than 3 integrate, and BudgetExhausted is recorded.
-        let mut cfg = Config::default();
-        cfg.agents.insert("a".into(), agent("a"));
-        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
-        cfg.workflow.defaults.budget = 1;
-        for name in ["w1", "w2", "w3"] {
-            cfg.workflow.stages.insert(
-                name.into(),
-                Stage {
-                    name: name.into(),
-                    agent: "a".into(),
-                    gates: vec!["ok".into()],
-                    ..Default::default()
-                },
-            );
-        }
-        let st = Store::open(":memory:").unwrap();
-        let driver = Stub::new();
-        let deps = stub_deps(&st, &driver, Vec::new());
-        let rs = run_isolated(&cfg, &deps).unwrap();
-        let integrated = ["w1", "w2", "w3"]
-            .iter()
-            .filter(|n| {
-                rs.units
-                    .get(**n)
-                    .map(|u| u.status == ledger::Status::Integrated)
-                    .unwrap_or(false)
-            })
-            .count();
-        assert!(
-            integrated < 3,
-            "a budget of 1 must stop a wide wave mid-flight; {integrated} of 3 integrated"
-        );
-        let events = st
-            .read_all(0, Direction::Forward, &Filter::default())
-            .unwrap();
-        assert!(
-            events.iter().any(|e| e.type_ == TYPE_BUDGET_EXHAUSTED),
-            "overrunning the budget mid-wave must record BudgetExhausted"
-        );
-        // No more than one real implementer spawn was admitted against the budget of 1.
-        assert!(
-            driver
-                .call_order
-                .lock()
-                .unwrap()
-                .iter()
-                .filter(|a| *a == "a")
-                .count()
-                <= 1,
-            "the budget breaker must refuse spawns beyond the budget, mid-wave"
         );
     }
 
@@ -51876,8 +51070,7 @@ stage "implement" adjudicator "adj" failed
                         fail_spawn_ids: review_lens_ids(&["lens"]),
                         ..Stub::new()
                     };
-                    let (halted, _repo, store) =
-                        standalone_review_run(&["lens"], "", None, &driver);
+                    let (halted, _repo, store) = standalone_review_run(&["lens"], "", &driver);
                     (halted, store)
                 }
             };
@@ -53768,9 +52961,9 @@ stage "implement" adjudicator "adj" failed
     fn an_unreviewed_unit_halted_mid_merge_resumes_at_the_resolver_and_integrates() {
         // op-105-unreviewed-mid-merge-resumes-at-integrate, the reproduction of lesson
         // u105r2c6park-sdet-verified-unit-mid-merge-resume-refuses: two batch-mates with no
-        // review conflict, and the spawn budget halts the run at the loser's second resolver
-        // round, its merge left in progress and its last status `verified`. A resume with the
-        // budget lifted reaches the resolver from the log and both units integrate, uncharged,
+        // review conflict, and a park halts the run at the loser's second resolver
+        // round, its merge left in progress and its last status `verified`. A resume whose
+        // second round answers reaches the resolver from the log and both units integrate, uncharged,
         // with no conflict-marker refusal. Each row: how the first resolver round ends.
         // NON-VACUOUS: RED while the resume routes the loser to `ResumePhase::Implemented`,
         // whose pre-gate checkpoint refuses the merge's own conflict markers.
@@ -53782,13 +52975,11 @@ stage "implement" adjudicator "adj" failed
             ),
         ] {
             let (repo, repo_path, store, mut driver) = conflict_fixture(Vec::new(), true);
-            driver.unresolved = vec![(1, first_round)];
+            driver.unresolved = vec![(1, first_round), (2, Unresolved::Parks)];
             let mut cfg = conflicting_units_cfg(Vec::new());
             for stage in cfg.workflow.stages.values_mut() {
                 stage.review = crate::config::ReviewPanel::default();
             }
-            // Both implementers and the first resolver round: the second round is refused.
-            cfg.workflow.defaults.budget = 3;
             let halted = run_conflicting_units(&repo_path, &store, &driver, &cfg).unwrap();
             let calls = driver.calls.lock().unwrap().clone();
             let loser = calls
@@ -53798,15 +52989,15 @@ stage "implement" adjudicator "adj" failed
                 .to_string();
             let second_round = spawn_retry_id(&loser, ROLE_IMPLEMENTER, 0, 2);
             assert!(
-                halted.budget_halt.is_some() && !calls.contains(&second_round),
-                "{name}: the budget halts the run at the second resolver round: {calls:?}"
+                halted.parked && calls.contains(&second_round),
+                "{name}: the second resolver round parks the run: {calls:?}"
             );
             assert_eq!(
                 halted.units[&loser].status,
                 ledger::Status::Verified,
                 "{name}: the loser halts mid-merge with no review recorded"
             );
-            cfg.workflow.defaults.budget = 0;
+            driver.unresolved = vec![(1, first_round)];
             let resumed = run_conflicting_units(&repo_path, &store, &driver, &cfg)
                 .unwrap_or_else(|e| panic!("{name}: the resume refused: {}", e.0));
             for unit in ["unit-a", "unit-b"] {
@@ -53816,8 +53007,9 @@ stage "implement" adjudicator "adj" failed
                     "{name}: {unit} integrates, uncharged"
                 );
             }
-            assert!(
-                driver.calls.lock().unwrap().contains(&second_round),
+            assert_eq!(
+                occurrences(&driver.calls, &second_round),
+                2,
                 "{name}: the resume reaches the resolver's second round"
             );
             let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
@@ -55984,94 +55176,6 @@ stage "implement" adjudicator "adj" failed
     }
 
     #[test]
-    fn the_sdet_author_spawn_respects_the_budget_breaker_at_its_own_spawn_site() {
-        // The regression guard for the reserve_spawn mitigation at the sdet-author spawn
-        // seam (this criterion's budget clause): the sdet spawn funnels through the single
-        // spawn-budget mutation authority (`reserve_spawn`) exactly like the implementer
-        // and every reviewer tier, so a SPENT budget REFUSES it instead of letting it spawn
-        // past the breaker - keeping the cross-step budget symmetry
-        // (cumulative = base_spawns + admitted-this-process) intact.
-        //
-        // At `defaults.budget = 1` the implementer is admitted (it reserves and spends the
-        // one slot), so control reaches the sdet seam that follows; the sdet reserve is then
-        // REFUSED, so the sdet-author never spawns. The load-bearing assertion is
-        // `!driver.spawned(ROLE_SDET_AUTHOR)`: delete the `if self.reserve_spawn(&sdet_id)`
-        // guard and the sdet spawns UNRESERVED - past the spent budget - turning it RED and
-        // reopening the exact rejected unreserved-spawn defect. The flagship test above runs
-        // at the default budget = 0 (unlimited), where `reserve_spawn` always admits, so it
-        // cannot exercise this refusal - only a bounded budget can.
-        let repo = temp_git_project_with_commit();
-        let repo_path = repo.path().to_str().unwrap().to_string();
-        let mut cfg = Config::default();
-        cfg.agents.insert("worker".into(), agent("worker"));
-        declare_test_author(&mut cfg, ROLE_SDET_AUTHOR);
-        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
-        // One spawn slot for the whole run: the implementer admits and spends it, so the
-        // sdet reserve that immediately follows in the same wave must be refused.
-        cfg.workflow.defaults.budget = 1;
-        cfg.workflow.stages.insert(
-            "s".into(),
-            Stage {
-                name: "s".into(),
-                agent: "worker".into(),
-                gates: vec!["ok".into()],
-                on_pass: "merge".into(),
-                ..Default::default()
-            },
-        );
-        let st = Store::open(":memory:").unwrap();
-        // Same distinctive per-agent write as the flagship: were the sdet admitted it would
-        // author `sdet_periphery_test.rs`. Here it must never run, so that file is never
-        // written - the refusal is what this test pins.
-        let driver = Stub {
-            write_file: Some("feature.rs".into()),
-            write_file_by_agent: HashMap::from([(
-                ROLE_SDET_AUTHOR.to_string(),
-                "sdet_periphery_test.rs".to_string(),
-            )]),
-            ..Stub::new()
-        };
-        let deps = Deps {
-            run_branch: branch_of(&repo_path),
-            repo: repo_path.clone(),
-            ..stub_deps(&st, &driver, Vec::new())
-        };
-        // The run completes (Ok): a spent budget halts the run with a BudgetExhausted
-        // record, never a raw error.
-        run_isolated(&cfg, &deps).unwrap();
-
-        // The implementer WAS admitted - it reserved the one budget slot and ran - so
-        // control reached the sdet spawn seam that follows it. Without this the sdet refusal
-        // below would be vacuous (the seam never reached), so it anchors the regression:
-        // the seam IS exercised, and the sdet is refused AT it.
-        assert!(
-            driver.spawned("worker"),
-            "the implementer must be admitted (spending the one budget slot) so the sdet seam is reached"
-        );
-        // LOAD-BEARING (the regression guard the adjudicator required): with the budget spent
-        // by the implementer, the sdet reserve is REFUSED, so the sdet-author must NOT spawn -
-        // it respects the breaker at its own spawn site instead of spawning past it. Delete
-        // the `if self.reserve_spawn(&sdet_id)` guard at the seam and the sdet spawns
-        // unreserved, past the spent budget, turning this assertion RED.
-        assert!(
-            !driver.spawned(ROLE_SDET_AUTHOR),
-            "a spent budget must REFUSE the sdet-author reserve so it does not spawn past the breaker"
-        );
-        // The refusal is a genuine budget trip - the breaker binds at THIS spawn site too,
-        // recorded as BudgetExhausted (never a raw error) - so a run exceeding its budget at
-        // the sdet seam halts exactly like one exceeding it at the implementer or a reviewer,
-        // and the single-authority budget accounting (which this reserve now funnels through)
-        // stays the source of truth.
-        let events = st
-            .read_all(0, Direction::Forward, &Filter::default())
-            .unwrap();
-        assert!(
-            events.iter().any(|e| e.type_ == TYPE_BUDGET_EXHAUSTED),
-            "a budget spent at the sdet spawn site must trip the breaker with a BudgetExhausted record"
-        );
-    }
-
-    #[test]
     fn a_parked_sdet_author_spawn_holds_the_unit_instead_of_integrating_without_its_periphery_tests(
     ) {
         // The regression guard for the sdet-author PARKED arm at the build seam (this
@@ -56227,8 +55331,7 @@ stage "implement" adjudicator "adj" failed
             2,
             "the sdet-author spawns once per candidate (K=2), so any winner ships tested"
         );
-        // (3) Each candidate's sdet-author carries its OWN deterministic lane-keyed id (the budget
-        // breaker counts every one), exactly like the candidate implementers.
+        // (3) Each candidate's sdet-author carries its OWN deterministic lane-keyed id, exactly like the candidate implementers.
         let ids = driver.spawn_ids();
         assert!(
             ids.contains(&spawn_id("s", ROLE_SDET_AUTHOR, 0))
@@ -59520,7 +58623,7 @@ stage "implement" adjudicator "adj" failed
             (
                 driver.spawn_ids(),
                 stop_records(&log),
-                rs.budget_halt.as_deref(),
+                rs.spec_defect_reason(),
                 payloads_of_type(&log, ledger::TYPE_UNIT_ESCALATED),
                 payloads_of_type(&log, contextgraph::TYPE_LESSON_LEARNED)
                     .iter()
@@ -59566,7 +58669,7 @@ stage "implement" adjudicator "adj" failed
                 critique,
                 fan_out,
                 rs.units["plan-critique"].status,
-                rs.budget_halt,
+                rs.spec_defect_reason(),
                 stop_records(&run_log(&st)),
             ),
             (
@@ -59640,7 +58743,7 @@ stage "implement" adjudicator "adj" failed
              gate's escalation entry"
         );
         assert_eq!(
-            rs.budget_halt.as_deref(),
+            rs.spec_defect_reason(),
             Some(stop_halt().as_str()),
             "the run halts with the amend route"
         );
@@ -59658,7 +58761,7 @@ stage "implement" adjudicator "adj" failed
         assert_eq!(
             (
                 rs.units["plan-critique"].status,
-                rs.budget_halt,
+                rs.spec_defect_reason(),
                 stop_records(&run_log(&st))
             ),
             (ledger::Status::Integrated, None, Vec::new()),
@@ -59697,7 +58800,7 @@ stage "implement" adjudicator "adj" failed
         let halt = spec_defect_halt_text("the spec", "none upheld");
         let lesson = keyed_payload(&run_log(&st), STOP_LESSON_KEY);
         assert_eq!(
-            (rs.budget_halt.as_deref(), &lesson["about"]),
+            (rs.spec_defect_reason(), &lesson["about"]),
             (Some(halt.as_str()), &json!([])),
             "an empty spec names `the spec` and is about nothing; no upheld finding is said"
         );
@@ -59720,7 +58823,7 @@ stage "implement" adjudicator "adj" failed
             .expect("a stopped gate returns its halted state, never the coverage error");
         assert_eq!(
             (
-                rs.budget_halt.as_deref(),
+                rs.spec_defect_reason(),
                 payloads_of_type(&run_log(&st), TYPE_SPEC_DEFECT)
             ),
             (
@@ -59746,13 +58849,13 @@ stage "implement" adjudicator "adj" failed
                 later.spawn_ids(),
                 after.len(),
                 rs.units["plan-critique"].status,
-                rs.budget_halt
+                rs.spec_defect_reason()
             ),
             (
                 Vec::<String>::new(),
                 before,
                 ledger::Status::Escalated,
-                Some(stop_halt())
+                Some(stop_halt().as_str())
             ),
             "the gate is terminal: nothing spawns or appends, and the run halts with the amend \
              route"
@@ -59778,7 +58881,7 @@ stage "implement" adjudicator "adj" failed
                 (
                     driver.spawn_ids(),
                     stop_records(&run_log(&resumed)),
-                    rs.budget_halt.as_deref()
+                    rs.spec_defect_reason()
                 ),
                 (
                     Vec::<String>::new(),
@@ -59821,7 +58924,7 @@ stage "implement" adjudicator "adj" failed
             (
                 healthy.spawn_ids(),
                 stop_records(&run_log(&st)),
-                rs.budget_halt.as_deref()
+                rs.spec_defect_reason()
             ),
             (
                 Vec::<String>::new(),
@@ -60031,29 +59134,6 @@ stage "implement" adjudicator "adj" failed
                  (none upheld); critique the amended spec, then start the run again"
                     .to_string(),
             )
-        );
-    }
-
-    /// The halt's precedence: the budget breaker's reason first, else the spec-defect halt the
-    /// fold of the run carries (an escalated unit's reason), else none.
-    #[test]
-    fn the_budget_halt_takes_precedence_over_the_spec_defect_stop() {
-        let (st, driver, stopped) = stopped_run();
-        let mut cfg = Config::default();
-        cfg.workflow.defaults.budget = 4;
-        let deps = stub_deps(&st, &driver, Vec::new());
-        let ctx = RunCtx::for_test(&cfg, &deps);
-        let none = ctx.halt_reason(&RunState::default());
-        let spec_defect = ctx.halt_reason(&stopped);
-        ctx.budget_halted.store(true, Ordering::SeqCst);
-        assert_eq!(
-            (none, spec_defect, ctx.halt_reason(&stopped)),
-            (
-                None,
-                Some(stop_halt()),
-                Some("budget exhausted: 0/4 spawns".to_string())
-            ),
-            "budget first, then the spec defect the fold carries"
         );
     }
 
@@ -60473,53 +59553,6 @@ stage "implement" adjudicator "adj" failed
         );
     }
 
-    #[test]
-    fn a_budget_refused_plan_critique_gate_keeps_its_review_worktree() {
-        // sdet-u1c1-budget-refused-arm-untested: `run_plan_critique_gate`'s
-        // `parked_unwind` guard is `is_parked(e) || carries_marker(e, BUDGET_MARKER)` too, but no
-        // test had ever driven the `carries_marker(.., BUDGET_MARKER)` arm to a REAL refusal at this
-        // call site. `defaults.budget = 1`: the planner's own spawn consumes the whole
-        // budget (it runs synchronously right before the gate - spec 10's design, no
-        // pre-wave breaker check sits between them), so the gate's adversary spawn is a
-        // genuinely NEW, over-budget spawn `reserve_spawn` refuses deterministically -
-        // one spawn attempted at a time here (unlike `run_fan_out_stage`'s lenses), so
-        // there is no race to model.
-        let mut cfg = critique_cfg();
-        cfg.workflow.defaults.budget = 1;
-        let repo = temp_git_project_with_commit();
-        let repo_path = repo.path().to_str().unwrap().to_string();
-        let store = Store::open(":memory:").unwrap();
-        let driver = Stub::new();
-        let deps = Deps {
-            run_branch: branch_of(&repo_path),
-            repo: repo_path.clone(),
-            ..stub_deps(&store, &driver, Vec::new())
-        };
-        run_isolated(&cfg, &deps)
-            .expect("a plan-critique-gate budget refusal halts the run cleanly, it does not error");
-
-        assert!(
-            driver.spawned("planner"),
-            "the planner must actually spend the budget, or this test proves nothing"
-        );
-        assert!(
-            !driver.spawned("adversary"),
-            "the over-budget adversary spawn must be refused before it ever spawns, or this \
-             proves nothing about the refusal arm"
-        );
-
-        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
-        let (wt_dir, branch) = Throwaway::REVIEW.dir_and_branch(&scratch, "plan-critique", 0);
-        assert!(
-            std::path::Path::new(&wt_dir).exists(),
-            "a budget-refused plan-critique gate must KEEP its throwaway review worktree \
-             exactly like a parked one: {wt_dir}"
-        );
-        assert!(
-            worktree_registered_on(&repo_path, &branch),
-            "the kept review worktree must stay REGISTERED with git: {wt_dir}"
-        );
-    }
     /// THE CONDUCTOR'S ONE-EVENT MUTATION AUTHORITY IS A SINGLE-EVENT APPEND TOO, and it
     /// is held to the same answer as every other one in the codebase.
     ///

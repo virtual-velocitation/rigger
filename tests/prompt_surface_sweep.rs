@@ -58,7 +58,6 @@ const ALLOW_LIST: &[Allowed] = &[
             "wip({}): tree of speculation lane {lane}, which git refused",
             "rigger: left speculation lane {lane} of {} in its worktree a",
             "rigger: kept the worktree at {} (branch {}): {}",
-            "{BUDGET_MARKER} stage {stage:?} {tier} {agent:?}: spawn budg",
             "{MISMATCH_MARKER}stage {stage:?} {tier} {agent:?} returned N",
             "{DEGENERATE_MARKER}stage {stage:?} {tier} {agent:?} returned",
             "Recover by re-driving the reviewer and recording a SUBSTANTI",

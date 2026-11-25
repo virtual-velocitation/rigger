@@ -731,8 +731,8 @@ pub fn launch_interrupted(class: AgentFailure, message: String) -> Error {
 /// the [`STORE_FAULT_MARKER`] heading a [`store_fault`] (each dropped here because its readers -
 /// the held-run decorator for the first, the implementer's attempt arm and the refused record's
 /// re-run for the second, the held-run decorator and the conflict resolver for the third - match
-/// it before this strip runs, while `PARKED_MARKER` and `BUDGET_MARKER` pass through untouched, since
-/// callers upstream still branch on them).
+/// it before this strip runs, while `PARKED_MARKER` passes through untouched, since
+/// callers upstream still branch on it).
 /// Unlike `PARKED_MARKER`/`PLAN_LANDING_MARKER`/`LAND_REFUSED_MARKER` - bare prefixes a plain
 /// `.replace(MARKER, "")` cleans - [`FAILURE_MARKER`] brackets DATA (the class name) that
 /// the message ALSO repeats in prose (`no_result_error`'s own "class {class}"), so a bare

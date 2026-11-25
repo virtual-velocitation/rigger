@@ -63,7 +63,7 @@ const CURATED_PURPOSES: &[(&str, &str)] = &[
     ("gate", "gate execution"),
     ("ledger", "run ledger"),
     ("blocker", "blocker classification"),
-    ("budget", "spawn budget"),
+    ("budget", "build slots"),
     ("registry", "instance registry"),
     ("console", "mission control core"),
     ("eventstore", "the event store"),

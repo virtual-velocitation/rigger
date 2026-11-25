@@ -80,7 +80,6 @@ The workflow is a GitHub-Actions-style DAG declaring defaults, a gate library, a
 defaults:
   autonomy: auto_notify     # manual | auto_notify | silent
   grounder: symbols         # symbols | grep | nop
-  budget: 60                # spawn-cap circuit breaker (see below)
   max_retries: 6            # remediation depth before escalation
   review:                   # the review sequence every unit inherits
     lenses: [architecture-reviewer, sdet]
@@ -124,9 +123,7 @@ Some guidance an agent's prompt once carried now lives in a persona, and rigger 
 
 ### The knobs that matter
 
-**`budget`** is the hard cap on agent spawns for one unattended run. When spawns reach it, the breaker records `BudgetExhausted` and aborts. Under `rigger run` the count belongs to the run, not the process: a restarted run keeps counting from where the last one stopped, so a run halted on `BudgetExhausted` continues only once `budget` is raised. Keep it non-zero always: `0` means unlimited, and unlimited is how a unit a reviewer keeps rejecting churns for five hours. Raise it for a big spec; never disable it for an unattended run.
-
-**`max_retries`** is remediation *depth*, not review rigor. It bounds how many attempts a failed unit gets before escalating to a human. Raise it when a unit's defects are genuine but diminishing across iterations - it buys convergence room under the full-strength review; it never loosens the review bar. It is itself bounded by `budget`, so it can never spin unboundedly.
+**`max_retries`** is remediation *depth*, not review rigor. It bounds how many attempts a failed unit gets before escalating to a human. Raise it when a unit's defects are genuine but diminishing across iterations - it buys convergence room under the full-strength review; it never loosens the review bar. Every agent session sits under a bound where it is spent: a charged attempt under `max_retries`, an infrastructure rerun under its failure class's limit, after which the unit is held for the orchestrator, so no unit spins unboundedly.
 
 **`autonomy`** sets the default gate policy. Start new workflows at `manual` or `auto_notify`; let the ratchet earn `silent` per gate through clean passes. A gate that fails while non-manual demotes itself back to `manual` automatically.
 
@@ -178,12 +175,12 @@ Setup is two commands in any repo: `rigger init` (config-only: writes `.rigger/`
 1. `rigger setup --template <dir>` in the repo root, `<dir>` a template root whose `scaffold/` holds your language's gate template set (a checkout of this repository holds the `rust` set).
 2. Check the gates in `.rigger/workflow.yml`: `rigger init --template <dir>` takes them from the gate template set in that root matching your language, and declares none when no set matches or no root is named - declare your own under `gates:`. The gates must be the same checks CI runs, or the loop green-lights what CI rejects.
 3. Adapt the starter agents: the implement and checkin stages run the implementer the matching gate template set brings (`rust-engineer` from the Rust set), or the language-neutral `implementer` when no set matches or no root is named - tune it to your language and project - and put your project's defect classes in the reviewer prompts.
-4. Write a small spec (one or two criteria) and run it end-to-end at `autonomy: auto_notify` with a low `budget`.
+4. Write a small spec (one or two criteria) and run it end-to-end at `autonomy: auto_notify`.
 5. Read the run: the decisions emitted, the review verdicts, what integrated. Calibrate prompts and gates against what you see.
-6. Scale up: bigger specs, ratcheted autonomy, raised budget.
+6. Scale up: bigger specs, ratcheted autonomy.
 
 ## Remediation, escalation, and what the loop never does
 
-The failure policy is uniform everywhere: **escalate or bounded-retry - never silently drop, never infinitely spin.** A failed gate re-enters remediation with the failure attached. A review reject re-enters remediation with the findings attached. Exhausted retries escalate to a human with the full evidence trail. A budget trip aborts the run and says so. A spec defect discovered mid-run is flagged against the spec (the authority gets amended; the agent does not quietly deviate from it).
+The failure policy is uniform everywhere: **escalate or bounded-retry - never silently drop, never infinitely spin.** A failed gate re-enters remediation with the failure attached. A review reject re-enters remediation with the findings attached. Exhausted retries escalate to a human with the full evidence trail. A spec defect discovered mid-run is flagged against the spec (the authority gets amended; the agent does not quietly deviate from it).
 
 The loop lands code on a **run branch** (worktree commits merge into it on green). Getting the run branch into `main` is your PR, your review, your merge - the loop does not push to main.

@@ -173,7 +173,6 @@ fn write_fan_out_workflow(root: &Path, planned: bool, template_gate: &str) {
         format!(
             r#"defaults:
   grounder: nop
-  budget: 60
   max_retries: 1
 gates:
   ok: {{ run: "true", kind: core }}
@@ -606,7 +605,6 @@ fn a_stages_own_max_retries_bounds_the_attempts(default: u32, stage: u32) {
         format!(
             r#"defaults:
   grounder: nop
-  budget: 60
   max_retries: {default}
 gates:
   bad: {{ run: "false", kind: core }}

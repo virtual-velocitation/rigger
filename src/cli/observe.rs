@@ -357,7 +357,7 @@ pub(crate) fn cmd_status(args: &[String]) -> Res {
     // renders, spec 19a), the needs-you dock, the statusline and the run's open hold (spec 105) -
     // so `rigger status` prints exactly what the future console page will render from the
     // identical stream, never a second, independently-composed copy of any of the five. Computed
-    // even when no agent is parked, so an escalated unit or a budget halt (which have no live
+    // even when no agent is parked, so an escalated unit (which has no live
     // spawn) is still surfaced.
     let console_state = console::fold(run_events, max_retries)?;
 
@@ -1041,7 +1041,7 @@ mod tests {
     /// a temp dir so the real project's `.rigger/` is untouched.
     #[test]
     // Mutates the process-global CWD (`set_current_dir` below). Shares the `cwd` serial
-    // key with `shipped_workflows_carry_a_non_zero_spawn_budget` (which reads relative
+    // key with `shipped_workflows_load_and_validate` (which reads relative
     // paths) so the two never run concurrently: the restore guard prevents LEAKING a
     // changed CWD past this test, but only mutual exclusion prevents the other test from
     // OBSERVING the changed CWD mid-window.

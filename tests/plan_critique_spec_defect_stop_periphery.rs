@@ -75,7 +75,7 @@ fn spec_ambiguity_first() -> String {
 /// template the gate releases, which covers each criterion of a run begun on a spec (the relaunch)
 /// and none of a run with no criteria. `max_retries: 3` leaves the gate a re-plan after its second
 /// reject, so a stop - not the remediation bound - is what ends the round that follows it.
-const WORKFLOW: &str = "defaults:\n  grounder: nop\n  budget: 60\n  max_retries: 3\n\
+const WORKFLOW: &str = "defaults:\n  grounder: nop\n  max_retries: 3\n\
                         stages:\n  plan:\n    agent: planner\n    produces: dag\n  \
                         plan-critique:\n    needs: [plan]\n    adversary: adversary\n    \
                         adjudicator: judge\n  implement:\n    needs: [plan-critique]\n    \

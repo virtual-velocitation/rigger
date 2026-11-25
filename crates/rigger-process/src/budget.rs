@@ -50,7 +50,7 @@ pub struct BuildBudget {
 
 impl BuildBudget {
     /// Resolve the budget from the workflow's `build.max_concurrent` config (spec 65): `0`
-    /// means unlimited (the same convention `defaults.budget` uses) - every [`acquire`]
+    /// means unlimited - every [`acquire`]
     /// call is admitted immediately and no slot directory is ever created or touched. A
     /// positive N caps concurrent builds at N, machine-wide, under `slot_dir`.
     ///
