@@ -671,10 +671,11 @@ impl CompiledTags {
 /// the qualifier it is written with ([`CompiledTags::split_leaf`]). A Rust tag's name is that leaf
 /// already, so a Rust reference carries the qualifier the Rust rule reads off the tree around its
 /// name ([`rust_qualifier`], spec 117, RUST REFERENCES) instead, and one whose path's qualifier
-/// names the standard library or a primitive type stages nothing ([`excluded_qualifier`]). A
-/// function a Rust tree passes by name ([`function_values`], spec 117, RUST STAGES FUNCTION
-/// VALUES) is a call reference at its name, staged by that same rule ([`rust_call`]) after its
-/// tree's reference tags.
+/// names the standard library or a primitive type stages nothing ([`excluded_qualifier`]), a
+/// field a struct literal or pattern names written under the struct's name as under a path (spec
+/// 117, RUST STAGES FIELD USES). A function a Rust tree passes by name ([`function_values`], spec
+/// 117, RUST STAGES FUNCTION VALUES) is a call reference at its name, staged by that same rule
+/// ([`rust_staged`]) after its tree's reference tags.
 ///
 /// Rust's const reads, type references and the leaves a `use` imports are read off the tree too
 /// ([`rust_references`], spec 117): each is a reference tagged with its `ref_kind`, pushed after
@@ -809,8 +810,8 @@ pub fn extract(source: &str, lang: Lang, tags: &CompiledTags) -> Result<FileSymb
                             let leaf = read
                                 .root
                                 .descendant_for_byte_range(tag.leaf.start, tag.leaf.end);
-                            let Some(qualifier) =
-                                leaf.map_or(Some(None), |leaf| rust_call(leaf, bytes, read.scope))
+                            let Some(qualifier) = leaf
+                                .map_or(Some(None), |leaf| rust_staged(leaf, bytes, read.scope))
                             else {
                                 continue;
                             };
@@ -835,7 +836,7 @@ pub fn extract(source: &str, lang: Lang, tags: &CompiledTags) -> Result<FileSymb
         // gathered for Rust alone.
         for leaf in function_values(&read.structure, bytes, read.scope) {
             let (Ok(name), Some(qualifier)) =
-                (leaf.utf8_text(bytes), rust_call(leaf, bytes, read.scope))
+                (leaf.utf8_text(bytes), rust_staged(leaf, bytes, read.scope))
             else {
                 continue;
             };
@@ -2014,23 +2015,21 @@ fn enclosing_generics<'a>(
 }
 
 /// RUST'S QUALIFIER (spec 117, RUST REFERENCES): the qualifier a Rust reference is written
-/// with, read off the parent of `leaf`, its name node. A scoped path's name is qualified, as a
-/// path, by the segment before it ([`path_qualifier`]); a member's name whose receiver node is
-/// exactly `self` is qualified, as a member access, by the type or trait `self` names there
-/// ([`self_qualifier`]). A qualifier [`excluded`] holds - a generic parameter of an item
-/// enclosing `leaf`, or a `Self` or `self` whose self type names the standard library - is none,
-/// an alias the file's `use` binds is written as the name it imports ([`Scope::aliases`]), and
-/// every other name is unqualified: a lowercase segment, a `crate`, `self` or `super` path, and
-/// any other receiver (`self.inner.open()`). A re-parsed `leaf` reads `Self`, `self`, the
-/// enclosing generics and the aliases through its invocation's `scope` too. A path whose
-/// qualifier names the standard library never reaches here ([`excluded_qualifier`]).
+/// with, read off the parent of `leaf`, its name node. A name written under a path - a scoped
+/// path's, or a struct literal's or pattern's field under the struct's name
+/// ([`qualifying_path`]) - is qualified, as a path, by the segment before it
+/// ([`path_qualifier`]); a member's name whose receiver node is exactly `self` is qualified, as a
+/// member access, by the type or trait `self` names there ([`self_qualifier`]). A qualifier
+/// [`excluded`] holds - a generic parameter of an item enclosing `leaf`, or a `Self` or `self`
+/// whose self type names the standard library - is none, an alias the file's `use` binds is
+/// written as the name it imports ([`Scope::aliases`]), and every other name is unqualified: a
+/// lowercase segment, a `crate`, `self` or `super` path, and any other receiver
+/// (`self.inner.open()`). A re-parsed `leaf` reads `Self`, `self`, the enclosing generics and the
+/// aliases through its invocation's `scope` too. A path whose qualifier names the standard
+/// library never reaches here ([`excluded_qualifier`]).
 fn rust_qualifier(leaf: tree_sitter::Node, source: &[u8], scope: &Scope) -> Option<Qualifier> {
     let parent = leaf.parent()?;
     let (name, path) = match parent.kind() {
-        "scoped_identifier" => (
-            path_qualifier(parent.child_by_field_name("path")?, source, scope)?,
-            true,
-        ),
         "field_expression"
             if parent
                 .child_by_field_name("value")
@@ -2038,7 +2037,7 @@ fn rust_qualifier(leaf: tree_sitter::Node, source: &[u8], scope: &Scope) -> Opti
         {
             (self_qualifier(leaf, source, scope)?, false)
         }
-        _ => return None,
+        _ => (path_qualifier(qualifying_path(leaf)?, source, scope)?, true),
     };
     if excluded(&name, None, leaf, source, scope) {
         return None;
@@ -2051,27 +2050,24 @@ fn rust_qualifier(leaf: tree_sitter::Node, source: &[u8], scope: &Scope) -> Opti
     Some(Qualifier { name, path })
 }
 
-/// A Rust call staged at `leaf`, its name node: the qualifier it is written with
-/// ([`rust_qualifier`]), or `None` when it stages nothing, its path's qualifier excluded
-/// ([`excluded_qualifier`]) - the one rule a tagged call and a function value ([`function_values`])
-/// both stage by.
-fn rust_call(leaf: tree_sitter::Node, source: &[u8], scope: &Scope) -> Option<Option<Qualifier>> {
+/// A Rust reference staged at `leaf`, its name node: the qualifier it is written with
+/// ([`rust_qualifier`]), or `None` when it stages nothing, the qualifier of the path it is written
+/// under excluded ([`excluded_qualifier`]) - the one rule a tagged call, a tagged field and a
+/// function value ([`function_values`]) all stage by.
+fn rust_staged(leaf: tree_sitter::Node, source: &[u8], scope: &Scope) -> Option<Option<Qualifier>> {
     (!excluded_qualifier(leaf, source, scope)).then(|| rust_qualifier(leaf, source, scope))
 }
 
 /// AN EXCLUDED QUALIFIER (spec 117, RUST REFERENCES): whether `leaf`, a reference's name node,
-/// is the name of a scoped path that stages no mention - one whose qualifier as written
-/// ([`qualifier_segment`], before any alias is read) names the standard library ([`std_named`])
-/// or whose root segment ([`root_segment`]) does or is a primitive type ([`is_primitive`]),
-/// whatever the case of its other segments (`Vec::new`, `std::fs::read`, `u32::from`). A `Self`
-/// and an enclosing generic parameter are no such qualifier: their call stages, unqualified by
-/// [`rust_qualifier`].
+/// is written under a path ([`qualifying_path`]) that stages no mention - one whose qualifier as
+/// written ([`qualifier_segment`], before any alias is read) names the standard library
+/// ([`std_named`]) or whose root segment ([`root_segment`]) does or is a primitive type
+/// ([`is_primitive`]), whatever the case of its other segments (`Vec::new`, `std::fs::read`,
+/// `u32::from`, `Range { start, end }` under `use std::ops::Range`). A `Self` and an enclosing
+/// generic parameter are no such qualifier: their reference stages, as [`rust_qualifier`]
+/// qualifies it.
 fn excluded_qualifier(leaf: tree_sitter::Node, source: &[u8], scope: &Scope) -> bool {
-    let Some(path) = leaf
-        .parent()
-        .filter(|parent| parent.kind() == "scoped_identifier")
-        .and_then(|parent| parent.child_by_field_name("path"))
-    else {
+    let Some(path) = qualifying_path(leaf) else {
         return false;
     };
     let root = root_segment(path, source);
@@ -2082,12 +2078,29 @@ fn excluded_qualifier(leaf: tree_sitter::Node, source: &[u8], scope: &Scope) -> 
             .is_some_and(|written| std_named(written, root, scope))
 }
 
-/// The qualifier the `path` of a scoped path writes before its name ([`rust_qualifier`]): its
-/// segment ([`qualifier_segment`]) when that begins uppercase (`Memo::<K>::new` and
-/// `a::Memo::<K>::new` give `Memo`, `Memo::<K>::Inner::<J>::new` gives `Inner`, `<T as Tr>::f`
-/// gives `Tr`), and `Self` by the type or trait it names there ([`self_qualifier`]); `None` for a
-/// lowercase segment, a `crate`, `self` or `super` path and a bracketed type naming no trait
-/// (`<T>::f`).
+/// The path the Rust name node `leaf` is written under, read off its parent: a scoped path's
+/// `path`, and under a struct literal's or pattern's field the struct's name (`T` of `T { f }`,
+/// `T { f: v }` and `T { f: p }`), which stands before the field as a scoped path's does before
+/// its name; `None` under any other parent. Its callers pass a reference's name, never a field's
+/// value or pattern.
+fn qualifying_path(leaf: tree_sitter::Node) -> Option<tree_sitter::Node> {
+    let parent = leaf.parent()?;
+    match parent.kind() {
+        "scoped_identifier" => parent.child_by_field_name("path"),
+        "field_initializer" | "shorthand_field_initializer" => {
+            parent.parent()?.parent()?.child_by_field_name("name")
+        }
+        "field_pattern" => parent.parent()?.child_by_field_name("type"),
+        _ => None,
+    }
+}
+
+/// The qualifier a `path` a name is written under ([`qualifying_path`]) writes before it
+/// ([`rust_qualifier`]): its segment ([`qualifier_segment`]) when that begins uppercase
+/// (`Memo::<K>::new` and `a::Memo::<K>::new` give `Memo`, `Memo::<K>::Inner::<J>::new` gives
+/// `Inner`, `<T as Tr>::f` gives `Tr`, `a::Opts { f }` gives `Opts`), and `Self` by the type or
+/// trait it names there ([`self_qualifier`]); `None` for a lowercase segment, a `crate`, `self` or
+/// `super` path and a bracketed type naming no trait (`<T>::f`).
 fn path_qualifier(path: tree_sitter::Node, source: &[u8], scope: &Scope) -> Option<String> {
     let segment = qualifier_segment(path)?;
     match segment.utf8_text(source).ok()? {
@@ -2096,13 +2109,16 @@ fn path_qualifier(path: tree_sitter::Node, source: &[u8], scope: &Scope) -> Opti
     }
 }
 
-/// The segment the `path` of a scoped path writes last before its name: its final segment
-/// ([`final_identifier`]), a turbofish's generic type by its type's final segment or a bare type
-/// name ([`base_type_identifier`]), and a qualified-self path's trait; `None` for a `crate`,
-/// `self` or `super` path and a bracketed type naming no trait.
+/// The segment a `path` a name is written under ([`qualifying_path`]) writes last before it: its
+/// final segment ([`final_identifier`]), a turbofish's generic type by its type's final segment or
+/// a bare type name ([`base_type_identifier`]), a struct's name by its final segment, its
+/// turbofish stripped, and a qualified-self path's trait; `None` for a `crate`, `self` or `super`
+/// path and a bracketed type naming no trait.
 fn qualifier_segment(path: tree_sitter::Node) -> Option<tree_sitter::Node> {
     match path.kind() {
         "generic_type" => final_identifier(path).or_else(|| base_type_identifier(path)),
+        "generic_type_with_turbofish" => qualifier_segment(path.child_by_field_name("type")?),
+        "type_identifier" | "scoped_type_identifier" => base_type_identifier(path),
         "bracketed_type" => {
             base_type_identifier(path.named_child(0)?.child_by_field_name("alias")?)
         }
@@ -2198,17 +2214,18 @@ fn final_identifier(path: tree_sitter::Node) -> Option<tree_sitter::Node> {
     }
 }
 
-/// The text of a Rust path node's ROOT segment - its first: an `identifier`, `crate`, `self` or
-/// `super` itself, a scoped path's `path` followed down, a `generic_type`'s type's; a scoped path
-/// with no `path` (`::name`) roots at its name.
+/// The text of a Rust path node's ROOT segment - its first: an `identifier`, a `type_identifier`,
+/// `crate`, `self` or `super` itself, a scoped path's or scoped type's `path` followed down, a
+/// `generic_type`'s or turbofish's type's; a scoped path with no `path` (`::name`) roots at its
+/// name.
 fn root_segment(path: tree_sitter::Node, source: &[u8]) -> Option<String> {
     let mut cur = path;
     loop {
         cur = match cur.kind() {
-            "scoped_identifier" => cur
+            "scoped_identifier" | "scoped_type_identifier" => cur
                 .child_by_field_name("path")
                 .or_else(|| cur.child_by_field_name("name"))?,
-            "generic_type" => cur.child_by_field_name("type")?,
+            "generic_type" | "generic_type_with_turbofish" => cur.child_by_field_name("type")?,
             _ => return Some(cur.utf8_text(source).ok()?.to_string()),
         };
     }
@@ -4984,7 +5001,8 @@ fn product() {}
     /// AN EXCLUDED QUALIFIER STAGES NOTHING (spec 117, RUST REFERENCES): a call whose path's
     /// written qualifier is a prelude name, a standard-library import or alias, or whose path is
     /// rooted at the standard library, at such an import or at a primitive type, stages no
-    /// mention, a macro's token tree and a qualified-self path's trait alike, while the macro's
+    /// mention, a struct literal's or pattern's field under such a struct name, a macro's token
+    /// tree and a qualified-self path's trait alike, while the macro's
     /// own call stages. An alias qualifier is written as the name it imports, exclusion read on
     /// the alias as written first; a `Self` or `self` whose self type is excluded and an enclosing
     /// generic parameter stage the call unqualified; a qualifier no exclusion holds (a
@@ -5086,6 +5104,18 @@ fn r(p: &str) {
 }
 ",
                 "1 def Function r to 5",
+            ),
+            (
+                "a standard-library-rooted struct stages no field, its name scoped, a turbofish or a \
+                 pattern's",
+                "\
+fn s(r: u8, start: u8) {
+    std::ops::Range { start, end: 1 };
+    core::ops::Range::<u8> { start: 0, end: 1 };
+    let std::ops::Range { end, .. } = r;
+}
+",
+                "1 def Function s to 5",
             ),
             (
                 "a path rooted at a standard-library import stages no call",
@@ -5323,6 +5353,8 @@ fn m(v: u8) {
 ",
                 "\
 1 def Function m to 4
+2 ref field a m q S::
+2 ref field b m q S::
 2 ref type S m
 3 ref call w m",
             ),
@@ -5443,6 +5475,163 @@ fn q(v: u8) {
                 "\
 1 def Function ab to 3
 2 ref call vec ab",
+            ),
+        ];
+        for (why, src, expected) in cases {
+            assert_eq!(read_lines(src), expected, "{why}");
+        }
+    }
+
+    /// Spec 117, RUST STAGES FIELD USES: a field read or assigned without a call (`x.f`) is a
+    /// `field` mention, qualified as a member by the type `self` names when its receiver is
+    /// exactly `self`, and unqualified off any other receiver; a field a struct literal or pattern
+    /// names (`T { f }`, `T { f: v }`, `T { ref f, f: p, .. }`) is one qualified by the struct's
+    /// path - its final segment, generics stripped, and `Self` as the impl's self type. A method
+    /// call stays a call alone, a tuple index and an integer field stage nothing, a struct whose
+    /// name is excluded stages no field, and a token tree's field uses read as the code's do.
+    #[test]
+    fn rust_stages_field_uses() {
+        let cases = [
+            (
+                "a field assigned without a call is a field mention, unqualified",
+                "fn a(opts: u8, x: u8) {\n    opts.system_prompt = x;\n}\n",
+                "\
+1 def Function a to 3
+2 ref field system_prompt a",
+            ),
+            (
+                "a struct literal's shorthand field is a field mention qualified by the struct",
+                "fn b(system_prompt: u8) {\n    SpawnOpts { system_prompt };\n}\n",
+                "\
+1 def Function b to 3
+2 ref field system_prompt b q SpawnOpts::
+2 ref type SpawnOpts b",
+            ),
+            (
+                "a field read off self is a member field mention qualified by the impl's self type",
+                "\
+struct Store;
+impl Store {
+    fn at(&self) -> u8 {
+        self.root
+    }
+}
+",
+                "\
+1 def Type Store to 1
+2 def Impl impl Store to 6
+2 ref call Store impl Store
+3 def Method Store::at to 5 in impl Store
+4 ref field root Store::at q Store.",
+            ),
+            (
+                "a method call is a call alone, a turbofish's alike",
+                "fn c(opts: u8) {\n    opts.run();\n    opts.run::<u8>();\n}\n",
+                "\
+1 def Function c to 4
+2 ref call run c
+3 ref call run c",
+            ),
+            (
+                "a tuple index and an integer field initializer stage no field",
+                "fn d(x: u8) {\n    x.0;\n    Pair { 0: x };\n}\n",
+                "\
+1 def Function d to 4
+3 ref type Pair d",
+            ),
+            (
+                "a struct pattern's and a struct literal's fields are qualified by the struct",
+                "\
+fn e() {
+    let Opts { ref root, depth: d, .. } = Opts { root: 1, depth: 2 };
+}
+",
+                "\
+1 def Function e to 3
+2 ref field depth e q Opts::
+2 ref field depth e q Opts::
+2 ref field root e q Opts::
+2 ref field root e q Opts::
+2 ref type Opts e
+2 ref type Opts e",
+            ),
+            (
+                "a scoped or turbofish struct name qualifies its fields by its final segment",
+                "\
+fn f() {
+    a::Opts { root: 1 };
+    Wrap::<u8> { inner: 1 };
+    a::Wrap::<u8> { inner: 1 };
+}
+",
+                "\
+1 def Function f to 5
+2 ref field root f q Opts::
+2 ref type Opts f
+3 ref field inner f q Wrap::
+3 ref type Wrap f
+4 ref field inner f q Wrap::",
+            ),
+            (
+                "a Self literal's fields are qualified by the impl's self type",
+                "\
+struct Store;
+impl Store {
+    fn new() -> Self {
+        Self { root: 1 }
+    }
+}
+",
+                "\
+1 def Type Store to 1
+2 def Impl impl Store to 6
+2 ref call Store impl Store
+3 def Method Store::new to 5 in impl Store
+4 ref field root Store::new q Store::",
+            ),
+            (
+                "a struct named by a standard-library import or path stages no field",
+                "\
+use std::ops::Range;
+fn g(r: Range<u8>) {
+    Range { start: 0, end: 1 };
+    std::ops::Range { start: 0, end: 1 };
+    let Range { start, .. } = r;
+}
+",
+                "2 def Function g to 6",
+            ),
+            (
+                "a receiver chain off self qualifies the field read off self alone",
+                "\
+struct Store;
+impl Store {
+    fn at(&self) {
+        self.inner.open();
+        self.inner.depth;
+    }
+}
+",
+                "\
+1 def Type Store to 1
+2 def Impl impl Store to 7
+2 ref call Store impl Store
+3 def Method Store::at to 6 in impl Store
+4 ref call open Store::at
+4 ref field inner Store::at q Store.
+5 ref field depth Store::at
+5 ref field inner Store::at q Store.",
+            ),
+            (
+                "a field use inside a macro's token tree is read",
+                "fn h(opts: u8) {\n    dbg!(opts.root);\n    vec![Opts { root: 1 }];\n}\n",
+                "\
+1 def Function h to 4
+2 ref call dbg h
+2 ref field root h
+3 ref call vec h
+3 ref field root h q Opts::
+3 ref type Opts h",
             ),
         ];
         for (why, src, expected) in cases {
@@ -5840,7 +6029,8 @@ fn read(k: Kestrel) -> u32 {
             // A local, a generic and a const generic parameter of an enclosing item, an impl
             // header's self type, `Self`, a name the file imports from `std` (a leaf, an alias by
             // its alias name, a path rooted at an imported module), a `std::` path and a
-            // primitive-qualified const stage nothing, while a project type beside them does.
+            // primitive-qualified const stage nothing, while a project type and a field read
+            // beside them do.
             (
                 "locals, generics, Self, std names and primitive consts are never tagged",
                 "\
@@ -5864,6 +6054,7 @@ impl<T: Clone> Holder<T> {
 }
 ",
                 "\
+13 field item Holder<T>::get
 15 type Plover Holder<T>::get
 15 type Plover Holder<T>::get",
             ),
@@ -5895,7 +6086,7 @@ impl Draw for Gizmo {}
             // path's final identifier when it begins with an uppercase letter (`Enum::Variant
             // { .. }`), else of the name (`module::Type { .. }`); a tuple-struct pattern and a
             // unit pattern stage their path's final uppercase identifier, and a const pattern
-            // stages no const read.
+            // stages no const read; each field a literal names is a `field` row beside its type.
             (
                 "struct literals and patterns stage one type row each",
                 "\
@@ -5915,8 +6106,11 @@ fn f(k: Kind) {
                 "\
 1 type Kind f
 2 type Foo f
+2 field a f
 3 type Enum f
+3 field a f
 4 type Type f
+4 field a f
 6 type Enum f
 7 type Enum f
 8 type Kind f
@@ -6607,6 +6801,7 @@ impl S {
 1 def Function y to 3
 2 ref call m y
 2 ref const K y
+2 ref field x y q S::
 2 ref type S y",
             ),
             (

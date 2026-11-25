@@ -308,6 +308,14 @@ enclosing impl's self type, generics stripped, or inside a trait body the trait;
 receiver is exactly `self` is a member access qualified by that same type or trait. A lowercase
 segment, a `crate`, `self` or `super` path, any other receiver (`self.a.f()`), an enclosing generic
 parameter and a self type naming no single type write none.
+A Rust field use is a `field` reference qualified by the same rule: a named field read or assigned
+without a call (`opts.root = x`), a member access only when its receiver is exactly `self`
+(`self.root` inside `impl Store` is `Store.root`, `self.inner.depth` is a bare `depth`), and the
+named field a struct literal or pattern writes (`T { f }`, `T { f: v }`, `let T { f, .. }`),
+qualified by the struct's name as a call is by its path (`a::Wrap::<u8> { inner: v }` gives
+`Wrap`, `Self { f }` the impl's self type). A method call's name (`x.f()`) stays a call, and a
+tuple index (`x.0`, `T { 0: v }`) or a field of a struct whose qualifier is excluded
+(`Range { start, end }` under `use std::ops::Range`) stages none.
 A Rust function passed by name is a call at its site, named and qualified as a call is, a
 turbofish after it or not: the leaf of a path read outside a call when it begins lowercase
 (`.map(Store::open)` is `open` qualified by `Store`), and a bare identifier passed as a call's

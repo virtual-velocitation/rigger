@@ -12,12 +12,14 @@ use super::normalise;
 use super::prose::{ProseHit, ProseIndex, Ranked};
 use super::text::{self, TermText, TextHit};
 use super::{words, Lookup, TreeLookup};
+#[cfg(feature = "symbols")]
+use crate::contextgraph::{
+    referrer_label, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_DESIGN_DOC, KIND_FILE, REFERRER_LABELS,
+};
 use crate::contextgraph::{
     CallGraph, CallNode, Candidate, ContextGraph, Direction, Error, Graph, Located, Node, Referrer,
     KIND_DECISION, REBUILD_OWED,
 };
-#[cfg(feature = "symbols")]
-use crate::contextgraph::{KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_DESIGN_DOC, KIND_FILE};
 use rigger_domain::code_view::{Compared, Tests};
 use rigger_domain::composed::Label;
 
@@ -1533,6 +1535,26 @@ crate::test_cases! {
         held_under(REPLY_LIMIT / 100 + 1, (REPLY_LIMIT - budget::NOTE_ROOM) / 100);
 }
 
+/// The referrer at `site`, of `kind`, listed under `label` for a mention at `line`.
+#[cfg(feature = "symbols")]
+fn referrer(
+    site: &str,
+    kind: &str,
+    label: &'static str,
+    line: u32,
+    test: bool,
+    ambiguous: bool,
+) -> Referrer {
+    Referrer {
+        site: site.to_string(),
+        kind: kind.to_string(),
+        label,
+        line,
+        test,
+        ambiguous,
+    }
+}
+
 /// A term the graph locates but no name reaches is answered by what it locates: each entity's
 /// doc, its referrers under each label in the labels' order, whatever order the graph lists them
 /// in, each at its mention's line, marked `[test]` when it is test code and then `?` when it is
@@ -1541,14 +1563,6 @@ crate::test_cases! {
 #[cfg(feature = "symbols")]
 #[test]
 fn a_located_term_is_answered_with_its_doc_referrers_and_callees() {
-    let referrer = |site: &str, kind: &str, label, line, test, ambiguous| Referrer {
-        site: site.to_string(),
-        kind: kind.to_string(),
-        label,
-        line,
-        test,
-        ambiguous,
-    };
     let (dir, graph) = (
         tree(&[("a.rs", "fn target() { callee() }\n")]),
         Held {
@@ -1581,6 +1595,45 @@ fn a_located_term_is_answered_with_its_doc_referrers_and_callees() {
         budget::GRAPH_FILTERED
     );
     assert_eq!(section(&reply, "graph"), expected);
+}
+
+/// Every tag has its label (spec 117, READERS): an entity whose referrers are mentions of one tag
+/// of the label table lists them on one line under that tag's label, and one with more referrers
+/// under a label than the cap lists the first ten and then `(+N more)`.
+#[cfg(feature = "symbols")]
+#[test]
+fn every_tag_has_its_label() {
+    use rigger_domain::code_facts::MentionKind;
+
+    let kind =
+        |tag: Option<&str>| tag.map_or(MentionKind::Call, |tag| MentionKind::Tagged(tag.into()));
+    let one = "b.rs:7 b.rs::r0 (function)";
+    let ten = listed("b.rs:7 b.rs::r", " (function)", 10, "; ");
+    // (the referrers' mention tag, how many there are, the line the entity lists them on)
+    let rows = (REFERRER_LABELS.iter())
+        .map(|&(tag, label)| (tag, 1, format!("  {label}: {one}\n")))
+        .chain([
+            (None, 10, format!("  called by: {ten}\n")),
+            (None, 11, format!("  called by: {ten} (+1 more)\n")),
+        ]);
+    for (tag, n, printed) in rows {
+        let label = referrer_label(&kind(tag)).expect("the table labels each of its tags");
+        let site = |i| referrer(&format!("b.rs::r{i}"), "function", label, 7, false, false);
+        let graph = Held {
+            nodes: vec![entity("a.rs", "target", 1)],
+            located: [("target".to_string(), vec!["a.rs::target".to_string()])].into(),
+            referrers: [("a.rs::target".to_string(), (0..n).map(site).collect())].into(),
+            ..Held::default()
+        };
+        let answered = super::graph::answer(&["target"], &graph, Tests::Exclude);
+        let reply = budget::reply(&["target"], answered, Err("x".into()), Err("x".into()));
+        let expected = format!(
+            "{}\n{}\n\n### target\nexact match: 1 entity\n- a.rs:1 a.rs::target (function)\n{printed}",
+            held_label(),
+            budget::GRAPH_FILTERED
+        );
+        assert_eq!(section(&reply, "graph"), expected, "{tag:?}, {n} referrers");
+    }
 }
 
 /// An entity's doc is shown by its first line alone, under its site line, and only when that line
