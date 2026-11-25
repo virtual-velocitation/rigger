@@ -1242,9 +1242,9 @@ fn impl_blocks(impls: &[tree_sitter::Node], source: &[u8]) -> Vec<ImplBlock> {
 /// list in source order and holding only nodes within the byte ranges the tree is read over
 /// ([`kept`]): every `use_declaration` and every `impl_item` ([`rust_references`],
 /// [`impl_blocks`]), every [`GATED_NON_DEFINITIONS`] node ([`test_regions`]), and, for Rust, every
-/// node [`rust_references`] reads, a macro invocation among them ([`reparse_invocations`]) - each
-/// one outside an [`OPAQUE_KINDS`] subtree, a `use_declaration` read whole by its leaves and never
-/// descended.
+/// node [`rust_references`] and [`function_values`] read, a macro invocation among them
+/// ([`reparse_invocations`]) - each one outside an [`OPAQUE_KINDS`] subtree, a `use_declaration`
+/// read whole by its leaves and never descended.
 struct StructuralNodes<'t> {
     uses: Vec<tree_sitter::Node<'t>>,
     impls: Vec<tree_sitter::Node<'t>>,
@@ -2128,9 +2128,10 @@ fn self_qualifier(node: tree_sitter::Node, source: &[u8], scope: &Scope) -> Opti
     Some(named.utf8_text(source).ok()?.to_string())
 }
 
-/// Whether `node`, an `identifier` or a whole `scoped_identifier`, is an expression READ (spec
-/// 117): outside every pattern - but a match arm's guard, its `condition`, is read - a closure's
-/// parameters, a lifetime and a label, and not under a parent field of [`NON_READ_FIELDS`] (a
+/// Whether `node`, an `identifier`, a whole `scoped_identifier` or the `generic_function` a
+/// turbofish writes one in ([`function_values`]), is an expression READ (spec 117): outside every
+/// pattern - but a match arm's guard, its `condition`, is read - a closure's parameters, a
+/// lifetime and a label, and not under a parent field of [`NON_READ_FIELDS`] (a
 /// `scoped_identifier`'s segments among them: a path is read whole).
 fn is_read(node: tree_sitter::Node) -> bool {
     node.parent().is_some_and(|parent| {
