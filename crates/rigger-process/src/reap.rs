@@ -4274,7 +4274,8 @@ mod tests {
             let mut witness = Witness::new();
             let mut root = tree(&witness, "( holder; up; held ) & up; held");
             assert!(witness.wait_up(3), "the fixture's three processes are up");
-            let middle = only_child(root.id());
+            let root_pid = root.id();
+            let middle = only_child(root_pid);
             let deepest = only_child(middle);
             let mut os = Rigged {
                 held: Some((middle, "run-r9.scope")),
@@ -4291,19 +4292,42 @@ mod tests {
                 .map(|held| (held.process.pid, held.unit.clone()))
                 .collect();
             let (sent, rest) = split(report);
-            let left_running = witness.read();
-            let released = witness.release();
             assert_eq!(
-                (sent, held, rest.skipped, rest.residue, left_running, released),
+                (sent, held, rest.skipped, rest.residue, witness.read()),
                 (
                     vec![deepest],
                     vec![(middle, "run-r9.scope".to_string())],
                     vec![],
                     vec![],
                     Reading::Held,
-                    Reading::Ended
                 ),
                 "{ending:?}: the held-apart middle runs on, named with its unit; its child is ended"
+            );
+            let released = witness.release();
+            let still: Vec<_> = [root_pid, middle, deepest]
+                .into_iter()
+                .map(|pid| (pid, os_process::state(pid), os_process::parent(pid)))
+                .collect();
+            let ps = StdCommand::new("ps")
+                .args(["-A", "-o", "pid,ppid,stat,wchan,command"])
+                .output()
+                .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
+                .unwrap_or_default();
+            let near: Vec<&str> = ps
+                .lines()
+                .filter(|line| {
+                    [root_pid, middle, deepest].iter().any(|pid| {
+                        line.split_whitespace()
+                            .take(2)
+                            .any(|f| f == pid.to_string())
+                    })
+                })
+                .collect();
+            assert_eq!(
+                released,
+                Reading::Ended,
+                "{ending:?}: the release ends what the end left: {still:?} {near:#?} {:?}",
+                os.sent
             );
             assert!(
                 !os.sent
