@@ -629,6 +629,8 @@ fn a_workflow_node_of_a_differing_definition_describes_the_worktree() {
 /// before `fits`, so source order is not name order), by a `#[test]` function and by the
 /// `#[cfg(test)]` twin of the product `helper`, and whose type `Bin` is named in `spill`'s
 /// signature.
+/// Its function `ready` is called on a body line of `start`, then on two of `begin`'s (source order
+/// again not name order), and by a `#[test]` function.
 const READERS: &str = "\
 /// The most widgets one bin holds.
 /// It bounds every bin.
@@ -666,6 +668,24 @@ mod tests {
         let n = LIMIT;
     }
 }
+
+pub fn ready() -> bool {
+    true
+}
+
+pub fn start() -> bool {
+    ready()
+}
+
+pub fn begin() -> bool {
+    let first = ready();
+    first || ready()
+}
+
+#[test]
+fn it_starts() {
+    let up = ready();
+}
 ";
 
 /// GIVEN a built project holding [`READERS`], WHEN `rigger graph --lookup` reads the constant and
@@ -673,6 +693,8 @@ mod tests {
 /// under its site line, then a `reads:` line naming the two product functions at the lines that
 /// read it, in source order, and neither test reader, though the `#[cfg(test)]` reader's id is the
 /// product `helper`'s; the type's `type use:` line names the function whose signature names it.
+/// Read the same way, the function's `called by:` line names each product call at the call's own
+/// line, once per call, in source order, and not the `#[test]` function's call.
 #[test]
 fn the_lookup_names_referrers_by_kind() {
     let dir = temp_project();
@@ -681,7 +703,7 @@ fn the_lookup_names_referrers_by_kind() {
     git_commit_all(root, "source");
     run_rigger_ok(root, &["graph", "build"]);
     // (the term, its block's lines from its heading to the next section's)
-    let cases: [(&str, &[&str]); 2] = [
+    let cases: [(&str, &[&str]); 3] = [
         (
             "LIMIT",
             &[
@@ -701,6 +723,17 @@ fn the_lookup_names_referrers_by_kind() {
                 "exact match: 1 entity",
                 "- src/lib.rs:5 src/lib.rs::Bin (type)",
                 "  type use: src/lib.rs:9 src/lib.rs::spill (function)",
+                "",
+                "## text",
+            ],
+        ),
+        (
+            "ready",
+            &[
+                "### ready",
+                "exact match: 1 entity",
+                "- src/lib.rs:38 src/lib.rs::ready (function)",
+                "  called by: src/lib.rs:43 src/lib.rs::start (function); src/lib.rs:47 src/lib.rs::begin (function); src/lib.rs:48 src/lib.rs::begin (function)",
                 "",
                 "## text",
             ],
