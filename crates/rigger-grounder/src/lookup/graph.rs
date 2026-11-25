@@ -1,13 +1,14 @@
 //! The graph half: each term resolved against the code graph ([`ContextGraph::locate`] first,
 //! then the name index's exact, prefix and fuzzy tiers) and answered with each entity's definition
-//! site, its doc, its product referrers under each label and the sites of its direct callees. The
-//! graph describes the caller's tree: the files it differs in are read from the tree over the
-//! store's stamp. When the tree cannot be compared, the graph withholds every code hit and counts
-//! it in its label
+//! site, its doc, its referrers under each label (test ones only under the include and only tests
+//! modes) and the sites of its direct callees. The graph describes the caller's tree: the files it
+//! differs in are read from the tree over the store's stamp. When the tree cannot be compared, the
+//! graph withholds every code hit and counts it in its label
 //! ([`ContextGraph::stamp_label`]), which heads the half, so the graph half never answers from
 //! bytes the caller no longer holds; the text half answers from the tree's bytes.
 
 use crate::contextgraph::ContextGraph;
+use rigger_domain::code_view::Tests;
 use rigger_domain::composed::Label;
 
 #[cfg(feature = "symbols")]
@@ -41,9 +42,10 @@ pub(crate) struct Entity {
     pub site: Site,
     /// Its doc comment, when the graph reads one ([`ContextGraph::doc`]).
     pub doc: Option<String>,
-    /// Its product referrers ([`ContextGraph::referrers`]) under each label, in label order: each
-    /// a referrer's enclosing site at the mention's own line, in path then mention order (the
-    /// order a file's extraction lists its mentions, which need not be line order).
+    /// Its referrers the lookup's tests mode shows ([`ContextGraph::referrers`]) under each label,
+    /// in label order: each a referrer's enclosing site at the mention's own line, in path then
+    /// mention order (the order a file's extraction lists its mentions, which need not be line
+    /// order).
     pub referrers: Vec<(&'static str, Vec<ReferrerSite>)>,
     /// Its direct callees' definition sites.
     pub callees: Vec<Site>,
@@ -94,7 +96,11 @@ pub(crate) struct Answered {
 
 /// This build extracts no code, so its graph holds no code entity to answer from.
 #[cfg(not(feature = "symbols"))]
-pub(crate) fn answer(_terms: &[&str], _graph: &dyn ContextGraph) -> Result<Answered, String> {
+pub(crate) fn answer(
+    _terms: &[&str],
+    _graph: &dyn ContextGraph,
+    _tests: Tests,
+) -> Result<Answered, String> {
     Err(
         "this rigger build carries no code extraction (the `symbols` feature), so its graph \
          holds no code entity"
@@ -102,11 +108,16 @@ pub(crate) fn answer(_terms: &[&str], _graph: &dyn ContextGraph) -> Result<Answe
     )
 }
 
-/// Each term of `terms` answered from `graph`, in order. The names are indexed whole; the
-/// entities a name carries are read only when a term's search reaches the name, so the graph is
-/// read near the terms and its label counts only the hits a term reached and the graph withheld.
+/// Each term of `terms` answered from `graph`, in order, each entity's referrers as `tests` shows
+/// them. The names are indexed whole; the entities a name carries are read only when a term's
+/// search reaches the name, so the graph is read near the terms and its label counts only the hits
+/// a term reached and the graph withheld.
 #[cfg(feature = "symbols")]
-pub(crate) fn answer(asked: &[&str], graph: &dyn ContextGraph) -> Result<Answered, String> {
+pub(crate) fn answer(
+    asked: &[&str],
+    graph: &dyn ContextGraph,
+    tests: Tests,
+) -> Result<Answered, String> {
     let read = |e: crate::contextgraph::Error| format!("the context graph could not be read: {e}");
     let names = Names::build(graph.entity_names().map_err(read)?);
     let ids = |nodes: Vec<Node>| -> Vec<String> { nodes.into_iter().map(|n| n.id).collect() };
@@ -133,7 +144,7 @@ pub(crate) fn answer(asked: &[&str], graph: &dyn ContextGraph) -> Result<Answere
             let seed = (down.nodes.iter())
                 .find(|n| n.layer == 0 && n.node.id == *id)
                 .map(|n| &n.node);
-            let referrers = graph.referrers(id);
+            let referrers = graph.referrers(id, tests);
             entities.push(Entity {
                 site: site_of(seed, id),
                 doc: seed.and_then(|node| graph.doc(node)),

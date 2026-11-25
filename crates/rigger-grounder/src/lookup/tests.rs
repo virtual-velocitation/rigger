@@ -18,7 +18,7 @@ use crate::contextgraph::{
 };
 #[cfg(feature = "symbols")]
 use crate::contextgraph::{KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_DESIGN_DOC, KIND_FILE};
-use rigger_domain::code_view::Compared;
+use rigger_domain::code_view::{Compared, Tests};
 use rigger_domain::composed::Label;
 
 /// The label [`Held`] answers under: it describes `c1` and withholds nothing.
@@ -133,7 +133,7 @@ impl ContextGraph for Held {
     fn doc(&self, node: &Node) -> Option<String> {
         self.docs.get(&node.id).cloned()
     }
-    fn referrers(&self, id: &str) -> Vec<Referrer> {
+    fn referrers(&self, id: &str, _tests: Tests) -> Vec<Referrer> {
         self.referrers.get(id).cloned().unwrap_or_default()
     }
     fn stamp_label(&self) -> Label {
@@ -647,7 +647,9 @@ fn a_file_changed_deleted_or_added_is_answered_from_the_tree_by_both_halves() {
     ];
     for (term, shown, graph_says, text_says) in cases {
         let graph = composed(&records, &view, Compared::Overlaid(3));
-        let reply = lookup.lookup(&terms(&[term]), Ok(&graph)).unwrap();
+        let reply = lookup
+            .lookup(&terms(&[term]), Ok(&graph), Tests::Exclude)
+            .unwrap();
         let graph_part = section(&reply, "graph");
         let label = graph.stamp_label();
         assert!(
@@ -686,6 +688,7 @@ fn a_multi_term_lookup_groups_each_section_per_term() {
         .lookup(
             &terms(&["widget_kept", "widget_added", "widget_kept"]),
             Ok(&graph),
+            Tests::Exclude,
         )
         .unwrap();
     for part in ["graph", "text"] {
@@ -844,8 +847,8 @@ impl ContextGraph for Defaults<'_> {
     fn doc(&self, node: &Node) -> Option<String> {
         self.0.doc(node)
     }
-    fn referrers(&self, id: &str) -> Vec<Referrer> {
-        self.0.referrers(id)
+    fn referrers(&self, id: &str, tests: Tests) -> Vec<Referrer> {
+        self.0.referrers(id, tests)
     }
     fn stamp_label(&self) -> Label {
         self.0.stamp_label()
@@ -900,8 +903,8 @@ fn the_graph_half_read_near_its_terms_answers_as_the_whole_graph_does() {
             let filter = ViewFilter { tests };
             let whole = Composed::new(&records, &view, filter, honesty(compared)).unwrap();
             let near = Composed::near(&records, &view, filter, honesty(compared), None).unwrap();
-            let want = super::graph::answer(&NAMED_TERMS, &Defaults(&whole)).unwrap();
-            let got = super::graph::answer(&NAMED_TERMS, &near).unwrap();
+            let want = super::graph::answer(&NAMED_TERMS, &Defaults(&whole), tests).unwrap();
+            let got = super::graph::answer(&NAMED_TERMS, &near, tests).unwrap();
             let at = format!("{tests:?} {compared:?}");
             for (i, term) in NAMED_TERMS.iter().enumerate() {
                 assert_eq!(got.terms[i], want.terms[i], "{at} {term}");
@@ -987,7 +990,7 @@ fn the_graph_half_reads_no_file_its_terms_do_not_reach() {
         };
         let near = Composed::near(&records, &view, ViewFilter::default(), honesty, None).unwrap();
         let graph: &dyn ContextGraph = if defaults { &Defaults(&near) } else { &near };
-        super::graph::answer(&terms, graph).unwrap();
+        super::graph::answer(&terms, graph, Tests::default()).unwrap();
         let read = view.read.lock().unwrap();
         assert_eq!(
             read.iter().any(|f| f == "src/gen.rs"),
@@ -1073,7 +1076,7 @@ fn a_graph_that_cannot_answer_still_returns_text_and_prose() {
     ];
     for (graph, reason) in cases {
         let reply = TreeLookup::new(dir.path())
-            .lookup(&terms(&["gizmo"]), graph)
+            .lookup(&terms(&["gizmo"]), graph, Tests::Exclude)
             .unwrap();
         assert!(
             section(&reply, "graph").contains(&format!("not answered: {reason}")),
@@ -1101,7 +1104,7 @@ fn a_build_without_code_extraction_states_its_graph_holds_no_code() {
         ..Held::default()
     };
     let reply = TreeLookup::new(dir.path())
-        .lookup(&terms(&["gizmo"]), Ok(&graph))
+        .lookup(&terms(&["gizmo"]), Ok(&graph), Tests::Exclude)
         .unwrap();
     assert!(
         section(&reply, "graph").starts_with(
@@ -1124,7 +1127,7 @@ fn a_lookup_ranks_the_graphs_records_as_prose() {
         ..Held::default()
     };
     let reply = TreeLookup::new(dir.path())
-        .lookup(&terms(&["gizmo"]), Ok(&graph))
+        .lookup(&terms(&["gizmo"]), Ok(&graph), Tests::Exclude)
         .unwrap();
     assert!(
         section(&reply, "prose").contains("- prose:decision d1: keep the gizmo in memory\n"),
@@ -1138,7 +1141,7 @@ fn a_lookup_of_no_term_is_refused() {
     let dir = tree(&[]);
     for list in [&[][..], &["", "  "]] {
         assert!(TreeLookup::new(dir.path())
-            .lookup(&terms(list), Err(UNOPENED.to_string()))
+            .lookup(&terms(list), Err(UNOPENED.to_string()), Tests::Exclude)
             .is_err());
     }
 }
@@ -1567,7 +1570,7 @@ fn a_located_term_is_answered_with_its_doc_referrers_and_callees() {
         },
     );
     let reply = TreeLookup::new(dir.path())
-        .lookup(&terms(&["the-alias"]), Ok(&graph))
+        .lookup(&terms(&["the-alias"]), Ok(&graph), Tests::Exclude)
         .unwrap();
     let expected = format!(
         "{}\n{}\n\n### the-alias\nexact match: 1 entity\n- a.rs:1 a.rs::target (function)\n  \
@@ -1655,7 +1658,7 @@ fn a_located_node_is_answered_under_its_own_kind() {
         };
         let dir = tree(&[("a.rs", "fn a() {}\n")]);
         let reply = TreeLookup::new(dir.path())
-            .lookup(&terms(&[id]), Ok(&graph))
+            .lookup(&terms(&[id]), Ok(&graph), Tests::Exclude)
             .unwrap();
         let expected = format!("exact match: 1 entity\n{line}");
         assert!(
@@ -1717,7 +1720,7 @@ fn lookup_reports_test_hits_as_a_separate_count() {
         };
         let dir = tree(&[("w.rs", "fn widget() {}\n")]);
         let reply = TreeLookup::new(dir.path())
-            .lookup(&terms(&[term]), Ok(&graph))
+            .lookup(&terms(&[term]), Ok(&graph), Tests::Exclude)
             .unwrap();
         let part = section(&reply, "graph");
         for line in expected {
@@ -1754,7 +1757,7 @@ fn a_term_reaching_more_entities_than_are_read_says_how_many_were_not() {
         },
     );
     let reply = TreeLookup::new(dir.path())
-        .lookup(&terms(&["dup"]), Ok(&graph))
+        .lookup(&terms(&["dup"]), Ok(&graph), Tests::Exclude)
         .unwrap();
     let part = section(&reply, "graph");
     for line in [

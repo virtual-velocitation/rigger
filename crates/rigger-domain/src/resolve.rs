@@ -2944,10 +2944,10 @@ pub(crate) mod tests {
                     let filter = ViewFilter { tests };
                     let at = format!("{id} {compared:?} {tests:?}");
                     let whole = Composed::new(&records, &view, filter, honesty(compared)).unwrap();
-                    assert_eq!(shown(whole.referrers(id)), want, "whole: {at}");
+                    assert_eq!(shown(whole.referrers(id, tests)), want, "whole: {at}");
                     let near =
                         Composed::near(&records, &view, filter, honesty(compared), None).unwrap();
-                    assert_eq!(shown(near.referrers(id)), want, "near: {at}");
+                    assert_eq!(shown(near.referrers(id, tests)), want, "near: {at}");
                 }
             }
         }

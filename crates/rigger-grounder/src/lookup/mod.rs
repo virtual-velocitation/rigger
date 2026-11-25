@@ -2,7 +2,8 @@
 //! of terms from three sources at once, each in its own labelled section of one bounded reply.
 //!
 //! - `graph`: each term resolved against the code graph's entity names ([`names`]) and answered
-//!   with its definition site, its doc, its product referrers under each label and its callees,
+//!   with its definition site, its doc, its referrers under each label (test ones only under the
+//!   include and only tests modes) and its callees,
 //!   under the graph's label, which says the graph describes the caller's tree, or withholds and
 //!   counts every code hit when that tree cannot be compared ([`graph`]).
 //! - `text`: a live literal scan of the caller's tree, no index ([`text`]).
@@ -22,6 +23,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use crate::contextgraph::ContextGraph;
+use rigger_domain::code_view::Tests;
 pub use rigger_domain::lookup::Lookup;
 
 /// The combined lookup over the working tree at one root: the caller's own tree. It keeps one
@@ -52,12 +54,13 @@ impl Lookup for TreeLookup {
         &self,
         terms: &[String],
         graph: Result<&dyn ContextGraph, String>,
+        tests: Tests,
     ) -> Result<String, String> {
         let terms = distinct_terms(terms);
         if terms.is_empty() {
             return Err("lookup: pass one or more non-empty terms".to_string());
         }
-        let graph_half = graph.clone().and_then(|g| graph::answer(&terms, g));
+        let graph_half = graph.clone().and_then(|g| graph::answer(&terms, g, tests));
         let text_half = text::scan(&self.root, &terms);
         let records = graph.and_then(prose::records);
         let prose_half = self
