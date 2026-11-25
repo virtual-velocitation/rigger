@@ -9,7 +9,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::code_facts::MentionKind;
-use crate::code_view::{Head, ViewFilter};
+use crate::code_view::{Head, Tests, ViewFilter};
 use crate::eventstore::{Event, Position};
 
 // THE QUERY ENGINE MOVES WITH THE OPS (spec 93 criterion 5): the pure graph query functions
@@ -1093,12 +1093,12 @@ pub trait ContextGraph: Send + Sync {
         None
     }
 
-    /// The product referrers of the code entity `id` (spec 117, READERS): one per product mention
-    /// whose own rule lists it under `id`, in path then mention order (the order a file's
-    /// extraction lists its mentions, which need not be line order), under every `tests` setting.
-    /// None when the graph withholds its code facts, and by default (a graph that holds no code, a
-    /// test double).
-    fn referrers(&self, _id: &str) -> Vec<Referrer> {
+    /// The referrers of the code entity `id` (spec 117, READERS): one per mention whose own rule
+    /// lists it under `id`, in path then mention order (the order a file's extraction lists its
+    /// mentions, which need not be line order), a test mention only when `tests` shows tests
+    /// (include or only) and a product mention under every setting. None when the graph withholds
+    /// its code facts, and by default (a graph that holds no code, a test double).
+    fn referrers(&self, _id: &str, _tests: Tests) -> Vec<Referrer> {
         Vec::new()
     }
 

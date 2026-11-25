@@ -1505,8 +1505,8 @@ mod tests {
             for seed in seeds {
                 let at = format!("{tests:?} {held} {seed}");
                 same!(
-                    near.referrers(seed),
-                    whole.referrers(seed),
+                    near.referrers(seed, tests),
+                    whole.referrers(seed, tests),
                     "referrers {at}"
                 );
                 let seed = [seed.to_string()];

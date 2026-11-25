@@ -9,6 +9,8 @@ use common::cli::run_rigger;
 use common::git::{commit_files, linked_worktree};
 use common::mcp::McpSession;
 
+use crate::graph_honesty_label_cli::READERS;
+
 /// The host's limit on one tool result's text, in characters.
 const HOST_LIMIT: usize = 50_000;
 
@@ -27,17 +29,26 @@ fn built(root: &Path, files: &[(&str, &str)]) {
     assert!(ok, "graph build: {err}\n{out}");
 }
 
-/// `rigger graph --lookup <terms>...` in `cwd`: its stdout, the command required to succeed.
-fn cli_lookup(cwd: &Path, terms: &[&str]) -> String {
-    let args: Vec<&str> = ["graph", "--lookup"].iter().chain(terms).copied().collect();
+/// `rigger graph --lookup <terms>...` in `cwd`, with `--tests <tests>` when `tests` is given: its
+/// stdout, the command required to succeed.
+fn cli_lookup(cwd: &Path, terms: &[&str], tests: Option<&str>) -> String {
+    let mut args: Vec<&str> = ["graph", "--lookup"].iter().chain(terms).copied().collect();
+    if let Some(tests) = tests {
+        args.extend(["--tests", tests]);
+    }
     let (out, err, ok) = run_rigger(cwd, &args);
-    assert!(ok, "graph --lookup {terms:?}: {err}\n{out}");
+    assert!(ok, "graph --lookup {terms:?} {tests:?}: {err}\n{out}");
     out
 }
 
-/// The text of `rigger_graph`'s `lookup` of `terms` over `mcp`.
-fn mcp_lookup(mcp: &mut McpSession, terms: &[&str]) -> String {
-    let reply = mcp.tool_call("rigger_graph", serde_json::json!({ "lookup": terms }));
+/// The text of `rigger_graph`'s `lookup` of `terms` over `mcp`, with the `tests` argument when
+/// `tests` is given.
+fn mcp_lookup(mcp: &mut McpSession, terms: &[&str], tests: Option<&str>) -> String {
+    let mut arguments = serde_json::json!({ "lookup": terms });
+    if let Some(tests) = tests {
+        arguments["tests"] = tests.into();
+    }
+    let reply = mcp.tool_call("rigger_graph", arguments);
     reply["result"]["content"][0]["text"]
         .as_str()
         .unwrap_or_else(|| panic!("a text reply: {reply}"))
@@ -128,7 +139,7 @@ fn a_file_changed_deleted_or_added_is_answered_by_both_halves_from_the_worktree(
         ),
     ];
     for (term, graph_says, text_says) in cases {
-        let reply = cli_lookup(dir.path(), &[term]);
+        let reply = cli_lookup(dir.path(), &[term], None);
         let graph = section(&reply, "graph");
         assert!(
             graph.starts_with(&label),
@@ -156,14 +167,35 @@ fn the_mcp_lookup_and_the_cli_lookup_answer_the_same_body() {
     let dir = diverged();
     let terms = ["widget_kept", "widget_added", "widgets"];
     let mut mcp = McpSession::start(dir.path());
-    let served = mcp_lookup(&mut mcp, &terms);
+    let served = mcp_lookup(&mut mcp, &terms, None);
     let _ = mcp.finish();
-    let printed = cli_lookup(dir.path(), &terms);
+    let printed = cli_lookup(dir.path(), &terms, None);
     assert_eq!(served, printed);
     assert!(
         section(&printed, "prose").contains("- prose:doc docs/widgets.md:1 \"Widgets\""),
         "{printed}"
     );
+}
+
+/// GIVEN a built project holding [`READERS`], WHEN `rigger_graph`'s `lookup` over `rigger mcp`
+/// reads its constant with no `tests` argument and under each `tests` setting, THEN each reply is
+/// the body `rigger graph --lookup` prints with no `--tests` option and under the same setting:
+/// the constant's test referrers listed under include and only, and hidden otherwise.
+#[test]
+fn the_mcp_lookup_lists_test_referrers_under_the_tests_setting_the_cli_does() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    built(root, &[("src/lib.rs", READERS)]);
+    // (the tests setting both lookups are given, none for no argument)
+    let rows = [None, Some("exclude"), Some("include"), Some("only")];
+    let mut mcp = McpSession::start(root);
+    let served: Vec<String> = (rows.iter())
+        .map(|tests| mcp_lookup(&mut mcp, &["LIMIT"], *tests))
+        .collect();
+    let _ = mcp.finish();
+    for (tests, served) in rows.into_iter().zip(served) {
+        assert_eq!(served, cli_lookup(root, &["LIMIT"], tests), "{tests:?}");
+    }
 }
 
 /// A spawn's server, started in the spawn's worktree as its host starts it, answers the text and
@@ -179,7 +211,7 @@ fn a_spawn_server_answers_from_its_own_worktree() {
     std::fs::write(worktree.join("src/only_here.rs"), "fn worktree_only() {}\n").unwrap();
 
     let mut mcp = McpSession::start_with(&worktree, &["mcp", "--spawn", "u/implementer#0"]);
-    let served = mcp_lookup(&mut mcp, &["worktree_only"]);
+    let served = mcp_lookup(&mut mcp, &["worktree_only"], None);
     let _ = mcp.finish();
     assert!(
         section(&served, "text").contains("src/only_here.rs:1: fn worktree_only() {}"),
@@ -189,7 +221,7 @@ fn a_spawn_server_answers_from_its_own_worktree() {
         section(&served, "graph").contains("src/only_here.rs:1 src/only_here.rs::worktree_only"),
         "{served}"
     );
-    let operator = cli_lookup(root, &["worktree_only"]);
+    let operator = cli_lookup(root, &["worktree_only"], None);
     assert!(
         section(&operator, "text").contains("no line of your tree holds worktree_only"),
         "{operator}"
@@ -211,7 +243,7 @@ fn a_graph_that_cannot_be_opened_still_answers_text_and_prose() {
     std::fs::write(root.join("a.rs"), "fn gizmo() {}\n").unwrap();
     std::fs::create_dir_all(root.join("docs")).unwrap();
     std::fs::write(root.join("docs/a.md"), "# Gizmo\nthe gizmo\n").unwrap();
-    let reply = cli_lookup(root, &["gizmo"]);
+    let reply = cli_lookup(root, &["gizmo"], None);
     assert!(
         section(&reply, "graph").starts_with("not answered: the context graph could not be opened"),
         "{reply}"
@@ -267,7 +299,7 @@ fn the_worst_case_multi_term_reply_stays_under_the_hosts_limit() {
     let terms = worst_case_tree(dir.path());
     let refs: Vec<&str> = terms.iter().map(String::as_str).collect();
     let mut mcp = McpSession::start(dir.path());
-    let reply = mcp_lookup(&mut mcp, &refs);
+    let reply = mcp_lookup(&mut mcp, &refs, None);
     let _ = mcp.finish();
     assert!(
         reply.chars().count() < HOST_LIMIT,

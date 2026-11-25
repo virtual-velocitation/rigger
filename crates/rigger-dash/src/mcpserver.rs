@@ -569,7 +569,8 @@ impl<'a> Server<'a> {
     /// STRUCTURE (`around`) and resolution (`show`) lookups. `lookup` answers through the wired
     /// [`Lookup`], which states in its own graph section why the graph did not answer (none wired,
     /// a rebuild owed), so it is never refused while its text and prose halves can answer, and it
-    /// answers as text. `around` and `show` read the graph [`with_context`](Server::with_context)
+    /// answers as text, an entity's test referrers listed only when the call's `tests` is include
+    /// or only. `around` and `show` read the graph [`with_context`](Server::with_context)
     /// opens, under the call's `tests` filter - `around` serves [`crate::contextgraph::around`]
     /// (the graph's subgraph plus the seed's callers), `show` its `locate` - and each answers its
     /// honesty `label` (6.1) as a field. Both render a node through [`site_object`] (spec 119, SHOW
@@ -592,7 +593,7 @@ impl<'a> Server<'a> {
                 .ok_or("rigger_graph: no lookup is wired on this server")?;
             let answer = |graph: Result<&dyn ContextGraph, String>| {
                 lookup
-                    .lookup(&terms, graph)
+                    .lookup(&terms, graph, filter.tests)
                     .map(Value::String)
                     .map_err(|e| format!("rigger_graph: {e}").into())
             };

@@ -269,7 +269,7 @@ fn cmd_graph_lookup(terms: &[String], tests: Tests) -> Res {
             contextgraph::answer_unowed(&records, &read, ViewFilter { tests }, |graph| {
                 exit_once_printed(
                     lookup
-                        .lookup(terms, graph.map_err(|e| e.0))
+                        .lookup(terms, graph.map_err(|e| e.0), tests)
                         .map(|reply| print!("{reply}"))
                         .map_err(Into::into),
                 )
@@ -279,6 +279,7 @@ fn cmd_graph_lookup(terms: &[String], tests: Tests) -> Res {
             let reply = lookup.lookup(
                 terms,
                 Err(format!("the context graph could not be opened: {e}")),
+                tests,
             )?;
             print!("{reply}");
             Ok(())

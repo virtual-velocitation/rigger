@@ -1499,12 +1499,12 @@ impl<C: CodeHalf> ContextGraph for Composed<'_, C> {
         let (lang, span) = self.code.doc_span(file, recorded)?;
         Some(docs.extract.doc_text(&lang, &docs.lines.lines(file, span)?))
     }
-    fn referrers(&self, id: &str) -> Vec<Referrer> {
+    fn referrers(&self, id: &str, tests: Tests) -> Vec<Referrer> {
         if self.stale {
             return Vec::new();
         }
         let mut referrers = self.code.referrers(id);
-        referrers.retain(|r| !r.test);
+        referrers.retain(|r| !r.test || tests != Tests::Exclude);
         referrers
     }
     fn nodes_of_kind(&self, kind: &str) -> Result<Vec<Node>, Error> {

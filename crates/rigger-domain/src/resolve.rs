@@ -2706,8 +2706,8 @@ pub(crate) mod tests {
     /// (none for a tag no label row holds), the mention's line, and whether the mention is test
     /// code, by its own mark or its file's scope, a test twin's sharing its product's id. A
     /// mention in a file outside the code half lists under none, and an id naming no definition
-    /// of a code file has none. `Composed` answers the product items alone under every tests
-    /// setting, near or whole, and none when the worktree cannot be compared.
+    /// of a code file has none. `Composed` answers the product items alone under exclude and every
+    /// item under include and only, near or whole, and none when the worktree cannot be compared.
     #[test]
     fn a_referrer_is_listed_under_each_id_its_mention_lists() {
         let lib = code(
@@ -2830,7 +2830,7 @@ pub(crate) mod tests {
                 })
                 .collect()
         };
-        // (the id, its referrers, the product ones `Composed` answers)
+        // (the id, its referrers, the product ones `Composed` answers under exclude)
         let rows: [(&str, &[&str], &[&str]); 19] = [
             (
                 "src/lib.rs::LIMIT",
@@ -2935,19 +2935,19 @@ pub(crate) mod tests {
         for (id, every, product) in rows {
             assert_eq!(shown(resolver.referrers(id)), every, "{id}");
             for compared in [Compared::Overlaid(0), Compared::Uncomparable] {
-                let want: &[&str] = if compared == Compared::Uncomparable {
-                    &[]
-                } else {
-                    product
-                };
                 for tests in [Tests::Exclude, Tests::Include, Tests::Only] {
+                    let want: &[&str] = match (compared, tests) {
+                        (Compared::Uncomparable, _) => &[],
+                        (_, Tests::Exclude) => product,
+                        _ => every,
+                    };
                     let filter = ViewFilter { tests };
                     let at = format!("{id} {compared:?} {tests:?}");
                     let whole = Composed::new(&records, &view, filter, honesty(compared)).unwrap();
-                    assert_eq!(shown(whole.referrers(id)), want, "whole: {at}");
+                    assert_eq!(shown(whole.referrers(id, tests)), want, "whole: {at}");
                     let near =
                         Composed::near(&records, &view, filter, honesty(compared), None).unwrap();
-                    assert_eq!(shown(near.referrers(id)), want, "near: {at}");
+                    assert_eq!(shown(near.referrers(id, tests)), want, "near: {at}");
                 }
             }
         }
