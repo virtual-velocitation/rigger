@@ -502,8 +502,6 @@ const CSHARP_SPLIT_TUPLE_CHAIN_BOUND: usize = 2;
 /// name, a generic name, a qualified name or a tuple, `Fc` of `Fb, Fc>[]` in
 /// `x is Gen<Fa<Fb, Fc>[], B>` and `Ns.C` of `Fb, Ns.C>[]` in `x is Gen<Fa<Fb, Ns.C>[], B>`; left
 /// unbracketed, so an alternation can hold it among other alternatives.
-/// The operands of the comparisons the grammar reads an element between a split generic's commas
-/// as: a name, a generic, a qualified name or a tuple.
 const CSHARP_SPLIT_PIECE: &str =
     "(identifier) (generic_name) (member_access_expression) (tuple_expression)";
 
