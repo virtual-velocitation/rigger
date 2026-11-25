@@ -2692,12 +2692,13 @@ pub(crate) mod tests {
     /// its one field included, a call through a placeholder under each candidate the
     /// placeholder keeps, a reference no one candidate takes under each it took none from, the
     /// several its qualifier keeps or its several fields included, and a mention whose qualifier
-    /// makes no link under none. The item names the enclosing definition's id and kind, or its
-    /// file's when none encloses it, the label of its tag (none for a tag no label row holds),
-    /// the mention's line, and whether the mention is test code, by its own mark or its file's
-    /// scope, a test twin's sharing its product's id. An id naming no definition of a code file
-    /// has none. `Composed` answers the product items alone under every tests setting, near or
-    /// whole, and none when the worktree cannot be compared.
+    /// makes no link, or an unqualified field reference naming only constants, under none. The
+    /// item names the enclosing definition's id and the kind that id settles to (a type's, for a
+    /// mention its impl encloses), or its file's when none encloses it, the label of its tag
+    /// (none for a tag no label row holds), the mention's line, and whether the mention is test
+    /// code, by its own mark or its file's scope, a test twin's sharing its product's id. An id
+    /// naming no definition of a code file has none. `Composed` answers the product items alone
+    /// under every tests setting, near or whole, and none when the worktree cannot be compared.
     #[test]
     fn a_referrer_is_listed_under_each_id_its_mention_lists() {
         let lib = code(
@@ -2713,9 +2714,12 @@ pub(crate) mod tests {
                 def("helper", "function", 30, None, true),
                 def("Bin::CAP", "constant", 6, Some(1), false),
                 def("Bin::len", "field", 7, Some(1), false),
+                def("Bin", "impl", 8, None, false),
             ],
             vec![
+                tagged("const", "LIMIT", Some(8), 8),
                 tagged("type", "Bin", Some(2), 9),
+                tagged("field", "MAX", Some(2), 10),
                 tagged("const", "LIMIT", Some(2), 11),
                 tagged("bogus", "LIMIT", Some(2), 12),
                 call("shared", Some(2), 13, false),
@@ -2795,11 +2799,13 @@ pub(crate) mod tests {
             (
                 "src/lib.rs::LIMIT",
                 &[
+                    "reads src/lib.rs::Bin (type) :8",
                     "reads src/lib.rs::spill (function) :11",
                     "reads src/lib.rs (file) :25",
                     "reads src/lib.rs::helper (function) :31 test",
                 ],
                 &[
+                    "reads src/lib.rs::Bin (type) :8",
                     "reads src/lib.rs::spill (function) :11",
                     "reads src/lib.rs (file) :25",
                 ],
