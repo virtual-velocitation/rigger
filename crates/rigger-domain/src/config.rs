@@ -876,9 +876,8 @@ pub struct Defaults {
     /// The wave-width bound (spec 102): the maximum number of implement-fan-out stages the
     /// conductor admits in flight at once across a wave (`run_wave`). A stage the width
     /// refuses is neither failed nor terminal - it waits for a slot to free in this wave or a
-    /// later one. `0` (the default) means UNBOUNDED, so an existing consumer's behavior does
-    /// not change until it writes this key; `rigger init`/`setup` scaffold `2` with a comment
-    /// sizing it to the per-unit build-cache cost (spec 89, per-unit pipelining).
+    /// later one. `0` (the default) means unset: the width is then `build.max_concurrent`, the
+    /// build slot count, and unbounded only when that is `0` too.
     #[serde(default)]
     pub max_parallel_units: u32,
     /// The default per-spawn wall-clock bound in SECONDS (spec 10, unit 3): every agent

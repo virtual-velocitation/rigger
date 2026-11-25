@@ -2044,12 +2044,6 @@ max_retries: 3\n  \
 # The per-spawn wall-clock bound in seconds: a spawn silent past it with no result is stopped and\n  \
 # recorded as an infrastructure fault, charging no attempt. 0 = unbounded.\n  \
 max_wall_clock: 3600\n  \
-# How many implement units build at once (spec 102, per-unit pipelining). Each\n  \
-# live unit builds in its own worktree, into its own build cache when build.env\n  \
-# points one at {build_cache}, and unbounded parallelism can fill disk on a wide\n  \
-# fan-out. 0 (the default) is unbounded, unchanged until you set this; 2 bounds\n  \
-# the worst case to two live units' builds at a time.\n  \
-max_parallel_units: 2\n  \
 # The graph-first lookup guard: a PreToolUse hook in every agent session and in\n  \
 # this checkout that denies a `grep` not marked literal. Absent or false leaves it\n  \
 # out of every spawn, and `rigger setup` removes it from .claude/settings.json.\n  \
@@ -2634,7 +2628,6 @@ mod tests {
     use crate::test_support::run_git;
     use crate::test_support::sorted_dir_names;
     use crate::test_support::AUTHORING_AGENTS_HANDBOOK;
-    use crate::test_support::MAX_PARALLEL_UNITS_DECLARED;
     use crate::test_support::REFUSED_DECLARATIONS;
     use crate::test_support::{agents_beside, stage_agents, ROLE_SEED_FILES};
     use crate::test_support::{
@@ -5083,30 +5076,21 @@ mod tests {
         }
     }
 
-    /// Spec 102 criterion 2 (THE SCAFFOLD WRITES THE KEY): `rigger init`/`setup` scaffold
-    /// `defaults.max_parallel_units: 2`, the wave-width bound `run_wave` (spec 102) enforces,
-    /// WITH a sizing comment explaining why 2 - not a bare unexplained number. This test owns
-    /// the key's scaffolded value and the presence of its comment; the byte-for-byte
-    /// file-write path is covered separately below.
+    /// The scaffold declares no width, so a fresh project runs as many units at once as its
+    /// build budget has slots.
     #[test]
-    fn scaffold_workflow_declares_max_parallel_units_two_with_a_sizing_comment() {
+    fn scaffold_workflow_leaves_the_width_to_the_build_slot_count() {
         for (label, set, workflow) in every_rendering() {
             assert_eq!(
-                load_scaffold(set.as_ref(), &workflow)
-                    .workflow
-                    .defaults
-                    .max_parallel_units,
-                2,
-                "{label}: a freshly scaffolded workflow.yml must default max_parallel_units to 2"
-            );
-            assert_eq!(
                 (
-                    workflow.matches(MAX_PARALLEL_UNITS_DECLARED).count(),
+                    load_scaffold(set.as_ref(), &workflow)
+                        .workflow
+                        .defaults
+                        .max_parallel_units,
                     workflow.matches("max_parallel_units").count()
                 ),
-                (1, 1),
-                "{label}: the scaffold must carry a sizing comment (explaining the per-unit \
-                 build cost) right above max_parallel_units, not a bare number:\n{workflow}"
+                (0, 0),
+                "{label}: a freshly scaffolded workflow.yml declares no width:\n{workflow}"
             );
         }
     }
@@ -5250,26 +5234,6 @@ mod tests {
                 );
             }
         }
-    }
-
-    /// Spec 102 criterion 2: `rigger init` on a FRESH project actually WRITES
-    /// `defaults.max_parallel_units: 2` with its sizing comment to disk - the scaffold
-    /// constant proven above must be what `init_project` emits, not just what it declares.
-    #[test]
-    fn init_project_writes_max_parallel_units_with_its_sizing_comment() {
-        let dir = tempfile::tempdir().unwrap();
-        init_project(dir.path(), &repo_sets()).expect("a fresh project must scaffold cleanly");
-        let workflow_path = dir.path().join(RIGGER_DIR).join("workflow.yml");
-        let written = std::fs::read_to_string(&workflow_path).unwrap();
-        assert_eq!(
-            (
-                written.matches(MAX_PARALLEL_UNITS_DECLARED).count(),
-                written.matches("max_parallel_units").count()
-            ),
-            (1, 1),
-            "rigger init must write defaults.max_parallel_units: 2 right under its sizing \
-             comment; got:\n{written}"
-        );
     }
 
     /// Spec 125's THE SCAFFOLD DECLARES THE SET'S ENVIRONMENT: the workflow `init_project` writes

@@ -62,6 +62,11 @@ impl BuildBudget {
         }
     }
 
+    /// How many builds may run at once, machine-wide: `0` is unlimited.
+    pub fn slots(&self) -> u32 {
+        self.max_concurrent
+    }
+
     /// Acquire one of the `max_concurrent` machine-wide slots, BLOCKING until one is free.
     /// `max_concurrent == 0` (unlimited) returns immediately holding no lock at all - the
     /// unlimited path never touches the filesystem.

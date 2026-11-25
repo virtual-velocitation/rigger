@@ -5420,11 +5420,15 @@ impl RunCtx<'_> {
         Ok(())
     }
 
-    /// The declared width (spec 102): how many units are in flight at once across the run, and
-    /// how many review lenses of one step run side by side. `defaults.max_parallel_units`, `0`
-    /// being unbounded.
+    /// The width (spec 102): how many units are in flight at once across the run, and how many
+    /// review lenses of one step run side by side. `defaults.max_parallel_units` when declared;
+    /// unset, the build budget's slot count ([`build_budget_of`]), so as many units run at once
+    /// as builds may, and an unlimited budget (`0` slots) leaves it unbounded (`0`).
     fn unit_width(&self) -> usize {
-        self.cfg.workflow.defaults.max_parallel_units as usize
+        match self.cfg.workflow.defaults.max_parallel_units {
+            0 => build_budget_of(self.cfg).slots() as usize,
+            declared => declared as usize,
+        }
     }
 
     /// Run one wave of `ready` stages and answer whether the width bound admitted any of them.
@@ -40416,6 +40420,27 @@ stage "implement" adjudicator "adj" failed
         );
         assert_eq!(integrated.len(), 6, "every unit integrates: {integrated:?}");
         assert_eq!(probe.peak(), 6, "all six units run side by side");
+    }
+
+    /// A declared width is the width; with none declared the width is the build budget's slot
+    /// count, and an unlimited budget leaves it unbounded.
+    #[test]
+    fn an_undeclared_width_is_the_build_slot_count() {
+        // (why, `max_parallel_units`, `build.max_concurrent`, the width)
+        let cases = [
+            ("a declared width wins", 2, 3, 2),
+            ("no declared width takes the slot count", 0, 3, 3),
+            ("no width and an unlimited budget is unbounded", 0, 0, 0),
+        ];
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = stub_deps(&store, &driver, Vec::new());
+        for (why, declared, slots, width) in cases {
+            let mut cfg = Config::default();
+            cfg.workflow.defaults.max_parallel_units = declared;
+            cfg.workflow.build.max_concurrent = slots;
+            assert_eq!(RunCtx::for_test(&cfg, &deps).unit_width(), width, "{why}");
+        }
     }
 
     #[test]

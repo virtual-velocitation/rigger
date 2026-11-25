@@ -12411,17 +12411,15 @@ mod tests {
         );
     }
 
-    /// Spec 102 criterion 2: a config that never sets `defaults.max_parallel_units` loads as
-    /// UNBOUNDED (`0`), so an existing consumer's behavior is unchanged until it writes the
-    /// key - the scaffold's `2` above is a fresh-project opinion, never a forced default onto
-    /// an already-authored workflow.yml.
+    /// A config that never sets `defaults.max_parallel_units` loads it as unset (`0`), so the
+    /// width follows the build slot count.
     #[test]
-    fn defaults_max_parallel_units_is_unbounded_when_the_key_is_absent() {
+    fn defaults_max_parallel_units_is_unset_when_the_key_is_absent() {
         let wf: config::Workflow = serde_yaml::from_str("stages: {}\ngates: {}\n")
             .expect("a workflow with no defaults: block must still parse");
         assert_eq!(
             wf.defaults.max_parallel_units, 0,
-            "an absent max_parallel_units key must load as 0 (unbounded), not a forced bound"
+            "an absent max_parallel_units key must load as 0 (unset)"
         );
     }
 
