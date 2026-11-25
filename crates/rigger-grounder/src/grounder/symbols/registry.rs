@@ -175,12 +175,13 @@ const CSHARP_DEFINITION_TAGS: [&str; 18] = [
 ///   `case not nameof(Foo):`, a switch arm's `nameof(Foo)`, `x is { Name: nameof(Foo) }`, a
 ///   list's `[nameof(Foo)]`, a declaring `nameof(var a)`, a declaration pattern's `nameof x`, a
 ///   left operand's `nameof(Foo) && ok` and a generic's `x is nameof<A>`, whole or split as
-///   `x is nameof<A> & ok ? 1 : 0` is, included, while a member access in its argument is the
-///   field it names, as in any expression; a positional pattern's argument `not null`, `and x` or
-///   `or x`, which the grammar reads as a declaration typed `not`, `and` or `or`; and `not`
-///   opening a statement the grammar recovers as a local's declaration, `case C: not null:`;
-///   while a type argument, `A` of `x is nameof<A>`, `not` of `x is Gen<not> && ok` and `nameof`
-///   of the split `x is Gen<nameof> & ok ? 1 : 0`, stays the type it names whatever its spelling,
+///   `x is nameof<A> & ok ? 1 : 0` and `F(x is nameof<A, B> & s is null)` are, included, while a
+///   member access in its argument is the field it names, as in any expression; a positional
+///   pattern's argument `not null`, `and x` or `or x`, which the grammar reads as a declaration
+///   typed `not`, `and` or `or`; and `not` opening a statement the grammar recovers as a local's
+///   declaration, `case C: not null:`; while a type argument, `A` of `x is nameof<A>`, `not` of
+///   `x is Gen<not> && ok`, `nameof` of the split `x is Gen<nameof> & ok ? 1 : 0` and each of the
+///   split `F(x is Gen<nameof, not> & s is null)`, stays the type it names whatever its spelling,
 ///   since no pattern keyword stands there, and so does a name only starting with a keyword,
 ///   `notable` of `x is notable<A> && ok`;
 /// - a predefined type; an identifier that is itself an operand of an arithmetic, a shift or a
@@ -247,7 +248,7 @@ fn csharp_reference_tags() -> String {
     let lists = CSHARP_SPLIT_LISTS
         .map(|list| {
             let list = list.replace("{before}", &before).replace("{after}", &after);
-            format!("({list} @reference.type {guard})")
+            format!("{list} @reference.type")
         })
         .join("\n");
     format!(
@@ -284,7 +285,7 @@ fn csharp_reference_tags() -> String {
   right: {closing})
   @reference.type
 ({own} @reference.type {guard})
-({first} @reference.type {guard})
+{first} @reference.type
 {lists}
 (type_argument_list [(identifier) (generic_name)] @name) @reference.type
 ((invocation_expression
