@@ -1851,12 +1851,18 @@ fn rust_references(structure: &StructuralNodes, source: &[u8], scope: &Scope) ->
 /// the final identifier of a whole expression path that is read ([`is_read`]: never a call's
 /// head) and begins lowercase (`.map(Store::open)`), and a bare identifier passed as a call's
 /// argument (`.map(entity_block)`) that begins lowercase, that [`excluded`] under `scope` does
-/// not hold and that no binding in scope binds ([`bound`]).
+/// not hold and that no binding in scope binds ([`bound`]); either one written with a turbofish
+/// (`.map(Store::open::<u8>)`) sits where its `generic_function` does.
 fn function_values<'t>(
     structure: &StructuralNodes<'t>,
     source: &[u8],
     scope: &Scope,
 ) -> Vec<tree_sitter::Node<'t>> {
+    let written = |node: tree_sitter::Node<'t>| {
+        node.parent()
+            .filter(|p| p.kind() == "generic_function")
+            .unwrap_or(node)
+    };
     let argument = |node: tree_sitter::Node<'t>| {
         let name = node.utf8_text(source).ok()?;
         let free = !excluded(name, None, node, source, scope) && !bound(name, node, source, scope);
@@ -1866,11 +1872,13 @@ fn function_values<'t>(
         .references
         .iter()
         .filter_map(|&node| match node.kind() {
-            "scoped_identifier" if is_whole_expression_path(node) && is_read(node) => node
+            "scoped_identifier" if is_whole_expression_path(node) && is_read(written(node)) => node
                 .child_by_field_name("name")
                 .filter(|leaf| begins(*leaf, source, char::is_ascii_lowercase)),
             "identifier"
-                if node.parent().is_some_and(|p| p.kind() == "arguments")
+                if written(node)
+                    .parent()
+                    .is_some_and(|p| p.kind() == "arguments")
                     && begins(node, source, char::is_ascii_lowercase) =>
             {
                 argument(node)
