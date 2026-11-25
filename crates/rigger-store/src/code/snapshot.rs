@@ -1185,7 +1185,13 @@ pub(crate) mod tests {
         Def, DocConcept, DocLink, Half, Mention, MentionKind, ModuleDecl, Scope, Tip, WfNode,
         WfRelation,
     };
-    use rigger_domain::code_view::{Cluster, FactsView};
+    use rigger_domain::code_graph::CodeGraph;
+    use rigger_domain::code_view::{Cluster, FactsView, ViewFilter};
+    use rigger_domain::composed::Indexed;
+    use rigger_domain::contextgraph::query::node_name;
+    use rigger_domain::contextgraph::{Neighbors, PLACEHOLDER_SIGIL};
+    use std::collections::BTreeSet;
+    use std::fmt::Debug;
 
     /// The snapshot `bytes`, at [`VERSION`], written again at format `version` with `edit` applied
     /// to each section by its kind, every crc recomputed.
@@ -1195,7 +1201,7 @@ pub(crate) mod tests {
         edit: impl Fn(u16, &mut Vec<u8>),
     ) -> Vec<u8> {
         let parsed = Container::parse(bytes, MAGIC, VERSION).expect("parses");
-        let sections: Vec<(u16, Vec<u8>)> = (STRINGS..=IDX_PROOF_FILE)
+        let sections: Vec<(u16, Vec<u8>)> = (STRINGS..=LAST)
             .map(|kind| {
                 let mut section = parsed.section(kind).expect("every section").to_vec();
                 edit(kind, &mut section);
@@ -1341,14 +1347,18 @@ pub(crate) mod tests {
         }
     }
 
-    fn groupings() -> Groupings {
-        let cluster = |id: &str, members: &[&str]| Cluster {
+    /// The cluster `id` of `members`, at resolution 1.5.
+    fn cluster(id: &str, members: &[&str]) -> Cluster {
+        Cluster {
             id: id.into(),
             label: format!("label of {id}"),
             resolution: 1.5,
             hash: "h".into(),
             members: members.iter().map(|m| (*m).into()).collect(),
-        };
+        }
+    }
+
+    fn groupings() -> Groupings {
         Groupings {
             communities: vec![
                 cluster(
@@ -1414,14 +1424,10 @@ pub(crate) mod tests {
         }
     }
 
-    /// WHAT A STORE SETTLES READS BACK AS THE RESOLVER COMPUTES IT: over a view holding a test
-    /// file by its scope, one by the test-module closure alone and calls from both (at file
-    /// level and inside a definition, on lines whose text order is not their number order), the
-    /// snapshot's test files, its proof calls (every one, those of each definition, those in each
-    /// file) and its definition leaves are what a resolver computes over the facts.
-    #[test]
-    fn a_snapshot_settles_the_test_files_and_proofs_the_resolver_computes() {
-        let files = vec![
+    /// A test file by its scope, one by the test-module closure alone and calls from both (at
+    /// file level and inside a definition, on lines whose text order is not their number order).
+    fn proving_files() -> Vec<FileFacts> {
+        vec![
             proving_file(
                 "src/lib.rs",
                 Scope::Product,
@@ -1443,8 +1449,16 @@ pub(crate) mod tests {
                 &[("stop", None, 4), ("missing", None, 5)],
                 &[],
             ),
-        ];
-        let view = FactsView::new(stamp(Some("c"), 1), files);
+        ]
+    }
+
+    /// WHAT A STORE SETTLES READS BACK AS THE RESOLVER COMPUTES IT: over a view holding
+    /// [`proving_files`], the snapshot's test files, its proof calls (every one, those of each
+    /// definition, those in each file) and its definition leaves are what a resolver computes
+    /// over the facts.
+    #[test]
+    fn a_snapshot_settles_the_test_files_and_proofs_the_resolver_computes() {
+        let view = FactsView::new(stamp(Some("c"), 1), proving_files());
         let snap = Snapshot::decode(encode(&view, &Groupings::default()).unwrap()).unwrap();
         let resolver = Resolver::new(&view);
         let want_tests: Vec<&str> = (view.files())
@@ -1479,14 +1493,14 @@ pub(crate) mod tests {
     /// DOC SPANS AND MODULE LISTS SURVIVE A SNAPSHOT: a code file whose facts carry a file doc
     /// span, a definition's doc span beside an absent one, and module declarations whose
     /// `as_root` and `as_child` lists differ, one with `path_attr`, and a design file with no
-    /// doc span, encoded at format version 5, read back with each span, list and flag as written.
+    /// doc span, encoded at format version 6, read back with each span, list and flag as written.
     #[test]
     fn doc_spans_and_module_lists_survive_a_snapshot() {
         let view = FactsView::new(stamp(None, 1), vec![code_file(), design_file()]);
         let bytes = encode(&view, &Groupings::default()).expect("encodes");
         assert_eq!(
             bytes[4..6],
-            5u16.to_le_bytes(),
+            6u16.to_le_bytes(),
             "the header's format version"
         );
         let snap = Snapshot::decode(bytes).expect("decodes");
@@ -1568,8 +1582,9 @@ pub(crate) mod tests {
     }
 
     /// Each row: a stamp, the files and the groupings a view holds. Every section must read back
-    /// as written: the stamp, the file list, each file's facts, both leaf indexes and the
-    /// groupings; and re-encoding the snapshot yields the same bytes.
+    /// as written: the stamp, the file list, each file's facts, both leaf indexes, the groupings,
+    /// and the code half settled whole ([`assert_settles_the_half`]); and re-encoding the
+    /// snapshot yields the same bytes.
     #[test]
     fn snapshot_round_trips_every_section() {
         let rich = || vec![code_file(), design_file(), workflow_file(), empty_file("z")];
@@ -1592,6 +1607,18 @@ pub(crate) mod tests {
                 stamp(Some("c"), 3),
                 vec![empty_file("a"), empty_file("b")],
                 Groupings::default(),
+            ),
+            (
+                "proving files and a community",
+                stamp(Some("c"), 4),
+                proving_files(),
+                Groupings {
+                    communities: vec![cluster(
+                        "community/1.5/0",
+                        &["src/lib.rs::run", "src/lib.rs::stop"],
+                    )],
+                    concepts: Vec::new(),
+                },
             ),
         ];
         for (name, stamp, files, groupings) in cases {
@@ -1667,11 +1694,164 @@ pub(crate) mod tests {
             );
             assert!(snap.modules("absent").is_none(), "{name}: absent modules");
             assert_eq!(snap.defs_named("absent").count(), 0, "{name}: absent leaf");
+            assert_settles_the_half(name, &snap, &view, &groupings);
             assert_eq!(
                 encode(&snap, snap.groupings()),
                 Ok(bytes),
                 "{name}: re-encode"
             );
+        }
+    }
+
+    /// The code half `snap` settles reads as `view` resolved whole under the default filter with
+    /// `groupings` joined on: each node and its edges both ways, asked of every id the whole graph
+    /// holds or an edge of it names, each file's members and the nodes of every leaf a node can
+    /// be bound by, and each of them asked of one the graph does not hold.
+    fn assert_settles_the_half(
+        name: &str,
+        snap: &Snapshot,
+        view: &FactsView,
+        groupings: &Groupings,
+    ) {
+        let half = (snap.settled().and_then(|s| s.half()))
+            .unwrap_or_else(|| panic!("{name}: a snapshot settles its code half"));
+        let want = Indexed::resolved(&CodeGraph::new(view, ViewFilter::default()), groupings);
+        let whole = want.whole().expect("an indexed graph reads whole");
+        let same = |read: &str, asked: &str, got: &dyn Debug, want: &dyn Debug| {
+            assert_eq!(
+                format!("{got:?}"),
+                format!("{want:?}"),
+                "{name}: {read} of {asked}"
+            );
+        };
+        let mut ids: BTreeSet<&str> = whole.nodes.iter().map(|n| n.id.as_str()).collect();
+        ids.extend(
+            whole
+                .edges
+                .iter()
+                .flat_map(|e| [e.from.as_str(), e.to.as_str()]),
+        );
+        for id in ids.into_iter().chain(["absent"]) {
+            same("node", id, &half.node(id), &want.node(id).unwrap());
+            same("out", id, &half.out(id), &want.out(id).unwrap());
+            same(
+                "incoming",
+                id,
+                &half.incoming(id),
+                &want.incoming(id).unwrap(),
+            );
+        }
+        for file in view.files().map(|f| f.path).chain(["absent"]) {
+            same(
+                "members",
+                file,
+                &half.members(file),
+                &want.members(file).unwrap(),
+            );
+        }
+        // A node is bound by its name or by a tail of its id.
+        let texts = (whole.nodes.iter()).flat_map(|n| node_name(n).into_iter().chain([&*n.id]));
+        let leaves: BTreeSet<&str> = texts.flat_map(tails).collect();
+        for leaf in leaves.into_iter().chain(["absent"]) {
+            let got = half.leaf_nodes(leaf);
+            same("leaf nodes", leaf, &got, &want.leaf_nodes(leaf).unwrap());
+        }
+    }
+
+    /// `text`, and each of its tails after a `:`, a `.` or the placeholder sigil.
+    fn tails(text: &str) -> impl Iterator<Item = &str> {
+        let cuts =
+            (text.char_indices()).filter(|&(_, c)| matches!(c, ':' | '.' | PLACEHOLDER_SIGIL));
+        std::iter::once(text).chain(cuts.map(move |(at, c)| &text[at + c.len_utf8()..]))
+    }
+
+    /// Each row: a section of the code half a snapshot settles, the damage written over it with
+    /// every crc recomputed, and what opening the snapshot gives: its refusal, or none for the
+    /// section as encoded.
+    #[test]
+    fn a_snapshot_whose_settled_code_half_is_damaged_is_refused() {
+        let view = FactsView::new(stamp(Some("c"), 1), proving_files());
+        let bytes = encode(&view, &Groupings::default()).expect("encodes");
+        type Damage = Box<dyn Fn(&mut Vec<u8>)>;
+        // The u32 `value` written at `at`.
+        let put = |at: usize, value: u32| -> Damage {
+            Box::new(move |s| s[at..at + 4].copy_from_slice(&value.to_le_bytes()))
+        };
+        // The first `len` bytes of the first row, `width` wide, written over the second row's.
+        let repeat =
+            |width: usize, len: usize| -> Damage { Box::new(move |s| s.copy_within(..len, width)) };
+        let last_posting = || -> Damage {
+            Box::new(|s| {
+                let at = s.len() - 4;
+                s[at..].copy_from_slice(&NONE.to_le_bytes())
+            })
+        };
+        let refused = |why: &str| Err(why.to_string());
+        let outside = |kind: u16| Err(format!("section {kind} row 0: a string outside the pool"));
+        let cases: Vec<(&str, u16, Damage, Result<(), String>)> = vec![
+            ("as encoded", ROW_NODES, Box::new(|_| ()), Ok(())),
+            (
+                "a node id repeated",
+                ROW_NODES,
+                repeat(NODE_ROW, STR),
+                refused("settled nodes out of id order"),
+            ),
+            (
+                "an attribute run starting late",
+                ROW_NODES,
+                put(N_ATTRS, 1),
+                refused("node attributes are not one run a node"),
+            ),
+            (
+                "an attribute no node owns",
+                ROW_ATTRS,
+                Box::new(|s| s.extend_from_within(..ATTR_ROW)),
+                refused("node attributes no node owns"),
+            ),
+            (
+                "an attribute value outside the pool",
+                ROW_ATTRS,
+                put(STR, NONE),
+                outside(ROW_ATTRS),
+            ),
+            (
+                "an edge repeated",
+                ROW_EDGES,
+                repeat(EDGE_ROW, 3 * STR),
+                refused("settled edges out of order"),
+            ),
+            (
+                "an edge tier outside the pool",
+                ROW_EDGES,
+                put(3 * STR, NONE),
+                outside(ROW_EDGES),
+            ),
+            (
+                "an incoming posting past the edges",
+                IDX_ROW_IN,
+                last_posting(),
+                refused("a posting outside its section"),
+            ),
+            (
+                "a member posting past the nodes",
+                IDX_ROW_FILE,
+                last_posting(),
+                refused("a posting outside its section"),
+            ),
+            (
+                "a leaf posting past the nodes",
+                IDX_ROW_LEAF,
+                last_posting(),
+                refused("a posting outside its section"),
+            ),
+        ];
+        for (name, kind, damage, want) in cases {
+            let damaged = rewritten(&bytes, VERSION, |k, s| {
+                if k == kind {
+                    damage(s)
+                }
+            });
+            assert_eq!(Snapshot::decode(damaged).map(|_| ()), want, "{name}");
         }
     }
 }

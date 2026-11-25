@@ -965,7 +965,7 @@ mod tests {
                 }),
             ),
         ];
-        for kind in 1..=13u16 {
+        for kind in 1..=crate::code::snapshot::LAST {
             cases.push((
                 format!("section {kind}"),
                 Box::new(move |dir: &Path| {

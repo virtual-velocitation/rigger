@@ -1005,7 +1005,10 @@ mod tests {
     /// nothing defines, and a test that calls `run`, WHEN the worktree adds an untracked file that
     /// defines `helper`, THEN the call's tier moves from ambiguous to inferred and the test's
     /// proof of `run` holds; WHEN it also adds a second candidate `run`, THEN the untouched
-    /// test's call proves nothing.
+    /// test's call proves nothing. Only the head of a worktree matching its commit offers the
+    /// code half the store settled whole, and a neighbourhood read under the default filter, which
+    /// reads that half when it is offered, answers the call's tier alike: an overlay's change to a
+    /// file moves the edges of an id in a file it leaves alone.
     #[test]
     fn resolution_over_the_overlay_describes_the_worktree() {
         let files = [
@@ -1018,23 +1021,31 @@ mod tests {
             ("src/h.rs", Some("def helper\n")),
             ("src/r.rs", Some("def run\n")),
         );
-        // (the worktree's changes, the tier of the call to `helper`, the proof of `run`)
+        // (the worktree's changes, whether the head offers the settled code half, the tier of
+        // the call to `helper`, the proof of `run`)
         let proved = Some(r#"["tests/t.rs:2"]"#);
-        let cases: [(Changes, &str, Option<&str>); 3] = [
-            (&[], "ambiguous", proved),
-            (&[helper], "inferred", proved),
-            (&[helper, second], "inferred", None),
+        let cases: [(Changes, bool, &str, Option<&str>); 3] = [
+            (&[], true, "ambiguous", proved),
+            (&[helper], false, "inferred", proved),
+            (&[helper, second], false, "inferred", None),
         ];
-        for (changes, want_tier, want_proof) in cases {
-            let (graph, _) = answer(&fx.head(changes, &memo));
-            let call = tier(&graph, "src/a.rs::run", "src/a.rs::%helper");
-            assert_eq!(call, Some(want_tier), "{changes:?}");
-            let run = graph
-                .nodes
-                .iter()
-                .find(|n| n.id == "src/a.rs::run")
-                .unwrap();
-            let proof = run.attrs.get("proof_evidence").map(String::as_str);
+        let (run, call) = ("src/a.rs::run", "src/a.rs::%helper");
+        for (changes, offers, want_tier, want_proof) in cases {
+            let head = fx.head(changes, &memo);
+            let offered = (head.view.settled()).is_some_and(|settled| settled.half().is_some());
+            assert_eq!(
+                offered, offers,
+                "{changes:?}: the settled code half offered"
+            );
+            let (_, honesty) = shown(&head);
+            let records = Indexed::default();
+            let near = Composed::near(&records, &*head.view, ViewFilter::default(), honesty, None);
+            let seen = near.unwrap().subgraph(&[run.to_string()], 1).unwrap();
+            assert_eq!(tier(&seen, run, call), Some(want_tier), "{changes:?}: near");
+            let (graph, _) = answer(&head);
+            assert_eq!(tier(&graph, run, call), Some(want_tier), "{changes:?}");
+            let node = graph.nodes.iter().find(|n| n.id == run).unwrap();
+            let proof = node.attrs.get("proof_evidence").map(String::as_str);
             assert_eq!(proof, want_proof, "{changes:?}");
         }
     }

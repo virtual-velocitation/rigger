@@ -1206,7 +1206,7 @@ impl CodeHalf for Near<'_> {
 mod tests {
     use super::*;
     use crate::code_facts::{FileFacts, ModuleDecl};
-    use crate::code_view::{Compared, DefRef, FactsView, MentionRef, Proofs, Settled};
+    use crate::code_view::{Compared, DefRef, FactsView, MentionRef, Proofs, Settled, SettledHalf};
     use crate::composed::{Composed, Honesty, Whole};
     use crate::contextgraph::query::node_name;
     use crate::contextgraph::{ContextGraph, Direction, TIER_AMBIGUOUS};
@@ -1298,11 +1298,13 @@ mod tests {
     const FILTERS: [Tests; 3] = [Tests::Exclude, Tests::Include, Tests::Only];
 
     /// `view` holding what a store settles at advance as rows, as a resolver computes them over
-    /// it: a read of it takes the rows and computes neither.
+    /// it: a read of it takes the rows and computes neither. It offers a settled code half only
+    /// when one is given ([`Settles::with_half`]).
     struct Settles {
         view: FactsView,
         test_files: Vec<String>,
         proofs: Vec<ProofCall>,
+        half: Option<Indexed>,
     }
 
     impl Settles {
@@ -1319,8 +1321,34 @@ mod tests {
                 view,
                 test_files,
                 proofs,
+                half: None,
             }
         }
+
+        /// These rows, offering `half` as the code half settled whole.
+        fn with_half(self, half: Indexed) -> Self {
+            Settles {
+                half: Some(half),
+                ..self
+            }
+        }
+
+        /// The code half offered.
+        fn offered(&self) -> &Indexed {
+            self.half
+                .as_ref()
+                .expect("a half is read only when offered")
+        }
+    }
+
+    /// `view`'s rows with its code half settled whole as a store settles it: resolved under the
+    /// default filter, its groupings joined on.
+    fn halved(view: FactsView) -> Settles {
+        let half = Indexed::resolved(
+            &CodeGraph::new(&view, ViewFilter::default()),
+            view.groupings(),
+        );
+        Settles::of(view).with_half(half)
     }
 
     impl CodeView for Settles {
@@ -1360,6 +1388,27 @@ mod tests {
                 })
                 .cloned()
                 .collect()
+        }
+        fn half(&self) -> Option<&dyn SettledHalf> {
+            self.half.as_ref().map(|_| self as &dyn SettledHalf)
+        }
+    }
+
+    impl SettledHalf for Settles {
+        fn node(&self, id: &str) -> Option<Node> {
+            self.offered().node(id).unwrap()
+        }
+        fn out(&self, id: &str) -> Vec<Edge> {
+            self.offered().out(id).unwrap()
+        }
+        fn incoming(&self, id: &str) -> Vec<Edge> {
+            self.offered().incoming(id).unwrap()
+        }
+        fn members(&self, file: &str) -> Vec<Node> {
+            self.offered().members(file).unwrap()
+        }
+        fn leaf_nodes(&self, leaf: &str) -> Vec<Node> {
+            self.offered().leaf_nodes(leaf).unwrap()
         }
     }
 
@@ -1408,7 +1457,8 @@ mod tests {
     /// ambiguous placeholders, frontiers, tagged references, CONTAINS, module declarations,
     /// proofs, design and workflow links) and the groupings' memberships and test attachments.
     /// Each id is read once from a neighbourhood shared across reads and once from a fresh one,
-    /// so no answer depends on what was read before it.
+    /// so no answer depends on what was read before it. The view is read from its facts, from its
+    /// settled rows, and from its settled rows with the code half settled whole.
     #[test]
     fn a_neighbourhood_answers_what_the_whole_graph_answers_under_every_filter() {
         let view = view();
@@ -1417,11 +1467,12 @@ mod tests {
         let whole_graph = Whole::new(&view, ViewFilter::default()).whole().unwrap();
         let tiers: BTreeSet<&str> = whole_graph.edges.iter().map(|e| e.tier.as_str()).collect();
         assert!(tiers.contains(TIER_AMBIGUOUS) && tiers.contains(TIER_INFERRED));
-        let settles = Settles::of(self::view());
+        let (settles, halved) = (Settles::of(self::view()), halved(self::view()));
         for (tests, (held, read)) in FILTERS.into_iter().flat_map(|t| {
             [
                 (t, ("facts", &view as &dyn CodeView)),
                 (t, ("settled", &settles)),
+                (t, ("settled half", &halved)),
             ]
         }) {
             let filter = ViewFilter { tests };
@@ -1473,7 +1524,8 @@ mod tests {
 
     /// Composed over a neighbourhood answers every search as composed over the whole graph: the
     /// subgraph, the walks both ways, the referrers, the lookup of a definition, the hidden tests
-    /// and the hidden tests proving what a subgraph shows.
+    /// and the hidden tests proving what a subgraph shows, the view read from its facts, its
+    /// settled rows, and its settled rows with the code half settled whole.
     #[test]
     fn composed_near_answers_every_search_as_composed_whole() {
         let view = view();
@@ -1492,11 +1544,12 @@ mod tests {
             "docs/d.md",
             "tests/it.rs",
         ];
-        let settles = Settles::of(self::view());
+        let (settles, halved) = (Settles::of(self::view()), halved(self::view()));
         for (tests, (held, read)) in FILTERS.into_iter().flat_map(|t| {
             [
                 (t, ("facts", &view as &dyn CodeView)),
                 (t, ("settled", &settles)),
+                (t, ("settled half", &halved)),
             ]
         }) {
             let filter = ViewFilter { tests };
@@ -1566,6 +1619,49 @@ mod tests {
                 }
             }
             same!(near.stamp_label(), whole.stamp_label());
+        }
+    }
+
+    /// A NEIGHBOURHOOD READS THE SETTLED HALF UNDER THE DEFAULT FILTER ALONE: over rows offering a
+    /// code half settled whole, here an empty one, a read of a node, its edges both ways, a file's
+    /// members and a leaf's nodes answers from the half while tests are hidden, so it answers
+    /// nothing; under a filter that shows tests the half is passed over and the view is resolved
+    /// as the whole graph answers.
+    #[test]
+    fn a_neighbourhood_reads_the_settled_half_under_the_default_filter_alone() {
+        let settles = Settles::of(view()).with_half(Indexed::default());
+        let (id, file, leaf) = ("src/a.rs::run", "src/a.rs", "run");
+        let read = |half: &dyn CodeHalf| {
+            let read = (
+                half.node(id).unwrap(),
+                half.out(id).unwrap(),
+                half.incoming(id).unwrap(),
+                half.members(file).unwrap(),
+                half.leaf_nodes(leaf).unwrap(),
+                half.holds(id),
+            );
+            format!("{read:#?}")
+        };
+        type Read = (
+            Option<Node>,
+            Vec<Edge>,
+            Vec<Edge>,
+            Vec<Node>,
+            Vec<Node>,
+            bool,
+        );
+        let none = format!("{:#?}", Read::default());
+        for tests in FILTERS {
+            let filter = ViewFilter { tests };
+            let want = match tests {
+                Tests::Exclude => none.clone(),
+                Tests::Include | Tests::Only => {
+                    let whole = read(&Whole::new(&view(), filter));
+                    assert_ne!(whole, none, "{tests:?}: the whole graph holds the reads");
+                    whole
+                }
+            };
+            assert_eq!(read(&Near::new(&settles, filter)), want, "{tests:?}");
         }
     }
 
