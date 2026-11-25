@@ -99,11 +99,6 @@ pub const TYPE_DEFERRED_GATE_FAILED: &str = ledger::TYPE_DEFERRED_GATE_FAILED;
 
 pub use crate::metrics::TYPE_BLAST_RADIUS_COMPUTED;
 
-/// The grounder `k` the conductor asks for: every grounded file, never a cut. Every file the
-/// grounder grounds seeds the prompt (whose sections render through their capped writers, with
-/// an elision note) and the blast-radius-narrowed gate loop.
-const EVERY_GROUNDED_FILE: usize = usize::MAX;
-
 /// The metadata key carrying an event's deterministic REPLAY KEY (spec 04, criterion 4),
 /// RE-EXPORTED from [`crate::ingest`], which owns it: that module builds the
 /// `<prefix>/<file>@<hash>#<i>` content key and parses it back to the identity and generation
@@ -12946,7 +12941,7 @@ impl RunCtx<'_> {
     }
 
     /// The unit's TWO-VIEW blast radius (spec 16 unit 3, architecture 5.5.1): computed from the
-    /// grounder over the unit's grounding query, every grounded file ([`EVERY_GROUNDED_FILE`]). The
+    /// grounder over the unit's grounding query. The
     /// `.safe`-superset view is what every SAFETY consumer keys on: `run_wave` and
     /// `route_review_tier` (spec 16 unit 3), plus rule-6 conflict detection
     /// (`dag_unit_blast_radii`) (spec 17 unit 3, 3b) - over-inclusion is the safe error (a
@@ -12959,9 +12954,8 @@ impl RunCtx<'_> {
     /// `.precise` here has no production reader. `grounded_seed` stays the cheap `seed` path so the
     /// many per-unit / per-reviewer seed calls never pay for the uncapped safe walk. With no grounder
     /// configured this is the empty fail-safe (`BlastRadius::default()`). On the symbols-INACTIVE
-    /// path the default [`Grounder::blast_radius`] returns `ground(query, k)` as BOTH views, so
-    /// `.safe == .precise ==` the pre-unit-3 seed - every consumer that keys
-    /// on `.safe` behaves exactly as it did before, and the shipped default is unaffected.
+    /// path the default [`Grounder::blast_radius`] returns every `ground` hit's file as BOTH views,
+    /// so `.safe == .precise ==` the seed.
     ///
     /// Spec 29c criterion 2: when a unified graph is injected, the two views are re-derived as TWO
     /// confidence-tier filters ([`confidence_tier_radius`]) over the subgraph seeded from the
@@ -13001,7 +12995,7 @@ impl RunCtx<'_> {
         };
         let query = self.ground_query(st);
         let Some(context) = self.deps.context else {
-            return grounder.blast_radius_stamped(&query, EVERY_GROUNDED_FILE);
+            return grounder.blast_radius_stamped(&query);
         };
         let head = match unit_tree {
             Some(tree) => context.head_in(tree),
@@ -13011,11 +13005,7 @@ impl RunCtx<'_> {
             seed,
             radius: base,
             stamp,
-        } = grounder.blast_radius_stamped_over(
-            head.as_ref().map_err(String::as_str),
-            &query,
-            EVERY_GROUNDED_FILE,
-        );
+        } = grounder.blast_radius_stamped_over(head.as_ref().map_err(String::as_str), &query);
         let radius = match &head {
             Ok(head) => self.graph_tiered(context, head, base, depth),
             Err(_) => base,
@@ -13067,8 +13057,9 @@ impl RunCtx<'_> {
     }
 
     /// The stage's PRECISE grounded seed: the grounder's [`Grounder::seed`] of the stage's
-    /// grounding query (its `coverage`/name, or the spec criteria for a planner), every grounded
-    /// file ([`EVERY_GROUNDED_FILE`]). For the `symbols` grounder that is the code the criterion
+    /// grounding query (its `coverage`/name, or the spec criteria for a planner), whole: every file
+    /// it seeds reaches the prompt (whose sections render through their capped writers, with an
+    /// elision note) and the gate narrowing. For the `symbols` grounder that is the code the criterion
     /// names, resolved to its definition files, before any whole-text match, which never matches
     /// test code. It is the same grounding `build_prompt` seeds the graph
     /// context from, the spawn's `blast_radius` field carries, and the blast-radius-narrowed gate
@@ -13085,7 +13076,7 @@ impl RunCtx<'_> {
             Some(g) => g,
             None => return Vec::new(),
         };
-        gr.seed(&self.ground_query(st), EVERY_GROUNDED_FILE)
+        gr.seed(&self.ground_query(st))
     }
 
     /// Record a unit's computed blast radius as a `BlastRadiusComputed` audit event (spec 16 unit
@@ -13228,7 +13219,7 @@ impl RunCtx<'_> {
         // from), but those refs are no longer rendered as a parallel "Relevant locations" block:
         // the code neighborhood now comes from the ONE `graph_context` traversal below, alongside
         // the decisions/findings and design-intent nodes about the SAME files. `grounded_seed`
-        // derives the seed from the SAME `seed(query, EVERY_GROUNDED_FILE)` pass the spawn's blast
+        // derives the seed from the SAME `seed(query)` pass the spawn's blast
         // radius and audit already use, so the seed is unchanged - only the render collapses from
         // two stitched sources onto the single unified traversal.
         let seed = self.grounded_seed(st);
@@ -45340,13 +45331,13 @@ stage "implement" adjudicator "adj" failed
                 })
                 .unwrap_or_default()
         }
-        fn blast_radius(&self, query: &str, _k: usize) -> BlastRadius {
+        fn blast_radius(&self, query: &str) -> BlastRadius {
             self.by_query.get(query).cloned().unwrap_or_default()
         }
-        fn blast_radius_stamped(&self, query: &str, k: usize) -> StampedRadius {
+        fn blast_radius_stamped(&self, query: &str) -> StampedRadius {
             StampedRadius {
-                seed: self.seed(query, k),
-                radius: self.blast_radius(query, k),
+                seed: self.seed(query),
+                radius: self.blast_radius(query),
                 stamp: self.stamp.clone(),
             }
         }
@@ -45508,10 +45499,10 @@ stage "implement" adjudicator "adj" failed
         fn ground(&self, _query: &str, _k: usize) -> Vec<crate::grounder::Ref> {
             Vec::new()
         }
-        fn seed(&self, _query: &str, _k: usize) -> Vec<String> {
+        fn seed(&self, _query: &str) -> Vec<String> {
             vec!["later.rs".to_string()]
         }
-        fn blast_radius_stamped(&self, _query: &str, _k: usize) -> StampedRadius {
+        fn blast_radius_stamped(&self, _query: &str) -> StampedRadius {
             StampedRadius {
                 seed: vec!["grounded.rs".to_string()],
                 radius: BlastRadius {
@@ -46312,10 +46303,10 @@ stage "implement" adjudicator "adj" failed
         fn ground(&self, query: &str, k: usize) -> Vec<crate::grounder::Ref> {
             self.0.ground(query, k)
         }
-        fn blast_radius(&self, query: &str, k: usize) -> BlastRadius {
-            let full = self.0.blast_radius(query, usize::MAX);
+        fn blast_radius(&self, query: &str) -> BlastRadius {
+            let full = self.0.blast_radius(query);
             BlastRadius {
-                precise: full.precise.iter().take(k).cloned().collect(),
+                precise: full.precise.clone(),
                 safe: full.precise,
             }
         }
@@ -46497,7 +46488,7 @@ stage "implement" adjudicator "adj" failed
             median_width(&combined)
         );
         let fallback_of = |query: &str| -> BTreeSet<String> {
-            let br = symbols.blast_radius(query, usize::MAX);
+            let br = symbols.blast_radius(query);
             br.safe
                 .into_iter()
                 .filter(|f| !br.precise.contains(f))
@@ -46750,7 +46741,7 @@ stage "implement" adjudicator "adj" failed
                 text: String::new(),
             }]
         }
-        fn seed(&self, _query: &str, _k: usize) -> Vec<String> {
+        fn seed(&self, _query: &str) -> Vec<String> {
             vec!["named.rs".into()]
         }
     }
