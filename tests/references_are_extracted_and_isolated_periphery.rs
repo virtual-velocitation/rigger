@@ -53,7 +53,10 @@
 //!    function, with no call and no `type` mention; each lands `extracted` from its impl on the
 //!    trait or type it names, and through them `FactsView::new()` lands on the `new` that
 //!    `impl FactsView` defines and `FactsView::file()` on the trait's `file`, over their same-file
-//!    namesakes.
+//!    namesakes; a self type behind a reference or a pointer is staged by its base name, and none
+//!    when that name's path is rooted at the standard library or a standard-library import, so
+//!    `impl Draw for &std::path::Path` lands nothing on a project's own `Path` while
+//!    `impl Draw for &crate::Path` lands on it.
 
 #[cfg(feature = "symbols")]
 use crate::common;
@@ -828,9 +831,19 @@ const VARIANT_USES_SOURCE: &str = "enum InstallOutcome { AlreadyCurrent }\nenum 
 #[cfg(feature = "symbols")]
 const IMPL_HEADERS_SOURCE: &str = "trait CodeView { fn file(&self) {} }\nstruct FactsView;\nimpl<T> CodeView for FactsView<T> {}\nimpl FactsView { fn new() {} }\nfn new() {}\nfn file() {}\nfn a() { FactsView::new(); FactsView::file(); }\nfn host() { struct Local; impl CodeView for Local {} }\n";
 
+/// A Rust file holding impl headers whose self type sits behind a reference or a pointer
+/// (spec 117, RUST TAGS IMPL HEADERS) beside project types sharing those types' names: a
+/// `use std::fmt` (line 1), a trait `Draw` (line 2), the structs `Path` (line 3) and `Formatter`
+/// (line 4), and the trait impls `impl Draw for &std::path::Path` (line 5),
+/// `impl Draw for *const std::path::Path` (line 6), `impl Draw for &fmt::Formatter` (line 7) and
+/// `impl Draw for &crate::Path` (line 8). The first three self types are rooted at the standard
+/// library or a standard-library import, the last at the project.
+#[cfg(feature = "symbols")]
+const IMPL_HEADERS_BEHIND_A_POINTER_SOURCE: &str = "use std::fmt;\ntrait Draw {}\nstruct Path;\nstruct Formatter;\nimpl Draw for &std::path::Path {}\nimpl Draw for *const std::path::Path {}\nimpl Draw for &fmt::Formatter {}\nimpl Draw for &crate::Path {}\n";
+
 /// GIVEN a project whose one Rust file holds a row's uses - the field uses of
 /// [`FIELD_USES_SOURCE`], the variant uses of [`VARIANT_USES_SOURCE`] or the impl headers of
-/// [`IMPL_HEADERS_SOURCE`] -
+/// [`IMPL_HEADERS_SOURCE`] or [`IMPL_HEADERS_BEHIND_A_POINTER_SOURCE`] -
 /// WHEN the operator runs `rigger graph build`,
 /// THEN the code store holds exactly the row's mentions, each named as the Rust qualifier rule
 /// writes it, and the graph's `REFERENCES` and `CALLS` edges are exactly the row's, each landing
@@ -868,6 +881,12 @@ const IMPL_HEADERS_SOURCE: &str = "trait CodeView { fn file(&self) {} }\nstruct 
 /// the `new` that `impl FactsView` defines and `FactsView::file()` on the trait's `file`, each
 /// `extracted` over its same-file namesake, beside the `type` mention of `FactsView` the calls'
 /// qualifier makes.
+///
+/// The behind-a-pointer row: each header's trait is the `impl` mention `Draw`, landing `extracted`
+/// from its impl on the trait. A self type behind `&` or `*const` is read by its base name and
+/// excluded by that name's path root, so `&std::path::Path`, `*const std::path::Path` and
+/// `&fmt::Formatter` are no mention and land nothing on the project's `Path` or `Formatter`, while
+/// `&crate::Path` is the `impl` mention `Path`, landing `extracted` on the project's `Path`.
 #[cfg(feature = "symbols")]
 #[test]
 fn graph_build_lands_each_rust_field_variant_and_impl_header_mention_on_its_definition_and_a_call_as_a_call(
@@ -1047,6 +1066,43 @@ fn graph_build_lands_each_rust_field_variant_and_impl_header_mention_on_its_defi
              extracted from its impl on what it names; and through them the type-qualified calls \
              land extracted on the impl's method and the trait's method, no placeholder standing \
              for any mention",
+        ),
+        (
+            IMPL_HEADERS_BEHIND_A_POINTER_SOURCE,
+            // The impls of `&std::path::Path`, `*const std::path::Path`, `&fmt::Formatter` and
+            // `&crate::Path` are 3, 4, 5 and 6.
+            vec![
+                tagged_in(3, "Draw", "Draw", REF_KIND_IMPL, 5),
+                tagged_in(4, "Draw", "Draw", REF_KIND_IMPL, 6),
+                tagged_in(5, "Draw", "Draw", REF_KIND_IMPL, 7),
+                tagged_in(6, "Draw", "Draw", REF_KIND_IMPL, 8),
+                tagged_in(6, "Path", "Path", REF_KIND_IMPL, 8),
+            ],
+            vec![],
+            vec![
+                ("impl Draw for &std::path::Path", "Draw", TIER_EXTRACTED),
+                (
+                    "impl Draw for *const std::path::Path",
+                    "Draw",
+                    TIER_EXTRACTED,
+                ),
+                ("impl Draw for &fmt::Formatter", "Draw", TIER_EXTRACTED),
+                ("impl Draw for &crate::Path", "Draw", TIER_EXTRACTED),
+                ("impl Draw for &crate::Path", "Path", TIER_EXTRACTED),
+            ],
+            vec![
+                "Draw",
+                "Formatter",
+                "Path",
+                "impl Draw for &crate::Path",
+                "impl Draw for &fmt::Formatter",
+                "impl Draw for &std::path::Path",
+                "impl Draw for *const std::path::Path",
+            ],
+            "a self type behind a reference or a pointer is stored an impl mention by its base \
+             name unless that name's path is rooted at the standard library or a standard-library \
+             import, so only the crate-rooted one lands on the project's same-named type, and \
+             every header's trait lands extracted from its impl",
         ),
     ];
     for (source, mentions, calls, references, entities, why) in cases {
