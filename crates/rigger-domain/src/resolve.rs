@@ -2688,9 +2688,11 @@ pub(crate) mod tests {
 
     /// READERS (spec 117): `Resolver::referrers` lists each mention under every id its own rule
     /// lists it under, in path then source order, one item per mention, a repeated call
-    /// included: a settled call or reference under its target, a call through a placeholder
-    /// under each candidate the placeholder keeps, a reference no one candidate takes under each
-    /// it took none from, and a mention whose qualifier makes no link under none. The item names
+    /// included: a settled call or reference under its target, the one its qualifier keeps or
+    /// its one field included, a call through a placeholder under each candidate the
+    /// placeholder keeps, a reference no one candidate takes under each it took none from, the
+    /// several its qualifier keeps or its several fields included, and a mention whose qualifier
+    /// makes no link under none. The item names
     /// the enclosing definition's id and kind, or its file's when none encloses it, the label
     /// of its tag (none for a tag no label row holds), the mention's line, and whether the
     /// mention is test code, by its own mark or its file's scope, a test twin's sharing its
@@ -2710,12 +2712,16 @@ pub(crate) mod tests {
                 def("fits", "function", 16, None, false),
                 def("helper", "function", 20, None, false),
                 def("helper", "function", 30, None, true),
+                def("Bin::CAP", "constant", 6, Some(1), false),
+                def("Bin::len", "field", 7, Some(1), false),
             ],
             vec![
                 tagged("type", "Bin", Some(2), 9),
                 tagged("const", "LIMIT", Some(2), 11),
                 tagged("bogus", "LIMIT", Some(2), 12),
                 call("shared", Some(2), 13, false),
+                tagged("field", "len", Some(2), 14),
+                tagged("field", "w", Some(2), 15),
                 tagged("type", "Shape", Some(3), 16),
                 call("helper", Some(3), 17, false),
                 call("helper", Some(3), 18, false),
@@ -2726,6 +2732,20 @@ pub(crate) mod tests {
                     "Nowhere::LIMIT",
                     Some(3),
                     21,
+                    false,
+                ),
+                qualified(
+                    MentionKind::Tagged("const".into()),
+                    "Bin::CAP",
+                    Some(3),
+                    22,
+                    false,
+                ),
+                qualified(
+                    MentionKind::Tagged("const".into()),
+                    "Shape::MAX",
+                    Some(3),
+                    23,
                     false,
                 ),
                 tagged("const", "LIMIT", None, 25),
@@ -2746,6 +2766,8 @@ pub(crate) mod tests {
                 vec![
                     def("shared", "function", 1, None, false),
                     def("Shape", "type", 3, None, false),
+                    def("Shape::MAX", "constant", 4, Some(1), false),
+                    def("Shape::w", "field", 5, Some(1), false),
                 ],
                 vec![],
             )
@@ -2770,7 +2792,7 @@ pub(crate) mod tests {
                 .collect()
         };
         // (the id, its referrers, the product ones `Composed` answers)
-        let rows: [(&str, &[&str], &[&str]); 9] = [
+        let rows: [(&str, &[&str], &[&str]); 17] = [
             (
                 "src/lib.rs::LIMIT",
                 &[
@@ -2812,11 +2834,47 @@ pub(crate) mod tests {
                 &["called by src/lib.rs::spill (function) :13"],
             ),
             (
+                "src/a.rs::Shape",
+                &["type use src/lib.rs::fits (function) :16"],
+                &["type use src/lib.rs::fits (function) :16"],
+            ),
+            (
                 "src/b.rs::Shape",
                 &["type use src/lib.rs::fits (function) :16"],
                 &["type use src/lib.rs::fits (function) :16"],
             ),
+            (
+                "src/lib.rs::Bin::CAP",
+                &["reads src/lib.rs::fits (function) :22"],
+                &["reads src/lib.rs::fits (function) :22"],
+            ),
+            (
+                "src/a.rs::Shape::MAX",
+                &["reads src/lib.rs::fits (function) :23"],
+                &["reads src/lib.rs::fits (function) :23"],
+            ),
+            (
+                "src/b.rs::Shape::MAX",
+                &["reads src/lib.rs::fits (function) :23"],
+                &["reads src/lib.rs::fits (function) :23"],
+            ),
+            (
+                "src/lib.rs::Bin::len",
+                &["field use src/lib.rs::spill (function) :14"],
+                &["field use src/lib.rs::spill (function) :14"],
+            ),
+            (
+                "src/a.rs::Shape::w",
+                &["field use src/lib.rs::spill (function) :15"],
+                &["field use src/lib.rs::spill (function) :15"],
+            ),
+            (
+                "src/b.rs::Shape::w",
+                &["field use src/lib.rs::spill (function) :15"],
+                &["field use src/lib.rs::spill (function) :15"],
+            ),
             ("src/lib.rs::spill", &[], &[]),
+            ("src/lib.rs::Nope", &[], &[]),
             ("src/lib.rs", &[], &[]),
             ("src/gone.rs::LIMIT", &[], &[]),
         ];
