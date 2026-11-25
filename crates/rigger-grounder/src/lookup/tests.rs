@@ -229,6 +229,9 @@ fn resolves(term: &str, expected: super::names::Resolved) {
         entity("c.rs", "parse_args", 5),
         entity("d.rs", "render", 9),
         entity("e.rs", "go", 2),
+        entity("f.rs", "load_state", 4),
+        entity("g.rs", "LoadState", 6),
+        entity("h.rs", "load_state", 8),
     ];
     let name = |n: &Node| n.attrs["name"].clone();
     let names = Names::build(entities.iter().map(name));
@@ -268,6 +271,7 @@ crate::test_cases! {
     a_longer_misspelling_resolves_fuzzily: resolves("aply_damage", found(super::names::Tier::Fuzzy, &["a.rs::apply_damage"]));
     a_missing_name_names_its_nearest: resolves("apple", super::names::Resolved::Missing { nearest: vec!["apply_damage".into()] });
     a_name_near_nothing_names_none: resolves("zzz", super::names::Resolved::Missing { nearest: vec![] });
+    names_sharing_a_normalised_form_resolve_together_each_entity_once: resolves("load_state", found(super::names::Tier::Exact, &["f.rs::load_state", "g.rs::LoadState", "h.rs::load_state"]));
 }
 
 // --- the text half -------------------------------------------------------------------------
