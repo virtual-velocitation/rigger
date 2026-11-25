@@ -7343,11 +7343,13 @@ fn q<A, B, W>(a: u8, b: u8, x: u8, y: u8) {
                 "\
 fn r() {
     format!(\"{X}\", 1 2);
+    format!(\"{Y}\" 1);
 }
 ",
                 "\
-1 def Function r to 3
-2 ref call format r",
+1 def Function r to 4
+2 ref call format r
+3 ref call format r",
             ),
             (
                 "a named argument's name is read neither in the format string nor where it is \
