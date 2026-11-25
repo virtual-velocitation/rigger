@@ -233,8 +233,6 @@ const ALLOW_LIST: &[Allowed] = &[
         &[
             "driver: compose the spawn's allowed tools: {e}",
             "driver: write the spawn's system prompt under {}: {e}",
-            "the end of the session left processes running; {}",
-            "{host}: the end of the session was sent to {} {noun} besides",
         ],
     ),
     (

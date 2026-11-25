@@ -119,7 +119,7 @@ impl Driver {
             waited.map_err(|e| Error(format!("cli driver: wait for agent {:?}: {e}", agent.id)))?;
         // This host keeps no progress record, so what the end of the session was sent to or left
         // is said on this process's error output, the log of the run that spawned it.
-        for line in super::end_lines(&report, "cli driver") {
+        for line in report.lines("cli driver") {
             rigger_process::whole_line::say(format_args!("{line}"));
         }
         Ok(out)
