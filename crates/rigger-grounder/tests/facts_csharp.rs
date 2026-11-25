@@ -87,7 +87,7 @@ fn csharp_stages_its_row() {
     let field = |name: &str, leaf: &str| in_def(1, name, leaf, Some(REF_KIND_FIELD), 3);
     // A call in `K.M` on line 3, written `name` of `leaf`.
     let call = |name: &str, leaf: &str| in_def(1, name, leaf, None, 3);
-    let cases: [Case; 292] = [
+    let cases: [Case; 293] = [
         (
             "a base list, a parameter's types, a member constant, an assigned member and a doc block",
             "/// <summary>A square.</summary>\n/// <remarks>Its <c>Side</c> is fixed.</remarks>\nclass Square : IShape {\n    const int SIDES = 4;\n    int Side;\n    void Draw(List<IShape> s) { var n = Square.SIDES; s.Side = 2; }\n}\n",
@@ -1824,6 +1824,12 @@ fn csharp_stages_its_row() {
             "an identifier compared by `<` after `is` in an argument, then an argument comparing by `==`, its left operand none",
             in_m!("F(p is Kg < ok, s == null);"),
             vec![ty("Kg"), ty("ok")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments as the left operand of `&` in the right operand of `&&` in an argument, split at its comma by the grammar",
+            in_m!("F(ok && p is Kh<A, B> & s is null);"),
+            vec![ty("Kh"), ty("A"), ty("B")],
             k_m(),
         ),
         (
