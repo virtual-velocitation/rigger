@@ -5001,7 +5001,8 @@ fn product() {}
     /// AN EXCLUDED QUALIFIER STAGES NOTHING (spec 117, RUST REFERENCES): a call whose path's
     /// written qualifier is a prelude name, a standard-library import or alias, or whose path is
     /// rooted at the standard library, at such an import or at a primitive type, stages no
-    /// mention, a macro's token tree and a qualified-self path's trait alike, while the macro's
+    /// mention, a struct literal's or pattern's field under such a struct name, a macro's token
+    /// tree and a qualified-self path's trait alike, while the macro's
     /// own call stages. An alias qualifier is written as the name it imports, exclusion read on
     /// the alias as written first; a `Self` or `self` whose self type is excluded and an enclosing
     /// generic parameter stage the call unqualified; a qualifier no exclusion holds (a
@@ -5103,6 +5104,18 @@ fn r(p: &str) {
 }
 ",
                 "1 def Function r to 5",
+            ),
+            (
+                "a standard-library-rooted struct stages no field, its name scoped, a turbofish or a \
+                 pattern's",
+                "\
+fn s(r: u8, start: u8) {
+    std::ops::Range { start, end: 1 };
+    core::ops::Range::<u8> { start: 0, end: 1 };
+    let std::ops::Range { end, .. } = r;
+}
+",
+                "1 def Function s to 5",
             ),
             (
                 "a path rooted at a standard-library import stages no call",
