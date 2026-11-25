@@ -29,10 +29,12 @@
 //!    `Shape`'s method over their same-file namesakes, and `List`, the leaf before the type
 //!    arguments;
 //!  - and Rust writes the qualifier: `Store::open()`, `a::Memo::<u8>::new()`, `Self::new()` inside
-//!    `impl<T> Store<T>` and `self.file()` inside `trait CodeView` are stored as the calls
-//!    `Store::open`, `Memo::new`, `Store::new` and `CodeView.file`, while `self.inner.open()` and
-//!    `paths::module_dir()` are stored bare, and each lands where its name reaches - nowhere for a
-//!    qualifier naming no type of the tree, and the trait's own `file` over its same-file namesake.
+//!    `impl<T> Store<T>`, `self.file()` inside `trait CodeView` and `C::f()` under
+//!    `use a::B as C;` are stored as the calls `Store::open`, `Memo::new`, `Store::new`,
+//!    `CodeView.file` and `B::f`, while `self.inner.open()` and `paths::module_dir()` are stored
+//!    bare and `Cursor::new()` under `use std::io::Cursor;`, its qualifier excluded, is not stored
+//!    at all, and each stored call lands where its name reaches - nowhere for a qualifier naming no
+//!    type of the tree, and the trait's own `file` over its same-file namesake.
 
 #[cfg(feature = "symbols")]
 use crate::common;
@@ -619,10 +621,12 @@ fn stored_mentions(graph: &common::cli::BuiltGraph, file: &str) -> Option<Vec<(S
 }
 
 /// One Rust file `f.rs` per call shape RUST WRITES THE QUALIFIER names (spec 117, RUST
-/// REFERENCES), and one module-prefixed turbofish, whose type the rule reads by its final segment,
-/// each `(what it shows, source, its stored mentions as (name as written, leaf),
-/// the calls it lands as (caller, callee), each by id path and `extracted`)`. An impl header
-/// stages a call to its self type, so `impl Store` calling `Store` is a row's landing too.
+/// REFERENCES), one module-prefixed turbofish, whose type the rule reads by its final segment, and
+/// one per shape AN EXCLUDED QUALIFIER STAGES NOTHING names - a standard-library import's
+/// qualifier, in a call and in a macro's token tree, and an alias qualifier - each `(what it
+/// shows, source, its stored mentions as (name as written, leaf), the calls it lands as (caller,
+/// callee), each by id path and `extracted`)`. An impl header stages a call to its self type, so
+/// `impl Store` calling `Store` is a row's landing too.
 #[cfg(feature = "symbols")]
 type RustQualifiedCall = (
     &'static str,
@@ -633,7 +637,7 @@ type RustQualifiedCall = (
 
 /// The rows of [`graph_build_names_a_rust_call_by_the_qualifier_rust_writes`].
 #[cfg(feature = "symbols")]
-const RUST_QUALIFIED_CALLS: [RustQualifiedCall; 6] = [
+const RUST_QUALIFIED_CALLS: [RustQualifiedCall; 9] = [
     (
         "`Store::open()`, its uppercase segment naming no type of the tree, makes no link",
         "fn open() {}\nfn main() { Store::open(); }\n",
@@ -674,20 +678,45 @@ const RUST_QUALIFIED_CALLS: [RustQualifiedCall; 6] = [
         &[("module_dir", "module_dir")],
         &[("main", "module_dir")],
     ),
+    (
+        "`Cursor::new(x)` under `use std::io::Cursor;`, its qualifier a standard-library import, \
+         is stored as no mention and lands nowhere, where a bare `new` lands on its same-file `new`",
+        "use std::io::Cursor;\nfn new() {}\nfn a(x: u8) { Cursor::new(x); }\n",
+        &[],
+        &[],
+    ),
+    (
+        "`Cursor::new(v)` in a token tree under `use std::io::Cursor;` is stored as no mention, \
+         the macro's own call landing on its one same-file macro",
+        "use std::io::Cursor;\nmacro_rules! check { ($($t:tt)*) => {}; }\nfn new() {}\nfn b(c: u8, v: u8) { check!(c, Cursor::new(v)); }\n",
+        &[("check", "check")],
+        &[("b", "check")],
+    ),
+    (
+        "`C::f()` under `use a::B as C;` is stored as `B::f`, the name the alias imports, and \
+         makes no link, its qualifier naming no type of the tree",
+        "use a::B as C;\nfn f() {}\nfn g() { C::f(); }\n",
+        &[("B", "B"), ("B::f", "f"), ("C", "C")],
+        &[],
+    ),
 ];
 
 /// GIVEN a project whose one Rust file `f.rs` makes a call in a shape RUST WRITES THE QUALIFIER
-/// names, or through a module-prefixed turbofish ([`RUST_QUALIFIED_CALLS`]),
+/// or AN EXCLUDED QUALIFIER STAGES NOTHING names, or through a module-prefixed turbofish
+/// ([`RUST_QUALIFIED_CALLS`]),
 /// WHEN the operator runs `rigger graph build`,
 /// THEN the store holds the call's mention named as the Rust qualifier rule writes it -
-/// `Store::open`, `Memo::new` and `Store::new` as paths, `CodeView.file` as a member access,
-/// `open` and `module_dir` bare - beside the mention an uppercase path segment or an impl header's
-/// self type stages, and the graph's `REFERENCES` and `CALLS` edges are exactly where those names
-/// reach: nowhere for `Store::open` and `Memo::new`, their qualifiers naming no type of the tree,
-/// where a bare `open` or `new` lands on its same-file fn; the trait's own `file` for
-/// `CodeView.file`, where a bare `file` lands on a placeholder beside the same-file free `file`;
-/// and the one same-file candidate for each other name, which `paths::module_dir`, its qualifier
-/// naming no type, would not reach.
+/// `Store::open`, `Memo::new` and `Store::new` as paths, `B::f` for `C::f()` under
+/// `use a::B as C;`, `CodeView.file` as a member access, `open` and `module_dir` bare - beside the
+/// mention a `use`, an uppercase path segment or an impl header's self type stages, and none for
+/// `Cursor::new` under `use std::io::Cursor;`, in a call or in a macro's token tree, its qualifier
+/// a standard-library import; and the graph's `REFERENCES` and `CALLS` edges are exactly where
+/// those names reach: nowhere for `Store::open`, `Memo::new` and `B::f`, their qualifiers naming
+/// no type of the tree, nor for the unstored `Cursor::new`, where a bare `open`, `new` or `f`
+/// lands on its same-file fn; the trait's own `file` for `CodeView.file`, where a bare `file`
+/// lands on a placeholder beside the same-file free `file`; and the one same-file candidate for
+/// each other name - the macro's own `check` among them - which `paths::module_dir`, its
+/// qualifier naming no type, would not reach.
 #[cfg(feature = "symbols")]
 #[test]
 fn graph_build_names_a_rust_call_by_the_qualifier_rust_writes() {
@@ -722,8 +751,8 @@ fn graph_build_names_a_rust_call_by_the_qualifier_rust_writes() {
         .unzip();
     assert_eq!(
         found, expected,
-        "each Rust call is stored named by the qualifier Rust writes, and lands where that name \
-         reaches"
+        "each Rust call is stored named by the qualifier Rust writes, or not at all when that \
+         qualifier is excluded, and lands where that name reaches"
     );
 }
 
