@@ -88,7 +88,7 @@ fn csharp_stages_its_row() {
     let field = |name: &str, leaf: &str| in_def(1, name, leaf, Some(REF_KIND_FIELD), 3);
     // A call in `K.M` on line 3, written `name` of `leaf`.
     let call = |name: &str, leaf: &str| in_def(1, name, leaf, None, 3);
-    let cases: [Case; 351] = [
+    let cases: [Case; 355] = [
         (
             "a base list, a parameter's types, a member constant, an assigned member and a doc block",
             "/// <summary>A square.</summary>\n/// <remarks>Its <c>Side</c> is fixed.</remarks>\nclass Square : IShape {\n    const int SIDES = 4;\n    int Side;\n    void Draw(List<IShape> s) { var n = Square.SIDES; s.Side = 2; }\n}\n",
@@ -1930,7 +1930,7 @@ fn csharp_stages_its_row() {
             k_m(),
         ),
         (
-            "a generic name of two type arguments split at its comma, its part before the comma nine comparisons, past the bound, none",
+            "a generic name of two type arguments split at its comma, its part before the comma nine comparisons, four closing by `>`, past the bound, none",
             in_m!("F(p is Ga<Fa<Fb<Fc<Fd<C>[]>[]>[]>[], B> & s is null);"),
             vec![],
             k_m(),
@@ -2023,6 +2023,30 @@ fn csharp_stages_its_row() {
             "a generic name of two type arguments split at its comma, the second nine generics' arrays nested, nine comparisons, past the bound, its two leftmost names none",
             in_m!("F(p is Ga<A, Sa<Sb<Sc<Sd<Se<Sf<Sg<Sh<Si<C>[]>[]>[]>[]>[]>[]>[]>[]>[]> & s is null);"),
             vec![ty("Ga"), ty("A"), ty("Sc"), ty("Sd"), ty("Se"), ty("Sf"), ty("Sg"), ty("Sh"), ty("Si"), ty("C")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, an element between its commas eight comparisons, the bound, each name included",
+            in_m!("F(p is Ga<Fa<Fb<Fc, Fd<Fe<Ff<C>[]>[]>[]>[]>[], B> & s is null);"),
+            vec![ty("Ga"), ty("Fa"), ty("Fb"), ty("Fc"), ty("Ff"), ty("Fd"), ty("Fe"), ty("C"), ty("B")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, an element between its commas nine comparisons, past the bound, the second type argument none",
+            in_m!("F(p is Ga<Fa<Fb, Fc<Fd<Fe<Ff<C>[]>[]>[]>[]>[], B> & s is null);"),
+            vec![ty("Ga"), ty("Fa"), ty("Fb"), ty("Ff"), ty("Fe"), ty("Fc"), ty("Fd"), ty("C")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, its part before the comma nine comparisons, three closing by `>`, past the bound, the two names under nine none",
+            in_m!("F(p is Ga<Fa<Fb<Fc<Fd<Fe<Fg>[]>[]>[], Ff>[]>[], B> & s is null);"),
+            vec![ty("Fb"), ty("Fc"), ty("Fe"), ty("Fd"), ty("Fg"), ty("Ff"), ty("B")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, then arguments comparing by `<` and by `>`, their operands none",
+            in_m!("F(p is Gen<Fa<Fb, Fc>[], B> & s is null, q < r, t > 0);"),
+            vec![ty("Gen"), ty("Fa"), ty("Fb"), ty("Fc"), ty("B")],
             k_m(),
         ),
         (
