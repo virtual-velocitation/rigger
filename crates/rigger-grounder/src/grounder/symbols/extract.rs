@@ -1943,9 +1943,9 @@ const FORMAT_MACROS: [(&str, usize); 18] = [
 /// The format arguments of `invocation` when it invokes a format macro ([`FORMAT_MACROS`]), read
 /// off `arguments`, the argument list its token tree is read whole as ([`read_tokens`]), so they
 /// split where a call's do (`f::<A, B>()` is one argument, `a < b` another): the byte range of its
-/// format string's argument when that is one string literal, raw or not, and that of the left
-/// side of each assignment after it, the name a named argument binds (`TEMP` of `TEMP = 1`);
-/// neither for any other macro.
+/// format string's argument, which [`format_captures`] reads when it is one string literal, and
+/// that of the left side of each assignment after it, the name a named argument binds (`TEMP` of
+/// `TEMP = 1`); neither for any other macro.
 fn format_arguments(
     invocation: tree_sitter::Node,
     arguments: tree_sitter::Node,
@@ -1962,10 +1962,7 @@ fn format_arguments(
     let mut each = arguments
         .named_children(&mut cursor)
         .filter(|argument| !is_comment(*argument));
-    let string = each
-        .nth(at)
-        .filter(|string| matches!(string.kind(), "string_literal" | "raw_string_literal"))
-        .map(|string| string.byte_range());
+    let string = each.nth(at).map(|string| string.byte_range());
     let named = each
         .filter(|argument| argument.kind() == "assignment_expression")
         .filter_map(|argument| argument.child_by_field_name("left"))
@@ -1976,7 +1973,8 @@ fn format_arguments(
 
 /// THE FORMAT CAPTURES (spec 117, CONST READ): the byte spans of the names the format string
 /// `literal` captures inline ([`format_arguments`]): each [`inline_captures`] reads off a run of
-/// its literal text (an escape sequence is no such run), spelled as a constant
+/// its own literal text, which a string literal alone holds, raw or not (an escape sequence is no
+/// such run, nor a literal inside a longer argument: `"{X}".to_owned()`), spelled as a constant
 /// ([`is_const_spelled`]) and bound by none of the names `named` spans, its named arguments'.
 fn format_captures(
     literal: tree_sitter::Node,
