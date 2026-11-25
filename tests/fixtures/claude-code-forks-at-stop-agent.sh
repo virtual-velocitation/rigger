@@ -94,7 +94,7 @@ double-slow)
     drain
     ;;
 setsid)
-    setsid sh -c 'printf u >&9; read -r unused <&8' &
+    holder setsid
     init
     idle
     ;;

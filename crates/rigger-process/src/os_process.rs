@@ -1,23 +1,23 @@
 //! The process interface (spec 125, criterion 9): the one place rigger reads a fact about a
 //! running process - which processes exist, a process's parent, start time, working directory,
-//! command line, executable name, control group, run state and open files, which process listens
-//! on a TCP port, which processes hold a directory, and the path that execs this process's own
-//! image. Each fact is a function here, answered by the native adapter of the OS the binary is
-//! built for; the reaper ([`crate::reap`]), the holder check ([`crate::holders`]) and the dash
-//! read processes through these functions alone. Read-only: nothing here signals a process.
+//! arguments, executable name, control group, run state and open files, which process listens on
+//! a TCP port, which processes hold a directory, and the path that execs this process's own image.
+//! Each fact is a function here, answered by the native adapter of the OS the binary is built
+//! for; the reaper ([`crate::reap`]), the holder check ([`crate::holders`]) and the dash read
+//! processes through these functions alone. Read-only: nothing here signals a process.
 //!
 //! Every reader is best-effort: a process that is gone, or one this process may not read,
 //! answers absent (`None`, an empty list, an empty command), never an error, and on an OS with
 //! no native adapter every reader answers absent. The native adapters are Linux's (`/proc`),
-//! which Android, running the same kernel, binds too, macOS's (libproc) and Windows's (the
-//! Win32 process, IP Helper and Restart Manager calls);
+//! which Android, running the same kernel, binds too, macOS's (libproc and the kernel's
+//! argument-area sysctl) and Windows's (the Win32 process, IP Helper and Restart Manager calls);
 //! Windows reports no other process's working directory or open files, so there those two readers
 //! answer absent, and of a process's run state it reports only that the process has exited.
 //!
 //! The rules the macOS and Windows adapters apply to what their OS's calls answer - which parent a
-//! record is trusted to name, how a table's rows, a socket's port and a start time read, whether a
-//! socket listens, how files are batched for registration - are plain functions here, compiled on
-//! every host so every lane's tests drive them.
+//! record is trusted to name, how a table's rows, a socket's port, a start time and an argument
+//! area read, whether a socket listens, how files are batched for registration - are plain
+//! functions here, compiled on every host so every lane's tests drive them.
 
 use std::path::{Path, PathBuf};
 
@@ -43,6 +43,7 @@ std::cfg_select! {
             use std::path::PathBuf;
 
             pub(super) use super::command_file_name as executable_name;
+            pub(super) use super::read_then_checked as arguments_of;
             pub(super) use super::no_cgroup as cgroup;
             pub(super) use super::reported_image as running_image;
             pub(super) use super::scan_holders as holders;
@@ -69,6 +70,10 @@ std::cfg_select! {
 
             pub(super) fn command(_pid: u32) -> String {
                 String::new()
+            }
+
+            pub(super) fn arguments(_pid: u32) -> Option<Vec<String>> {
+                None
             }
 
             pub(super) fn state(_pid: u32) -> Option<char> {
@@ -98,36 +103,44 @@ std::cfg_select! {
                     let me = std::process::id();
                     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
                     let port = listener.local_addr().unwrap().port();
+                    // Two tuples, each within the twelve items a tuple compares and prints.
                     assert_eq!(
                         (
-                            pids(),
-                            table(),
-                            parent(me),
-                            start_time(me),
-                            cwd(me),
-                            command(me),
-                            executable_name(me),
-                            cgroup(me),
-                            state(me),
-                            open_files(me),
-                            is_unexeced_fork_of(me, me),
-                            listening_pid(port),
-                            holders(std::path::Path::new("/")),
+                            (
+                                pids(),
+                                table(),
+                                listening_pid(port),
+                                holders(std::path::Path::new("/")),
+                            ),
+                            (
+                                parent(me),
+                                start_time(me),
+                                cwd(me),
+                                command(me),
+                                arguments(me),
+                                arguments_of(me, 0),
+                                executable_name(me),
+                                cgroup(me),
+                                state(me),
+                                open_files(me),
+                                is_unexeced_fork_of(me, me),
+                            ),
                         ),
                         (
-                            Vec::new(),
-                            Vec::new(),
-                            None,
-                            None,
-                            None,
-                            String::new(),
-                            String::new(),
-                            None,
-                            None,
-                            Vec::new(),
-                            false,
-                            None,
-                            Vec::new()
+                            (Vec::new(), Vec::new(), None, Vec::new()),
+                            (
+                                None,
+                                None,
+                                None,
+                                String::new(),
+                                None,
+                                None,
+                                String::new(),
+                                None,
+                                None,
+                                Vec::new(),
+                                false
+                            ),
                         )
                     );
                 }
@@ -192,8 +205,9 @@ pub(crate) fn cwd_lies_in(pid: u32, dir: &Path) -> bool {
     cwd(pid).is_some_and(|cwd| cwd.starts_with(dir))
 }
 
-/// Process `pid`'s command: on Linux its arguments joined by single spaces, or its short name when
-/// its arguments cannot be read; on macOS and Windows the full path of its executable.
+/// Process `pid`'s command: on Linux its arguments that are not empty joined by single spaces, or
+/// its short name when none is or they cannot be read; on macOS and Windows the full path of its
+/// executable.
 /// Descriptive only, it names a process in a message and decides nothing. Empty when `pid` is
 /// gone.
 pub fn command(pid: u32) -> String {
@@ -221,6 +235,37 @@ fn file_name_text(path: &Path) -> Option<String> {
 #[cfg(not(any(target_os = "linux", target_os = "android")))]
 fn command_file_name(pid: u32) -> String {
     file_name_text(Path::new(&command(pid))).unwrap_or_default()
+}
+
+/// Process `pid`'s arguments, its program first: the ones it was started with, each one whole as
+/// the OS holds it, so an argument holding a space stays one argument. Linux reads the vector its
+/// exec laid out, and Windows splits the command line the process was created with by the split it
+/// documents for one (`CommandLineToArgvW`), and macOS reads the argument area its exec laid
+/// out. `None` when `pid` is gone or its arguments cannot be read, so unlike [`command`] it never
+/// answers a process's name in place of its arguments.
+pub fn arguments(pid: u32) -> Option<Vec<String>> {
+    native::arguments(pid)
+}
+
+/// The arguments ([`arguments`]) of the process that started at `started` ([`start_time`]) and
+/// holds `pid`, read only while `pid` names it, so a process that took the pid after that one
+/// exited is never read in its place: Windows reads them through one handle it first reads the
+/// start of, and a handle keeps its process's pid that process's own while it is open; every
+/// other OS reads them by the pid and keeps them only where the pid still reads `started` after
+/// the read, since a pid that names one process before and after a read named it throughout.
+/// `None` where `pid` names no process that started at `started`, or its arguments cannot be read.
+pub fn arguments_of(pid: u32, started: u64) -> Option<Vec<String>> {
+    native::arguments_of(pid, started)
+}
+
+/// [`arguments_of`] on every OS without a handle that keeps a pid its process's: the arguments
+/// read by `pid` ([`arguments`]), kept only where `pid` reads `started` ([`start_time`]) after the
+/// read. A pid names one process from its start until that process is reaped, so one that names
+/// the process that started at `started` after the read named it throughout the read.
+#[cfg(not(target_os = "windows"))]
+fn read_then_checked(pid: u32, started: u64) -> Option<Vec<String>> {
+    let arguments = native::arguments(pid)?;
+    (native::start_time(pid) == Some(started)).then_some(arguments)
 }
 
 /// The control group process `pid` is in, as the text of the kernel's file naming it: on Linux
@@ -397,6 +442,26 @@ fn whole_rows(claimed: u32, words: usize, row_words: usize) -> usize {
     (claimed as usize).min(words / row_words)
 }
 
+/// Where a Windows process's command line lies in the buffer a `ProcessCommandLineInformation`
+/// read answered into: the buffer starts at address `start` and is `size` bytes long, and the
+/// `header`-byte `UNICODE_STRING` at its start names `length` bytes at address `text`. The span is
+/// those bytes' offsets in the buffer, and `None` unless they lie wholly inside it, after the
+/// structure, as whole UTF-16 units: a structure the call filled otherwise is never read past.
+#[cfg(any(target_os = "windows", test))]
+fn command_line_span(
+    start: usize,
+    size: usize,
+    header: usize,
+    text: usize,
+    length: usize,
+) -> Option<std::ops::Range<usize>> {
+    let offset = text.checked_sub(start)?;
+    let end = offset.checked_add(length)?;
+    let inside = offset >= header && end <= size;
+    let whole_units = offset.is_multiple_of(2) && length.is_multiple_of(2);
+    (inside && whole_units).then_some(offset..end)
+}
+
 /// The port a socket record holds in network byte order in the low 16 bits of a wider field
 /// (Windows's listener-table `dwLocalPort`, macOS's `insi_lport`), whose upper bits carry nothing.
 #[cfg(any(target_os = "windows", target_os = "macos", test))]
@@ -440,6 +505,33 @@ fn listens_over_ipv4(
     port: u16,
 ) -> bool {
     state == TSI_S_LISTEN && vflag & INI_IPV4 != 0 && port_of(raw_port as u32) == port
+}
+
+/// The arguments a macOS `KERN_PROCARGS2` read answered in `answer`: the argument count as a
+/// native `int`, then the executable's path ended by a NUL and padded with NULs, then that many
+/// arguments, each ended by a NUL, the environment after them. The padding is read past up to the
+/// first argument, as xnu lays it out (`bsd/kern/kern_sysctl.c`, `sysctl_procargsx`), so an empty
+/// first argument cannot be told from the padding; an empty later argument stays one. `None` when
+/// the answer is shorter than its count, the count is not positive, or the path or an argument
+/// runs to the answer's end without its NUL: an answer the call filled otherwise is never read
+/// past.
+#[cfg(any(target_os = "macos", test))]
+fn procargs_arguments(answer: &[u8]) -> Option<Vec<String>> {
+    let (count, area) = answer.split_first_chunk::<4>()?;
+    let count = usize::try_from(i32::from_ne_bytes(*count))
+        .ok()
+        .filter(|&count| count > 0)?;
+    let path_end = area.iter().position(|&byte| byte == 0)?;
+    let first = path_end + area[path_end..].iter().position(|&byte| byte != 0)?;
+    let mut rest = &area[first..];
+    (0..count)
+        .map(|_| {
+            let end = rest.iter().position(|&byte| byte == 0)?;
+            let argument = String::from_utf8_lossy(&rest[..end]).into_owned();
+            rest = &rest[end + 1..];
+            Some(argument)
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -623,6 +715,292 @@ mod tests {
         );
     }
 
+    /// On Linux a process's arguments are the ones it was started with, an empty one included, and
+    /// its command is its arguments that are not empty joined by single spaces, or its short name
+    /// where none is not empty, as a process that blanked its arguments to retitle itself leaves
+    /// them; once its arguments are gone, as an exited child's are before it is reaped, it answers
+    /// none where its command answers its short name, and a gone process answers none.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_processes_arguments_are_its_own_and_none_once_they_are_gone() {
+        use std::os::unix::process::CommandExt;
+        let me: Vec<String> = std::env::args().collect();
+        let mut sleeper = sleeper_in(Path::new("/"));
+        let mut holding_empties = crate::subprocess::command("sh");
+        holding_empties.args(["-s", "", "a", ""]);
+        let mut all_empty = crate::subprocess::command("cat");
+        all_empty.arg0("");
+        let [holding_empties, all_empty] = [holding_empties, all_empty]
+            .map(|mut child| child.stdin(std::process::Stdio::piped()).spawn().unwrap());
+        let empties = [holding_empties.id(), all_empty.id()];
+        // `spawn` returns while the child's exec may still be laying out its arguments, when the
+        // OS reports this process's, so each child is read once its exec has finished.
+        wait_until(|| command(sleeper.id()) == "sleep 300");
+        wait_until(|| {
+            empties
+                .iter()
+                .all(|&pid| arguments(pid).is_some_and(|a| a != me))
+        });
+        let mut exited = crate::subprocess::command("true").spawn().unwrap();
+        wait_until(|| state(exited.id()) == Some('Z'));
+        let rows = [
+            ("this process", std::process::id()),
+            ("a sleeping child", sleeper.id()),
+            ("a child holding empty arguments", empties[0]),
+            ("a child whose one argument is empty", empties[1]),
+            ("an exited child not yet reaped", exited.id()),
+            ("a gone process", gone_pid()),
+        ];
+        let read: Vec<(&str, Option<Vec<String>>, String)> = rows
+            .iter()
+            .map(|&(what, pid)| (what, arguments(pid), command(pid)))
+            .collect();
+        cleanup(&mut sleeper);
+        for mut child in [holding_empties, all_empty] {
+            drop(child.stdin.take());
+            child.wait().expect("the child exits once its input closes");
+        }
+        exited.wait().unwrap();
+        let words = |words: &[&str]| words.iter().map(|word| word.to_string()).collect();
+        assert_eq!(
+            read,
+            [
+                ("this process", Some(me.clone()), me.join(" ")),
+                (
+                    "a sleeping child",
+                    Some(words(&["sleep", "300"])),
+                    "sleep 300".to_string()
+                ),
+                (
+                    "a child holding empty arguments",
+                    Some(words(&["sh", "-s", "", "a", ""])),
+                    "sh -s a".to_string()
+                ),
+                (
+                    "a child whose one argument is empty",
+                    Some(words(&[""])),
+                    "cat".to_string()
+                ),
+                ("an exited child not yet reaped", None, "true".to_string()),
+                ("a gone process", None, String::new()),
+            ]
+        );
+    }
+
+    /// A process's arguments are the ones it was created with, each one whole: this process's,
+    /// read through its own pid, and a child's created with a spawn's stop-failure hook arguments,
+    /// whose spawn id holds a space, and an empty argument after them. On Windows the creation
+    /// quotes the id and the empty argument into the command line the child is created with, as
+    /// the host's launch quotes a hook's, and each reads back as the one argument it was. They
+    /// read the same by the pid alone and by the pid with the start time it reads, and as none by
+    /// the pid with a start time it does not read, as when another process took the pid. The
+    /// child is a shell that reads its commands from its input and runs none of the words, so it
+    /// stays up while that input is open and exits once it closes: Unix's `sh -s`, holding them
+    /// as its positional parameters, and Windows's `cmd /d /k`, after a `rem`.
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "android",
+        target_os = "macos",
+        windows
+    ))]
+    #[test]
+    fn a_processes_arguments_are_the_ones_it_was_created_with_each_one_whole() {
+        let (shell, before) = if cfg!(windows) {
+            ("cmd", ["/d", "/k", "rem"].as_slice())
+        } else {
+            ("sh", ["-s"].as_slice())
+        };
+        let hook = [
+            "hook",
+            "stop-failure",
+            "--spawn",
+            "u 7/implementer#2",
+            "--class",
+            "x",
+        ];
+        let mut carrier = crate::subprocess::command(shell);
+        carrier
+            .args(before)
+            .args(hook)
+            .arg("")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null());
+        let created: Vec<String> = std::iter::once(carrier.get_program())
+            .chain(carrier.get_args())
+            .map(|word| word.to_string_lossy().into_owned())
+            .collect();
+        let mut child = carrier.spawn().expect("start the shell");
+        // A Unix child reports this process's arguments until its exec has laid out its own.
+        crate::test_support::wait_until(|| arguments(child.id()).as_ref() == Some(&created));
+        let rows = [
+            (
+                "this process",
+                std::process::id(),
+                std::env::args().collect(),
+            ),
+            (
+                "a child created with a spaced spawn id",
+                child.id(),
+                created,
+            ),
+        ];
+        let read: Vec<(&str, [Option<Vec<String>>; 3])> = rows
+            .iter()
+            .map(|(what, pid, _)| {
+                let start = start_time(*pid).expect("the process is up");
+                (
+                    *what,
+                    [
+                        arguments(*pid),
+                        arguments_of(*pid, start),
+                        arguments_of(*pid, start + 1),
+                    ],
+                )
+            })
+            .collect();
+        drop(child.stdin.take());
+        child.wait().expect("the shell exits once its input closes");
+        let expected: Vec<(&str, [Option<Vec<String>>; 3])> = rows
+            .iter()
+            .map(|(what, _, created)| (*what, [Some(created.clone()), Some(created.clone()), None]))
+            .collect();
+        assert_eq!(read, expected);
+    }
+
+    /// A macOS `KERN_PROCARGS2` answer is the argument count, the executable's path and the NULs
+    /// padding it, then that many arguments, each ended by a NUL, and the environment, which
+    /// reads as no argument: an argument holding a space stays whole and an empty one stays one,
+    /// where the path is padded or not and where the environment is left out as zeros. An answer
+    /// shorter than its count's word, a count that is not positive, a path or an argument that
+    /// runs to the answer's end without its NUL, and an answer whose count names more arguments
+    /// than it holds read as none.
+    #[test]
+    fn a_procargs_answer_reads_as_the_arguments_it_counts() {
+        // The arguments a row's answer reads as, or none.
+        type Reads<'a> = Option<&'a [&'a str]>;
+        let answer = |count: i32, strings: &[u8]| [&count.to_ne_bytes()[..], strings].concat();
+        let rows: [(&str, Vec<u8>, Reads<'_>); 9] = [
+            (
+                "a padded path, then a spaced spawn id and the environment",
+                answer(3, b"/bin/sh\0\0\0\0sh\0-s\0u 7/implementer#2\0PATH=/bin\0"),
+                Some(&["sh", "-s", "u 7/implementer#2"]),
+            ),
+            (
+                "an empty last argument",
+                answer(3, b"/bin/sh\0\0sh\0-s\0\0HOME=/\0"),
+                Some(&["sh", "-s", ""]),
+            ),
+            (
+                "a path with no padding",
+                answer(1, b"/x\0x\0"),
+                Some(&["x"]),
+            ),
+            (
+                "an environment left out as zeros",
+                answer(2, b"/p\0\0a\0b\0\0\0\0"),
+                Some(&["a", "b"]),
+            ),
+            ("an answer shorter than its count", vec![1, 0], None),
+            ("a count of none", answer(0, b"/p\0a\0"), None),
+            ("a negative count", answer(-1, b"/p\0a\0"), None),
+            ("a path without its NUL", answer(1, b"/bin/sh"), None),
+            (
+                "a count of more arguments than the answer holds",
+                answer(3, b"/bin/sh\0sh\0-s"),
+                None,
+            ),
+        ];
+        let read: Vec<(&str, Option<Vec<String>>)> = rows
+            .iter()
+            .map(|(what, answer, _)| (*what, procargs_arguments(answer)))
+            .collect();
+        let expected: Vec<(&str, Option<Vec<String>>)> = rows
+            .iter()
+            .map(|(what, _, words)| {
+                (
+                    *what,
+                    words.map(|words| words.iter().map(|word| word.to_string()).collect()),
+                )
+            })
+            .collect();
+        assert_eq!(read, expected);
+    }
+
+    /// A Windows command line splits into the arguments it was quoted from, as the host's launch
+    /// quotes a hook's: an argument holding a space, or nothing, in double quotes, a quote inside
+    /// one after a backslash, and a backslash doubled before a closing quote. A line as Rust's
+    /// quoting makes it splits so, and so does one as libuv's makes it (`quote_cmd_arg`, in its
+    /// `src/win/process.c`), the quoting the session host's runtime starts a hook through, here
+    /// with an argument holding a space, quotes and a closing backslash, and backslashes before a
+    /// quote. An empty line, which the split would answer with this process's own path, answers
+    /// none.
+    #[cfg(windows)]
+    #[test]
+    fn a_command_line_splits_into_the_arguments_it_was_quoted_from() {
+        let rows: [(&str, &str, Option<&[&str]>); 6] = [
+            (
+                "a hook for a spawn id holding a space",
+                r#""C:\Program Files\rigger\rigger.exe" hook stop-failure --spawn "u 7/implementer#2" --class rate_limit"#,
+                Some(&[
+                    r"C:\Program Files\rigger\rigger.exe",
+                    "hook",
+                    "stop-failure",
+                    "--spawn",
+                    "u 7/implementer#2",
+                    "--class",
+                    "rate_limit",
+                ]),
+            ),
+            (
+                "a hook as libuv's quote_cmd_arg quotes one",
+                r#""C:\Program Files\rigger\rigger.exe" hook stop-failure --spawn "u 7/implementer#2" "a \"b\" c\\" "hello\\\\\"world" """#,
+                Some(&[
+                    r"C:\Program Files\rigger\rigger.exe",
+                    "hook",
+                    "stop-failure",
+                    "--spawn",
+                    "u 7/implementer#2",
+                    r#"a "b" c\"#,
+                    r#"hello\\"world"#,
+                    "",
+                ]),
+            ),
+            (
+                "an empty argument",
+                r#"rigger mcp --spawn """#,
+                Some(&["rigger", "mcp", "--spawn", ""]),
+            ),
+            (
+                "a quote inside an argument",
+                r#"rigger "a\"b c""#,
+                Some(&["rigger", "a\"b c"]),
+            ),
+            (
+                "a backslash before the closing quote",
+                r#"rigger "C:\dir with space\\""#,
+                Some(&["rigger", r"C:\dir with space\"]),
+            ),
+            ("an empty line", "", None),
+        ];
+        let split: Vec<(&str, Option<Vec<String>>)> = rows
+            .iter()
+            .map(|(what, line, _)| {
+                let units: Vec<u16> = line.encode_utf16().collect();
+                (*what, windows::split_command_line(&units))
+            })
+            .collect();
+        let expected: Vec<(&str, Option<Vec<String>>)> = rows
+            .iter()
+            .map(|(what, _, words)| {
+                (
+                    *what,
+                    words.map(|words| words.iter().map(|word| word.to_string()).collect()),
+                )
+            })
+            .collect();
+        assert_eq!(split, expected);
+    }
+
     /// On macOS a process's command is the full path of its executable.
     #[cfg(target_os = "macos")]
     #[test]
@@ -762,6 +1140,8 @@ mod tests {
                 start_time(gone),
                 cwd(gone),
                 command(gone),
+                arguments(gone),
+                arguments_of(gone, 0),
                 executable_name(gone),
                 cgroup(gone),
                 state(gone),
@@ -774,6 +1154,8 @@ mod tests {
                 None,
                 None,
                 String::new(),
+                None,
+                None,
                 String::new(),
                 None,
                 None,
@@ -985,6 +1367,40 @@ mod tests {
             .map(|&(what, _, _, held)| (what, held))
             .collect();
         assert_eq!(held, expected);
+    }
+
+    /// A Windows command line's span is the bytes its structure names only where they lie wholly
+    /// in the buffer the read filled, after the structure, as whole UTF-16 units.
+    #[test]
+    fn a_command_lines_span_is_its_bytes_only_inside_the_buffer_after_its_header() {
+        // A 100-byte buffer at address 1000 that opens with a 16-byte structure.
+        let (start, size, header) = (1000, 100, 16);
+        let rows = [
+            ("right after the header", 1016, 20, Some(16..36)),
+            ("to the buffer's end", 1016, 84, Some(16..100)),
+            ("empty", 1016, 0, Some(16..16)),
+            ("at no address", 0, 20, None),
+            ("over the header", 1008, 20, None),
+            ("past the buffer's end", 1090, 20, None),
+            ("before the buffer", 900, 20, None),
+            ("longer than the address space", 1016, usize::MAX, None),
+            ("at an odd offset", 1017, 20, None),
+            ("of an odd length", 1016, 21, None),
+        ];
+        let spans: Vec<(&str, Option<std::ops::Range<usize>>)> = rows
+            .iter()
+            .map(|(what, text, length, _)| {
+                (
+                    *what,
+                    command_line_span(start, size, header, *text, *length),
+                )
+            })
+            .collect();
+        let expected: Vec<(&str, Option<std::ops::Range<usize>>)> = rows
+            .iter()
+            .map(|(what, _, _, span)| (*what, span.clone()))
+            .collect();
+        assert_eq!(spans, expected);
     }
 
     /// A port held in network byte order in a wider field's low 16 bits reads as that port,

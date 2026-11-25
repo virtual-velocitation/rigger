@@ -1,11 +1,12 @@
 //! The process interface's macOS adapter: libproc, the system library's process-information
-//! calls (`sys/proc_info.h`), through the declarations the `libc` crate makes for them. Each
+//! calls (`sys/proc_info.h`), and the kernel's argument-area sysctl (`KERN_PROCARGS2`), through
+//! the declarations the `libc` crate makes for them. Each
 //! function answers the fact its namesake in [`super`] documents; a call that fails - the process
 //! exited, or belongs to another user - answers absent. The per-descriptor structs `libc` does
 //! not declare are declared here from xnu's `bsd/sys/proc_info.h`, their sizes and offsets held to
 //! the header's by the `const` assertions below them.
 
-use std::ffi::{c_int, OsStr};
+use std::ffi::{c_int, c_uint, OsStr};
 use std::mem::{size_of, MaybeUninit};
 use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
@@ -316,6 +317,43 @@ pub(super) fn command(pid: u32) -> String {
     String::from_utf8_lossy(&path).into_owned()
 }
 
+/// `pid`'s arguments, read by the `KERN_PROCARGS2` sysctl, the one call macOS reads another
+/// process's arguments by, into a buffer the size of the largest argument area the kernel allows
+/// (`KERN_ARGMAX`), so one read answers them, and taken from that answer by
+/// [`super::procargs_arguments`]. `None` when either read fails, as the argument read does for a
+/// process that is gone, a zombie or another user's.
+pub(super) fn arguments(pid: u32) -> Option<Vec<String>> {
+    let raw_pid = raw(pid)?;
+    let mut most = [0u8; size_of::<c_int>()];
+    let most = sysctl_read(&mut [libc::CTL_KERN, libc::KERN_ARGMAX], &mut most)?;
+    let mut answer = vec![0u8; usize::try_from(c_int::from_ne_bytes(most.try_into().ok()?)).ok()?];
+    let answer = sysctl_read(
+        &mut [libc::CTL_KERN, libc::KERN_PROCARGS2, raw_pid],
+        &mut answer,
+    )?;
+    super::procargs_arguments(answer)
+}
+
+/// The kernel value the sysctl `name` names, read into `answer`: the bytes of it the kernel
+/// wrote, or `None` when the read fails. Nothing is written to the kernel.
+fn sysctl_read<'a>(name: &mut [c_int], answer: &'a mut [u8]) -> Option<&'a [u8]> {
+    let levels = c_uint::try_from(name.len()).ok()?;
+    let mut size = answer.len();
+    // SAFETY: `name` is `levels` writable ints and `answer` is `size` writable bytes, the most
+    // the call writes; no new value is given.
+    let read = unsafe {
+        libc::sysctl(
+            name.as_mut_ptr(),
+            levels,
+            answer.as_mut_ptr().cast(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    (read == 0).then(|| &answer[..size.min(answer.len())])
+}
+
 /// The BSD info's run status as one letter: `SIDL` (being created) and `SRUN` are `R`, `SSLEEP`
 /// is `S`, `SSTOP` is `T` and `SZOMB` is `Z`.
 pub(super) fn state(pid: u32) -> Option<char> {
@@ -385,6 +423,9 @@ fn listens_on(pid: u32, port: u16) -> bool {
 
 /// The one scan [`super`] composes over the readers above.
 pub(super) use super::scan_holders as holders;
+
+/// The arguments [`super`] reads only while the pid names the process it started as.
+pub(super) use super::read_then_checked as arguments_of;
 
 /// The path the OS reports for the image this process runs.
 pub(super) use super::command_file_name as executable_name;

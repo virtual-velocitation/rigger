@@ -174,6 +174,22 @@ fn discipline_body(ctx: &DocsContext) -> String {
         "- Hand-implementing a unit the loop parked. That leaves the loop still stuck for \
          the next unit and forks the code from the log - fix the loop instead (see below).\n"
     );
+    let _ = writeln!(
+        s,
+        "Everything an agent's session starts ends with the session, unless a service manager \
+         holds the process in a unit of its own. Each end of a session names, by pid and \
+         executable, every process besides the session's main process that the end was sent to, \
+         in a progress line of the agent's (on the run's log, for a host that keeps no \
+         progress). On Linux the end leaves a process a service manager holds in a unit of its \
+         own running, and names it in a progress line by pid, executable and unit. On macOS, and \
+         wherever the containment is degraded, what the main process leaves running past its \
+         exit is named in a progress line as left running, not ended. On Windows a process the \
+         session creates the ordinary way cannot leave the session's job. So a daemon other \
+         sessions share, such as a shared build server, is started by the operator at user \
+         level, or through the service manager, before the run. If a tool then reports a helper \
+         it started as lost, the operator restores it the way the tool says and starts that \
+         daemon at user level before the next run.\n"
+    );
 
     let _ = writeln!(s, "## Looking things up\n");
     let _ = writeln!(
@@ -1725,6 +1741,70 @@ mod tests {
                      (found {banned:?}); a prune reclaims disk, it does not speed a fold"
                 );
             }
+        }
+    }
+
+    /// The shipped guidance on what a session's end ends: an agent cannot keep a process past its
+    /// own session, so the operator is told where each end names what it was sent to, what macOS
+    /// and a degraded containment leave running, that a Windows process cannot leave the job, and
+    /// who starts a daemon other sessions share, and when. Both shipped outputs render from
+    /// `discipline_body`, so the skill and the handbook chapter cannot disagree.
+    #[test]
+    fn discipline_says_what_a_session_end_ends_and_who_starts_a_shared_daemon() {
+        let ctx = sentinel_ctx();
+        for (label, out) in [
+            ("skill", render_using_rigger_skill(&ctx)),
+            ("handbook", render_handbook_discipline(&ctx)),
+        ] {
+            for (fact, needle) in [
+                (
+                    "say what a session starts ends with it unless a service manager holds it",
+                    "Everything an agent's session starts ends with the session, unless a service \
+                     manager holds the process in a unit of its own",
+                ),
+                (
+                    "say each end names what it was sent to",
+                    "Each end of a session names, by pid and executable, every process besides \
+                     the session's main process that the end was sent to",
+                ),
+                (
+                    "say where the operator reads it",
+                    "in a progress line of the agent's (on the run's log, for a host that keeps no \
+                     progress)",
+                ),
+                (
+                    "say what macOS and a degraded containment leave",
+                    "On macOS, and wherever the containment is degraded, what the main process \
+                     leaves running past its exit is named in a progress line as left running, not \
+                     ended",
+                ),
+                (
+                    "say a Windows process cannot leave the job",
+                    "On Windows a process the session creates the ordinary way cannot leave the \
+                     session's job",
+                ),
+                (
+                    "say what Linux leaves to a service manager",
+                    "On Linux the end leaves a process a service manager holds in a unit of its \
+                     own running, and names it in a progress line by pid, executable and unit",
+                ),
+                (
+                    "say who starts a shared daemon and when",
+                    "a daemon other sessions share, such as a shared build server, is started by \
+                     the operator at user level, or through the service manager, before the run",
+                ),
+                (
+                    "say what the operator does for a lost helper",
+                    "If a tool then reports a helper it started as lost, the operator restores it \
+                     the way the tool says and starts that daemon at user level before the next run",
+                ),
+            ] {
+                assert!(out.contains(needle), "{label} must {fact} ({needle:?})");
+            }
+            assert!(
+                !out.contains("is started outside them"),
+                "{label} must not ask an agent to start a process outside its own session"
+            );
         }
     }
 

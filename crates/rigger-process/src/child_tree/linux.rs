@@ -6,14 +6,12 @@
 //!
 //! The driver holds two pipes to the keeper, passed by descriptor number. The keeper writes
 //! [`Record`]s on the status pipe, one a line, and reads the control pipe, which is the driver's
-//! whole say over the tree: an `r` byte releases the tree, so the keeper exits once the main has
-//! and ends nothing, and the pipe's end without that byte, a close by the driver and the driver's
-//! death alike, asks the keeper to end the tree. A TERM to the keeper ends the tree at once,
-//! asking no member to exit first, so a sweep that sends the keeper its TERM ends the whole tree
-//! within the sweep's grace. INT, HUP and QUIT, which a terminal sends its whole foreground group,
-//! leave the keeper running, so the driver's own handling of them decides. The keeper puts
-//! `/dev/null` over its standard streams once the main holds them, so it keeps none of the
-//! session's streams open.
+//! whole say over the tree: the pipe's end, a close by the driver and the driver's death alike,
+//! asks the keeper to end the tree. A TERM to the keeper ends the tree at once, asking no member
+//! to exit first, so a sweep that sends the keeper its TERM ends the whole tree within the sweep's
+//! grace. INT, HUP and QUIT, which a terminal sends its whole foreground group, leave the keeper
+//! running, so the driver's own handling of them decides. The keeper puts `/dev/null` over its
+//! standard streams once the main holds them, so it keeps none of the session's streams open.
 
 use super::{line_channel, Contain, Containment, Hold, ReapedChild, Why};
 use crate::reap::{self, EndReport, HeldApart, Identity, Leftover, END_BOUND};
@@ -21,7 +19,7 @@ use crate::{os_process, subprocess, whole_line};
 use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
-use std::io::{self, PipeReader, PipeWriter, Read, Write};
+use std::io::{self, PipeReader, PipeWriter, Read};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::Path;
@@ -167,8 +165,6 @@ fn keep(mut status: File, control: File, program: &OsStr, args: &[OsString]) -> 
         status,
         control: Some(control),
         main,
-        main_exited: false,
-        released: false,
     }
     .run()
 }
@@ -236,31 +232,27 @@ fn tell(status: &mut File, record: &Record) {
     let _ = whole_line::write_line(status, format_args!("{}", record.encode()));
 }
 
-/// A keeper at work: its status pipe, its control pipe while it is open, its main, and what it has
-/// seen.
+/// A keeper at work: its status pipe, its control pipe while it is open, and its main.
 struct Keeper {
     status: File,
     control: Option<File>,
     main: u32,
-    main_exited: bool,
-    released: bool,
 }
 
 impl Keeper {
-    /// Reaps, reads its signals and reads its control pipe until the tree is ended or let go: a
-    /// TERM ends the tree at once; the control pipe's end without a release ends it, asking each
-    /// member to exit first; and a release lets the keeper exit, ending nothing, once the main has.
+    /// Reaps, reads its signals and reads its control pipe until the tree is ended: a TERM ends
+    /// the tree at once, and the control pipe's end ends it, asking each member to exit first. The
+    /// keeper outlives the main's exit, holding what the main left until the driver ends the tree.
     fn run(mut self) -> i32 {
         loop {
             self.reap_ready();
             if TERMED.load(Ordering::SeqCst) {
                 return self.end(false);
             }
-            match (self.control.is_some(), self.released, self.main_exited) {
-                (false, false, _) => return self.end(true),
-                (_, true, true) => return 0,
-                _ => self.wait_for_control(),
+            if self.control.is_none() {
+                return self.end(true);
             }
+            self.wait_for_control();
         }
     }
 
@@ -271,7 +263,6 @@ impl Keeper {
             match rustix::process::wait(rustix::process::WaitOptions::NOHANG) {
                 Ok(Some((pid, status))) => {
                     if u32::try_from(pid.as_raw_nonzero().get()) == Ok(self.main) {
-                        self.main_exited = true;
                         tell(&mut self.status, &Record::Exited(status.as_raw()));
                     }
                 }
@@ -283,9 +274,9 @@ impl Keeper {
     }
 
     /// Waits up to [`TICK_MS`] for a byte or the end on the control pipe, or for a signal, then
-    /// reads one byte if one is ready: an `r` releases the tree, and the pipe's end or a failed
-    /// read closes the pipe. A closed pipe is the descriptor -1, which the wait ignores, so the
-    /// wait is then the tick alone.
+    /// reads one byte if one is ready: the pipe's end or a failed read closes the pipe, and a byte
+    /// read means nothing. A closed pipe is the descriptor -1, which the wait ignores, so the wait
+    /// is then the tick alone.
     fn wait_for_control(&mut self) {
         let mut fds = [libc::pollfd {
             fd: self.control.as_ref().map_or(-1, AsRawFd::as_raw_fd),
@@ -303,7 +294,7 @@ impl Keeper {
         let mut byte = [0];
         match control.read(&mut byte) {
             Ok(0) => self.control = None,
-            Ok(_) => self.released |= byte == *b"r",
+            Ok(_) => {}
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
             Err(_) => self.control = None,
         }
@@ -575,6 +566,14 @@ impl Hold for Kept {
         self.main
     }
 
+    /// The keeper's running descendants but the main: every process the keeper's end reaches.
+    fn members(&mut self, keeper: &mut Child) -> Vec<Identity> {
+        reap::descendants_of(keeper.id())
+            .into_iter()
+            .filter(|member| member.pid != self.main && reap::running(member))
+            .collect()
+    }
+
     fn try_wait(&mut self, _keeper: &mut Child) -> io::Result<Option<ExitStatus>> {
         while self.status.is_none() {
             match self.records.try_recv() {
@@ -638,25 +637,6 @@ impl Hold for Kept {
             self.merge(report);
         }
         self.taken_report()
-    }
-
-    /// Writes the release on the control pipe and closes it, so the keeper exits once the main
-    /// has, ending nothing, and reaps the keeper when the main's status is already read. A keeper
-    /// released before the main's exit is left to exit on its own.
-    fn release(&mut self, keeper: &mut Child) -> EndReport {
-        while let Ok(line) = self.records.try_recv() {
-            self.take(line);
-        }
-        if let Some(mut control) = self.control.take() {
-            let _ = control.write_all(b"r");
-        }
-        if self.status.is_some() && !exits_within(keeper, SLACK) {
-            whole_line::say(format_args!(
-                "rigger: the keeper of session {} did not exit at its release; it is left running",
-                self.main
-            ));
-        }
-        EndReport::default()
     }
 }
 

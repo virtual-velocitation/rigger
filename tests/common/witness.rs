@@ -16,7 +16,8 @@
 //! FIFOs live in a temporary directory removed when the witness drops.
 //!
 //! A fixture opens both FIFOs by sourcing `tests/fixtures/witness.sh`, which also gives it `up`,
-//! `held` and `holder`; [`Witness::script`] writes a shell fixture that starts that way.
+//! `held`, `holder`, `idle`, and a stand-in `daemon` with its `client`, whose channel's FIFOs a
+//! test makes with [`make_fifo`]; [`Witness::script`] writes a shell fixture that starts that way.
 
 use std::fs::{File, OpenOptions};
 use std::io::{ErrorKind, Read};

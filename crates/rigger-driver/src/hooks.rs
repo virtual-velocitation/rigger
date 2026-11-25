@@ -334,7 +334,7 @@ pub fn install_spawn_hooks(
     let mut merged = merge_hook_block(existing, "PreToolUse", &matcher, rigger_bin, &guard, None)?;
     for category in AgentFailure::CATEGORIES {
         let class = category.as_str();
-        let args = ["hook", "stop-failure", "--spawn", spawn, "--class", class];
+        let args = stop_failure_hook_args(spawn, class);
         merged = merge_hook_block(&merged, "StopFailure", class, rigger_bin, &args, None)?;
     }
     let asks = match duty {
@@ -349,6 +349,47 @@ pub fn install_spawn_hooks(
         merged = merge_hook_block(&merged, "Stop", "", rigger_bin, &args, timeout)?;
     }
     Ok(merged)
+}
+
+/// The arguments a spawn's stop-failure hook runs rigger's binary with, for `spawn` and the class
+/// `class`: [`install_spawn_hooks`] installs the hook with them, and an ordinary end knows the hook
+/// by them ([`is_spawn_writer`]), so the two cannot drift.
+fn stop_failure_hook_args<'a>(spawn: &'a str, class: &'a str) -> [&'a str; 6] {
+    ["hook", "stop-failure", "--spawn", spawn, "--class", class]
+}
+
+/// Whether `arguments`, a process's arguments as the OS reports them, its program first, are one
+/// of rigger's own writers for `spawn`: a process that can still be writing the spawn's record
+/// once its session's main has exited, which an ordinary end waits for. Those are the
+/// stop-failure hook [`install_spawn_hooks`] installs for `spawn` and the tool server bound to it
+/// ([`tool_server_args`]), each known by the arguments it is built with, compared whole after its
+/// program, so a spawn id holding a space is the one argument it was given as.
+pub fn is_spawn_writer(arguments: &[String], spawn: &str) -> bool {
+    let after_program = arguments.get(1..).unwrap_or_default();
+    is_stop_failure_hook(after_program, spawn) || is_tool_server(after_program, spawn)
+}
+
+/// Whether `after_program`, a process's arguments after its program, are the tool server bound to
+/// `spawn`: they end in [`tool_server_args`], as the host starts the server with no shell and
+/// nothing after them, so a server for a spawn whose id merely starts with `spawn`'s is not it.
+fn is_tool_server(after_program: &[String], spawn: &str) -> bool {
+    let server = tool_server_args(spawn);
+    after_program
+        .len()
+        .checked_sub(server.len())
+        .is_some_and(|start| after_program[start..] == server)
+}
+
+/// Whether `after_program`, a process's arguments after its program, are the stop-failure hook
+/// [`install_spawn_hooks`] installs for `spawn`, of any class: they hold
+/// [`stop_failure_hook_args`] up to the class and then a class, as the host starts the hook in
+/// exec form with no shell, each argument as written.
+fn is_stop_failure_hook(after_program: &[String], spawn: &str) -> bool {
+    let hook = stop_failure_hook_args(spawn, "");
+    let up_to_class = &hook[..hook.len() - 1];
+    after_program
+        .windows(hook.len())
+        .any(|window| window[..up_to_class.len()] == *up_to_class)
 }
 
 /// Whether the settings JSON `existing` already carries every session setting
@@ -572,6 +613,15 @@ pub const MCP_ALWAYS_LOAD: &str = "alwaysLoad";
 /// mark; it changes no other server and no host-wide setting.
 pub fn spawn_mcp_config(command: &str, args: &[&str]) -> Result<Vec<u8>, Error> {
     install_mcp_server(b"", MCP_SERVER_NAME, command, args)
+}
+
+/// The arguments a spawn's own tool server runs rigger's binary with, the server the stream-json
+/// host binds to `spawn` ([`spawn_mcp_config`]): the host's launch starts the server with them,
+/// and an ordinary end knows the server by them ([`is_spawn_writer`]), so the two cannot drift.
+/// The spawn's id is their last word, which is what keeps a spawn's server apart from one for a
+/// spawn whose id starts with its own.
+pub fn tool_server_args(spawn: &str) -> [&str; 3] {
+    ["mcp", "--spawn", spawn]
 }
 
 /// Merge `entry` under `name` into `existing`'s `mcpServers` object, replacing whatever was there
@@ -952,6 +1002,138 @@ mod tests {
                     ),
                     ("/hooks/StopFailure", Value::Array(stop_failures)),
                 ],
+            );
+        }
+    }
+
+    /// The binaries and spawns the writer rows install a spawn's writers for: a bare binary and
+    /// spawn, a hostile pair, and a Windows binary in a directory holding a space with a spawn id
+    /// holding one.
+    const WRITERS_FOR: [(&str, &str); 3] = [
+        ("rigger", "u/implementer#0"),
+        ("/opt/it's here/rigger", "u/a b'c#1"),
+        (
+            r"C:\Program Files\rigger\rigger.exe",
+            "u 7-launch/implementer#2",
+        ),
+    ];
+
+    /// `words` as the arguments a process reports.
+    fn arguments(words: &[&str]) -> Vec<String> {
+        words.iter().map(|word| word.to_string()).collect()
+    }
+
+    /// Each stop-failure hook a spawn's hooks install, for each of [`WRITERS_FOR`], is the hook
+    /// for its spawn by the arguments the OS reports a process running it with: its program, then
+    /// each of its arguments whole, as the host starts it with no shell. A hook for a spawn whose
+    /// id merely starts with the spawn's, a hook for another spawn, the write guard and a hook
+    /// whose arguments split the spawn's id at its space are not.
+    #[test]
+    fn a_writer_an_end_waits_for_is_the_stop_failure_hook_installed_for_its_spawn() {
+        for (bin, spawn) in WRITERS_FOR {
+            let installed = install_spawn_hooks(b"", bin, spawn, &[], "", &TreeDuty::None);
+            let settings: Value = serde_json::from_slice(&installed.unwrap()).unwrap();
+            let hooks: Vec<Vec<String>> = settings["hooks"]["StopFailure"]
+                .as_array()
+                .expect("the StopFailure array")
+                .iter()
+                .map(|block| {
+                    let hook = &block["hooks"][0];
+                    let args = hook["args"].as_array().expect("an exec-form hook's args");
+                    std::iter::once(&hook["command"])
+                        .chain(args)
+                        .map(|word| word.as_str().expect("a word").to_string())
+                        .collect()
+                })
+                .collect();
+            assert_eq!(hooks.len(), crate::agent::AgentFailure::CATEGORIES.len());
+            for hook in hooks {
+                assert!(
+                    is_spawn_writer(&hook, spawn),
+                    "{hook:?} is the hook for {spawn:?}"
+                );
+            }
+        }
+        for (words, spawn) in [
+            (
+                &[
+                    "rigger",
+                    "hook",
+                    "stop-failure",
+                    "--spawn",
+                    "u/implementer#01",
+                    "--class",
+                    "x",
+                ][..],
+                "u/implementer#0",
+            ),
+            (
+                &[
+                    "rigger",
+                    "hook",
+                    "stop-failure",
+                    "--spawn",
+                    "u/reviewer#1",
+                    "--class",
+                    "x",
+                ],
+                "u/implementer#0",
+            ),
+            (
+                &["rigger", "guard-write", "--root", "/wt"],
+                "u/implementer#0",
+            ),
+            (
+                &[
+                    "rigger",
+                    "hook",
+                    "stop-failure",
+                    "--spawn",
+                    "u/a",
+                    "b'c#1",
+                    "--class",
+                    "x",
+                ],
+                "u/a b'c#1",
+            ),
+        ] {
+            assert!(
+                !is_spawn_writer(&arguments(words), spawn),
+                "{words:?} is no writer for {spawn:?}"
+            );
+        }
+    }
+
+    /// The tool server bound to a spawn, for each of [`WRITERS_FOR`], is a writer of the spawn by
+    /// the arguments the OS reports it running with: its binary and [`tool_server_args`], each
+    /// whole. The spawn-less server `rigger setup` installs, a server for a spawn whose id merely
+    /// starts with the spawn's, a server for another spawn and a server whose arguments split the
+    /// spawn's id at its space are not.
+    #[test]
+    fn a_writer_an_end_waits_for_is_the_tool_server_bound_to_its_spawn() {
+        for (bin, spawn) in WRITERS_FOR {
+            let mut server = arguments(&[bin]);
+            server.extend(arguments(&tool_server_args(spawn)));
+            assert!(
+                is_spawn_writer(&server, spawn),
+                "{server:?} is the tool server for {spawn:?}"
+            );
+        }
+        for (words, spawn) in [
+            (&["rigger", "mcp"][..], "u/implementer#0"),
+            (
+                &["rigger", "mcp", "--spawn", "u/implementer#01"],
+                "u/implementer#0",
+            ),
+            (
+                &["rigger", "mcp", "--spawn", "u/reviewer#1"],
+                "u/implementer#0",
+            ),
+            (&["rigger", "mcp", "--spawn", "u/a", "b'c#1"], "u/a b'c#1"),
+        ] {
+            assert!(
+                !is_spawn_writer(&arguments(words), spawn),
+                "{words:?} is no writer for {spawn:?}"
             );
         }
     }

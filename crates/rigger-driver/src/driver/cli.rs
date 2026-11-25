@@ -50,7 +50,9 @@ impl Default for Driver {
 
 impl Driver {
     /// Launch `agent` on the task `framed` and wait for it to exit, returning its captured
-    /// output whatever its exit status.
+    /// output whatever its exit status. Its exit finishes its process tree for the spawn
+    /// ([`crate::child_tree::ReapedChild::wait_with_output`]): what it left running is ended once a
+    /// hook still writing the spawn's record has finished, and the end's lines are said on stderr.
     ///
     /// Neither prompt travels as an argv string, because Linux caps one argument at
     /// `MAX_ARG_STRLEN` (131072 bytes) and a plan-critique task or a full persona crosses it:
@@ -107,11 +109,20 @@ impl Driver {
                 let _ = stdin.write_all(framed.as_bytes());
             })
         });
+        // This host installs no hook and binds no tool server to its spawn, so the end waits for
+        // no writer.
         let waited = child.wait_with_output();
         if let Some(writer) = writer {
             let _ = writer.join();
         }
-        waited.map_err(|e| Error(format!("cli driver: wait for agent {:?}: {e}", agent.id)))
+        let (out, report) =
+            waited.map_err(|e| Error(format!("cli driver: wait for agent {:?}: {e}", agent.id)))?;
+        // This host keeps no progress record, so what the end of the session was sent to or left
+        // is said on this process's error output, the log of the run that spawned it.
+        for line in report.lines("cli driver") {
+            rigger_process::whole_line::say(format_args!("{line}"));
+        }
+        Ok(out)
     }
 
     /// Launch `agent` as the session `opts` asks for and return the exited process with the
