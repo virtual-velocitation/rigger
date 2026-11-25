@@ -4323,10 +4323,26 @@ mod tests {
                     })
                 })
                 .collect();
+            let run = |args: Vec<String>| {
+                StdCommand::new("lsof")
+                    .args(&args)
+                    .output()
+                    .map(|out| {
+                        format!(
+                            "{}{}",
+                            String::from_utf8_lossy(&out.stdout),
+                            String::from_utf8_lossy(&out.stderr)
+                        )
+                    })
+                    .unwrap_or_else(|e| e.to_string())
+            };
+            let fifos: Vec<String> = witness.env().into_iter().map(|(_, p)| p).collect();
+            let of_middle = run(vec!["-p".into(), middle.to_string()]);
+            let of_fifos = run(fifos);
             assert_eq!(
                 released,
                 Reading::Ended,
-                "{ending:?}: the release ends what the end left: {still:?} {near:#?} {:?}",
+                "{ending:?}: the release ends what the end left: {still:?} {near:#?} {:?}\nMIDDLE\n{of_middle}\nFIFOS\n{of_fifos}",
                 os.sent
             );
             assert!(
