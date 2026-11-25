@@ -673,7 +673,12 @@ const RUST_QUALIFIED_CALLS: [RustQualifiedCall; 9] = [
     (
         "`self.inner.open()`, its receiver no bare `self`, lands on its one same-file `open`",
         "struct Inner;\nimpl Inner { fn open(&self) {} }\nstruct Store;\nimpl Store { fn reopen(&self) { self.inner.open() } }\n",
-        &[("Inner", "Inner"), ("Store", "Store"), ("open", "open")],
+        &[
+            ("Inner", "Inner"),
+            ("Store", "Store"),
+            ("Store.inner", "inner"),
+            ("open", "open"),
+        ],
         &[
             ("Store::reopen", "Inner::open"),
             ("impl Inner", "Inner"),
@@ -716,7 +721,8 @@ const RUST_QUALIFIED_CALLS: [RustQualifiedCall; 9] = [
 /// THEN the store holds the call's mention named as the Rust qualifier rule writes it -
 /// `Store::open`, `Memo::new` and `Store::new` as paths, `B::f` for `C::f()` under
 /// `use a::B as C;`, `CodeView.file` as a member access, `open` and `module_dir` bare - beside the
-/// mention a `use`, an uppercase path segment or an impl header's self type stages, and none for
+/// mention a `use`, an uppercase path segment, an impl header's self type or a field read
+/// (`self.inner`, stored `Store.inner`, which no field of the tree answers) stages, and none for
 /// `Cursor::new` under `use std::io::Cursor;`, in a call or in a macro's token tree, its qualifier
 /// a standard-library import; and the graph's `REFERENCES` and `CALLS` edges are exactly where
 /// those names reach: nowhere for `Store::open`, `Memo::new` and `B::f`, their qualifiers naming

@@ -18,12 +18,15 @@ use std::sync::OnceLock;
 /// for an inherent impl, its type), and only when that name is a bare identifier, and it tags no
 /// `const`, `static`, enum variant, field, trait required fn, associated type or `extern crate`.
 /// This is the upstream query's call references verbatim, plus the path-qualified and turbofish
-/// call shapes, minus the impl-header references, with a definition pattern for every Rust
-/// definition type the grammar names (spec 116): impl blocks and tuple fields, which the grammar
-/// gives no name node, are read off the parsed tree by `extract` instead. A trait is tagged a
-/// trait and a `macro_rules!` a macro; a trait required fn or an extern block's fn is tagged a
-/// function, which `extract` lowers to a declaration; an `extern crate` is a module named by its
-/// alias when it has one, else by its name.
+/// call shapes and the field uses, minus the impl-header references, with a definition pattern
+/// for every Rust definition type the grammar names (spec 116): impl blocks and tuple fields,
+/// which the grammar gives no name node, are read off the parsed tree by `extract` instead. A
+/// trait is tagged a trait and a `macro_rules!` a macro; a trait required fn or an extern block's
+/// fn is tagged a function, which `extract` lowers to a declaration; an `extern crate` is a module
+/// named by its alias when it has one, else by its name. A field use is a field reference (spec
+/// 117, RUST STAGES FIELD USES): a named field read or assigned (`x.f`) and the named field a
+/// struct literal or pattern writes (`T { f }`, `T { f: v }`), its patterns after every call
+/// pattern so a method call's name stays a call's.
 const RUST_TAGS: &str = r#"
 (struct_item name: (type_identifier) @name) @definition.class
 (enum_item name: (type_identifier) @name) @definition.class
@@ -53,6 +56,12 @@ const RUST_TAGS: &str = r#"
 (call_expression
   function: (generic_function function: (scoped_identifier name: (identifier) @name))) @reference.call
 (macro_invocation macro: (identifier) @name) @reference.call
+
+(field_expression field: (field_identifier) @name) @reference.field
+(field_initializer field: (field_identifier) @name) @reference.field
+(shorthand_field_initializer (identifier) @name) @reference.field
+(field_pattern name: (field_identifier) @name) @reference.field
+(field_pattern name: (shorthand_field_identifier) @name) @reference.field
 "#;
 
 /// The C# definition patterns. The upstream `tree-sitter-c-sharp` crate ships a `tags.scm` whose
@@ -1664,6 +1673,7 @@ impl Kestrel { fn molt(&self) -> u32 { Self::grow(self) + self.grow() } }
 fn pile() -> Vec<u32> { vec![helper(QUOTA_CAP)] }
 use crate::store::Ledger as Book; fn drain() { Book::open(); String::new(); }
 fn route(v: Vec<Kestrel>) -> Vec<u32> { v.iter().map(Kestrel::grow).map(helper).collect() }
+fn hatch(k: Kestrel) -> Kestrel { let Kestrel { size } = k; Kestrel { size: k.size + size } }
 ",
         ),
         ("rs", "fn whole() { helper(); }\nfn broken( {\n"),
@@ -1931,7 +1941,7 @@ def raw():
         // languages' rows merge clean.
         const PINNED: [(&str, &str, &str); 7] = [
             // Rust
-            ("rs", "rust-tags-v6", "b1ebbb16247e4505"),
+            ("rs", "rust-tags-v7", "7acbc7c1270eb89b"),
             // C#
             ("cs", "csharp-tags-v5", "ff1a724ddef62a08"),
             // TypeScript

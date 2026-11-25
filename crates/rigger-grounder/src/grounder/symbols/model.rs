@@ -260,7 +260,7 @@ impl FileSymbols {
 
 macro_rules! rust_tags_generation {
     () => {
-        "rust-tags-v6"
+        "rust-tags-v7"
     };
 }
 
