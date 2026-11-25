@@ -53,12 +53,11 @@ defaults:
   # can pin a tighter bound in its own frontmatter.
   max_wall_clock: 3600
 
-  # How many implement units build at once (spec 89, per-unit pipelining). Four is the most one
-  # driver process runs side by side (the conductor's fan-out pool). Each live unit owns a debug
+  # How many implement units build at once (spec 89, per-unit pipelining). Each live unit owns a debug
   # build cache of about 50 GB on this crate, so four hold about 200 GB, and a driver death makes
   # every live unit rebuild at once: `.cargo/config.toml` caps each cargo at four compiler jobs,
-  # which bounds that rebuild's memory. Gate commands still take turns on the machine-wide build
-  # slot (`build.max_concurrent` below). At a width of two, ready units waited behind the bound
+  # which bounds that rebuild's memory. Each unit's gates take one of the machine-wide build
+  # slots (`build.max_concurrent` below, one per unit). At a width of two, ready units waited behind the bound
   # for 23 of a run's 41 live hours (docs/evaluation/20261106-0135-050ed244.md).
   max_parallel_units: 4
 
@@ -107,7 +106,10 @@ build:
   # spec 91 retires the per-round `mutation` switch entirely (an explicit value of any
   # kind is now a validation error naming this spec): no per-round sweep; the sweep is the
   # `mutation` gate below, declared but unwired until #32 lands.
-  max_concurrent: 1         # serialize builds machine-wide: two concurrent cargo-mutants sweeps (~100G each) exhausted /home this session. Blunt cap (operator-binary boundary blocks a surgical mutation-only slot); revisit as a spec.
+  # One build slot per unit of `max_parallel_units`: each unit builds in its own target directory
+  # and `.cargo/config.toml` caps each cargo at four compiler jobs, so four gates are at most
+  # sixteen compiler processes. A gate that waits for a slot says how long in its note.
+  max_concurrent: 4
   # The variables rigger exports to every gate and agent spawn. CARGO_TARGET_DIR gives each site
   # its own build cache (a unit's cargo-target-<slug>, its reviewers' review-target-<slug>, the
   # guarded shared cache for a review worktree): cargo names a workspace member's artifacts by
