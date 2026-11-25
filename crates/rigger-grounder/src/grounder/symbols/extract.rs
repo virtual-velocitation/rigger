@@ -5407,6 +5407,34 @@ fn t(x: u8) {
 3 ref call f z
 3 ref call w z",
             ),
+            (
+                "a function value written with a turbofish is a call, as its call is",
+                "\
+fn q(v: u8) {
+    v.map(Store::open::<u8>);
+    v.map(helper::<u8>);
+    Store::open::<u8>(v);
+    helper::<u8>(v);
+}
+",
+                "\
+1 def Function q to 6
+2 ref call map q
+2 ref call open q q Store::
+2 ref type Store q
+3 ref call helper q
+3 ref call map q
+4 ref call open q q Store::
+4 ref type Store q
+5 ref call helper q",
+            ),
+            (
+                "a `let` ending where an invocation starts binds in it",
+                "fn ab(v: u8) {\n    let f = v;vec![f];\n}\n",
+                "\
+1 def Function ab to 3
+2 ref call vec ab",
+            ),
         ];
         for (why, src, expected) in cases {
             assert_eq!(read_lines(src), expected, "{why}");
