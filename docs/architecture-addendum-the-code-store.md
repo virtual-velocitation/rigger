@@ -334,7 +334,9 @@ qualified by `Kind`, in place of the `type` reference of `Kind`, its field `n` q
 `RejectRecurrence`). A call's head (`Hop::Frontier(cs)`) stays a call, a leaf holding no
 lowercase letter (`Mode::RO`) stays a const read, a lowercase qualifier (`models::Unit`) writes no
 variant, a path in type position (`-> Self::Target`) is a type reference alone, and a qualifier
-naming the standard library (`Ordering::Less` under `use std::cmp::Ordering`) stages none.
+naming the standard library (`Ordering::Less` under `use std::cmp::Ordering`) stages none, while
+a leaf sharing a standard-library or enclosing generic parameter's name stages its variant all the
+same (`Located::None`, `Shape::Box { w } =>`).
 A module's two lists depend only on the declaring file, so they
 are computed at extraction, an enclosing inline module's components and an explicit path attribute
 placed by the same two rules; for a file named `mod.rs`, `lib.rs` or `main.rs` the two are equal.

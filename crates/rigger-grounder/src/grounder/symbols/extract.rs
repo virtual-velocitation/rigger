@@ -1591,7 +1591,8 @@ fn use_aliases(uses: &[tree_sitter::Node], source: &[u8]) -> Vec<(String, String
 /// reference stages - the 2021 prelude's types, traits and variants at toolchain 1.95.0
 /// (`library/std/src/prelude/v1.rs`, `library/core/src/prelude/v1.rs`, plus 2021's `TryFrom`,
 /// `TryInto` and `FromIterator`) and the derive-macro names `Debug` and `Hash`. A project
-/// definition of one of these names gets no row.
+/// definition of one of these names gets no row, save a variant written under its enum's path
+/// (`Located::None`), which stages by its qualifier ([`variant_qualifier`]).
 pub const RUST_PRELUDE: [&str; 43] = [
     "Copy",
     "Send",
@@ -1734,7 +1735,8 @@ impl UseLeaf<'_> {
 /// leaf of a `use` ([`use_leaves`]). An impl header's trait is one `type` row of its own,
 /// carrying the impl's range and its self type's leaf. An attribute, a `macro_rules!` body and a
 /// visibility path stage nothing, a macro's token tree stages what its re-parse reads
-/// ([`reparse_invocations`]), and no name [`excluded`] under `scope` stages.
+/// ([`reparse_invocations`]), and no name [`excluded`] under `scope` stages, save a variant,
+/// which its qualifier and root alone exclude.
 fn rust_references(structure: &StructuralNodes, source: &[u8], scope: &Scope) -> Vec<TaggedRef> {
     let uses: Vec<UseLeaf> = structure
         .uses
@@ -1763,7 +1765,9 @@ fn rust_references(structure: &StructuralNodes, source: &[u8], scope: &Scope) ->
         let Ok(name) = node.utf8_text(source) else {
             return;
         };
-        if !excluded(name, root_seg, node, source, scope) {
+        // Only a variant row carries a qualifier, and variant_qualifier already excluded it by
+        // its qualifier and root alone; its leaf is never tested.
+        if qualifier.is_some() || !excluded(name, root_seg, node, source, scope) {
             out.push(TaggedRef {
                 name: name.to_string(),
                 line: node.start_position().row as u32 + 1,
@@ -1976,6 +1980,8 @@ fn bindings_at<'t>(node: tree_sitter::Node<'t>, source: &[u8]) -> Vec<String> {
 /// no tagged reference, nor a function value passed by its bare name ([`function_values`]) (spec
 /// 117): `Self`, a name of the standard library ([`std_named`]), and a
 /// generic or const generic parameter of an item enclosing `node` ([`names_enclosing_generic`]).
+/// A variant's leaf is never tested: its qualifier and root alone exclude it
+/// ([`variant_qualifier`]).
 fn excluded(
     name: &str,
     root_seg: Option<&str>,
@@ -2214,7 +2220,7 @@ fn is_call_head(node: tree_sitter::Node) -> bool {
 /// written under has a qualifier ([`rust_staged`]): an uppercase segment or a `Self`, as
 /// [`path_qualifier`] writes it, whose path no [`excluded_qualifier`] holds. A lowercase,
 /// `crate`, `self` or `super` segment, a generic parameter and a qualifier naming the standard
-/// library give none.
+/// library give none, whatever `leaf` itself names (`Located::None` gives `Located`).
 fn variant_qualifier(leaf: tree_sitter::Node, source: &[u8], scope: &Scope) -> Option<Qualifier> {
     if !is_variant_spelled(leaf, source) {
         return None;
