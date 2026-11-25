@@ -1,5 +1,5 @@
 //! Periphery (API / contract / integration) tests for spec 117, RUST REFERENCES: a Rust const
-//! read, type reference and `use` are extracted tagged with their
+//! read, type reference, field use and `use` are extracted tagged with their
 //! `ref_kind`, and no consumer that counts calls - the fold's `REFERENCES` and `CALLS` edges among
 //! them - reads one. The crate's own tests pin the extraction, the emit pass, the grounder's
 //! counts and the fold arm one module at a time over hand-built input; these run OUTSIDE the
@@ -28,13 +28,18 @@
 //!    member qualifier's fallback to the one same-file `Box`, the `namespace Ns` member and
 //!    `Shape`'s method over their same-file namesakes, and `List`, the leaf before the type
 //!    arguments;
-//!  - and Rust writes the qualifier: `Store::open()`, `a::Memo::<u8>::new()`, `Self::new()` inside
+//!  - Rust writes the qualifier: `Store::open()`, `a::Memo::<u8>::new()`, `Self::new()` inside
 //!    `impl<T> Store<T>`, `self.file()` inside `trait CodeView` and `C::f()` under
 //!    `use a::B as C;` are stored as the calls `Store::open`, `Memo::new`, `Store::new`,
 //!    `CodeView.file` and `B::f`, while `self.inner.open()` and `paths::module_dir()` are stored
 //!    bare and `Cursor::new()` under `use std::io::Cursor;`, its qualifier excluded, is not stored
 //!    at all, and each stored call lands where its name reaches - nowhere for a qualifier naming no
-//!    type of the tree, and the trait's own `file` over its same-file namesake.
+//!    type of the tree, and the trait's own `file` over its same-file namesake;
+//!  - and Rust stages its field uses: `opts.system_prompt = x`, `SpawnOpts { system_prompt }` and
+//!    `self.root` inside `impl Store` are stored as the `field` mentions `system_prompt`,
+//!    `SpawnOpts::system_prompt` and `Store.root`, and `opts.run()` as a call alone; the
+//!    unqualified one lands on its one field `inferred`, the qualified two `extracted`, and the
+//!    call as the call's two edges onto its method.
 
 #[cfg(feature = "symbols")]
 use crate::common;
@@ -617,10 +622,8 @@ fn graph_build_lands_a_qualified_reference_where_its_name_as_written_reaches() {
 /// none when it holds no facts for `file`.
 #[cfg(feature = "symbols")]
 fn stored_mentions(graph: &common::cli::BuiltGraph, file: &str) -> Option<Vec<(String, String)>> {
-    use rigger_domain::code_view::CodeView;
-
-    graph.view.file(file).map(|facts| {
-        let mut mentions: Vec<_> = (facts.into_owned().mentions.into_iter())
+    graph.mentions(file).map(|mentions| {
+        let mut mentions: Vec<_> = (mentions.into_iter())
             .map(|mention| (mention.name, mention.leaf))
             .collect();
         mentions.sort();
@@ -767,6 +770,104 @@ fn graph_build_names_a_rust_call_by_the_qualifier_rust_writes() {
         found, expected,
         "each Rust call is stored named by the qualifier Rust writes, or not at all when that \
          qualifier is excluded, and lands where that name reaches"
+    );
+}
+
+/// A Rust file holding the three field uses RUST STAGES FIELD USES names (spec 117) beside the
+/// fields they name: a struct `SpawnOpts` with a field `system_prompt` (line 1) and a method `run`
+/// (line 2), a struct `Store` with a field `root` (line 3) whose method `at` reads `self.root`
+/// (line 4), a `fn a` assigning `opts.system_prompt` and calling `opts.run()` (line 5), and a
+/// `fn b` writing the struct literal `SpawnOpts { system_prompt }` (line 6). Each field use sits
+/// in its own fn, and no method shares a field's name.
+#[cfg(feature = "symbols")]
+const FIELD_USES_SOURCE: &str = "struct SpawnOpts { system_prompt: u8 }\nimpl SpawnOpts { fn run(&self) {} }\nstruct Store { root: u8 }\nimpl Store { fn at(&self) -> u8 { self.root } }\nfn a(mut opts: SpawnOpts, x: u8) { opts.system_prompt = x; opts.run(); }\nfn b(system_prompt: u8) { SpawnOpts { system_prompt }; }\n";
+
+/// GIVEN a project whose one Rust file ([`FIELD_USES_SOURCE`]) assigns `opts.system_prompt`,
+/// calls `opts.run()`, writes `SpawnOpts { system_prompt }` and reads `self.root` inside
+/// `impl Store`,
+/// WHEN the operator runs `rigger graph build`,
+/// THEN the code store holds each field use as a `field` mention of its bare leaf, named as the
+/// Rust qualifier rule writes it - `system_prompt` unqualified, `SpawnOpts::system_prompt` as a
+/// path and `Store.root` as a member access - and `opts.run()` as a call alone, beside the type
+/// mentions of `SpawnOpts` and the impl headers' calls of their self types; and the graph's
+/// `REFERENCES` and `CALLS` edges land each where its name reaches: the unqualified
+/// `system_prompt` onto the one field of that name, `inferred` though that field is in its own
+/// file, as an unqualified field use never prefers its file; `SpawnOpts::system_prompt` and
+/// `Store.root` onto it and onto `Store`'s `root`, `extracted`, each qualifier narrowing its
+/// candidates to the one field its struct holds; and `opts.run()` as the call's two edges onto
+/// `SpawnOpts::run`. Its code entities are the definitions alone, no placeholder standing for any
+/// mention.
+#[cfg(feature = "symbols")]
+#[test]
+fn graph_build_lands_each_rust_field_use_on_its_field_and_a_method_call_as_a_call() {
+    use crate::symbol_index::mention_in;
+    use rigger::contextgraph::query::entity_id;
+    use rigger::contextgraph::{REF_KIND_FIELD, REF_KIND_TYPE, TIER_EXTRACTED, TIER_INFERRED};
+
+    let file = "f.rs";
+    let (_project, graph) = common::cli::built_graph(&[(file, FIELD_USES_SOURCE)]);
+
+    let call_in = |at, leaf, line| mention_in(Some(at), leaf, leaf, None, line, false);
+    let tagged_in =
+        |at, name, leaf, kind, line| mention_in(Some(at), name, leaf, Some(kind), line, false);
+    // A mention inside the definition at index `at` (`Store::at` is 5, `a` 6, `b` 7, and the
+    // impls of `SpawnOpts` and `Store` 8 and 9).
+    let mentions = vec![
+        tagged_in(5, "Store.root", "root", REF_KIND_FIELD, 4),
+        tagged_in(6, "system_prompt", "system_prompt", REF_KIND_FIELD, 5),
+        call_in(6, "run", 5),
+        tagged_in(
+            7,
+            "SpawnOpts::system_prompt",
+            "system_prompt",
+            REF_KIND_FIELD,
+            6,
+        ),
+        call_in(8, "SpawnOpts", 2),
+        call_in(9, "Store", 4),
+        tagged_in(6, "SpawnOpts", "SpawnOpts", REF_KIND_TYPE, 5),
+        tagged_in(7, "SpawnOpts", "SpawnOpts", REF_KIND_TYPE, 6),
+    ];
+    let id = |path| entity_id(file, path);
+    let field = id("SpawnOpts.system_prompt");
+    let mut edges = [
+        common::fixtures::a_call_from(file, "impl SpawnOpts", &id("SpawnOpts"), TIER_EXTRACTED),
+        common::fixtures::a_call_from(file, "impl Store", &id("Store"), TIER_EXTRACTED),
+        common::fixtures::a_call_from(file, "a", &id("SpawnOpts::run"), TIER_EXTRACTED),
+    ]
+    .concat();
+    edges.extend([
+        common::fixtures::reference(&id("a"), &field, TIER_INFERRED),
+        common::fixtures::reference(&id("a"), &id("SpawnOpts"), TIER_EXTRACTED),
+        common::fixtures::reference(&id("b"), &field, TIER_EXTRACTED),
+        common::fixtures::reference(&id("b"), &id("SpawnOpts"), TIER_EXTRACTED),
+        common::fixtures::reference(&id("Store::at"), &id("Store.root"), TIER_EXTRACTED),
+    ]);
+    edges.sort();
+    let entities = [
+        "SpawnOpts",
+        "SpawnOpts.system_prompt",
+        "SpawnOpts::run",
+        "Store",
+        "Store.root",
+        "Store::at",
+        "a",
+        "b",
+        "impl SpawnOpts",
+        "impl Store",
+    ]
+    .map(id)
+    .to_vec();
+    assert_eq!(
+        (
+            graph.mentions(file),
+            common::fixtures::landed(&graph),
+            common::fixtures::live_file_and_entity_ids(&graph.whole().unwrap()),
+        ),
+        (Some(mentions), edges, [vec![file.to_string()], entities]),
+        "each field use is stored a field mention named as Rust writes its qualifier and `opts.run()` \
+         a call; each lands where its name reaches, the unqualified one inferred, the qualified two \
+         extracted, the call as a call; and no placeholder stands for any mention"
     );
 }
 

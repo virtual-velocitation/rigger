@@ -46,8 +46,6 @@ fn graph_build_lands_a_csharp_base_type_qualified_member_and_field_as_references
     use rigger::contextgraph::{
         REF_KIND_FIELD, REF_KIND_IMPL, REF_KIND_TYPE, TIER_EXTRACTED, TIER_INFERRED,
     };
-    use rigger_domain::code_view::CodeView;
-
     let file = "f.cs";
     let (_project, graph) = common::cli::built_graph(&[(file, SQUARE_SOURCE)]);
 
@@ -88,10 +86,7 @@ fn graph_build_lands_a_csharp_base_type_qualified_member_and_field_as_references
     .to_vec();
     assert_eq!(
         (
-            graph
-                .view
-                .file(file)
-                .map(|facts| facts.into_owned().mentions),
+            graph.mentions(file),
             common::fixtures::landed(&graph),
             common::fixtures::live_file_and_entity_ids(&graph.whole().unwrap()),
         ),

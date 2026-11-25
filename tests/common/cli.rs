@@ -1845,6 +1845,14 @@ impl BuiltGraph {
         }
     }
 
+    /// The mentions the code store holds for `file`, in its order; none when it holds no facts for
+    /// `file`.
+    pub fn mentions(&self, file: &str) -> Option<Vec<rigger_domain::code_facts::Mention>> {
+        use rigger_domain::code_view::CodeView;
+
+        (self.view.file(file)).map(|facts| facts.into_owned().mentions)
+    }
+
     /// Every node and edge the composed graph serves ([`Self::composed`]).
     pub fn whole(&self) -> Result<Graph, GraphError> {
         rigger::contextgraph::Neighbors::whole(&self.composed())
