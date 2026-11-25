@@ -809,8 +809,7 @@ fn unit_of(path: &str) -> Option<&str> {
         .match_indices('/')
         .map(|(at, _)| at)
         .chain([path.len()])
-        .filter(|&at| path[..at].ends_with(".scope") || path[..at].ends_with(".service"))
-        .last()?;
+        .rfind(|&at| path[..at].ends_with(".scope") || path[..at].ends_with(".service"))?;
     Some(&path[..end])
 }
 
