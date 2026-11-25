@@ -288,7 +288,8 @@ impl Sidecar {
     /// The decision, lesson or finding whose id is `id`, read from the log as a show surface
     /// prints a graph node, for an id the graph no longer holds (a `rigger reset --runs` prune
     /// deletes no event): its kind, the distinct locations it names ([`Peer::LOCATIONS`]) as its
-    /// degree, and the fold's attrs ([`Peer::ATTRS`]); a restated id reads as its latest record.
+    /// degree, and the fold's attrs ([`Peer::ATTRS`]), with no doc and no referrer; a restated id
+    /// reads as its latest record.
     pub fn site_of(&self, id: &str) -> Option<contextgraph::EntitySite> {
         self.site_of_kind::<PeerDecision>(id)
             .or_else(|| self.site_of_kind::<PeerLesson>(id))
@@ -333,6 +334,8 @@ impl Sidecar {
             degree,
             attrs,
             unresolved: Vec::new(),
+            doc_comment: None,
+            referrers: Vec::new(),
         })
     }
 
