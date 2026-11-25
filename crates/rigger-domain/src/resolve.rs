@@ -2692,13 +2692,12 @@ pub(crate) mod tests {
     /// its one field included, a call through a placeholder under each candidate the
     /// placeholder keeps, a reference no one candidate takes under each it took none from, the
     /// several its qualifier keeps or its several fields included, and a mention whose qualifier
-    /// makes no link under none. The item names
-    /// the enclosing definition's id and kind, or its file's when none encloses it, the label
-    /// of its tag (none for a tag no label row holds), the mention's line, and whether the
-    /// mention is test code, by its own mark or its file's scope, a test twin's sharing its
-    /// product's id. An id naming no definition of a code file has none. `Composed` answers the
-    /// product items alone under every tests setting, near or whole, and none when the worktree
-    /// cannot be compared.
+    /// makes no link under none. The item names the enclosing definition's id and kind, or its
+    /// file's when none encloses it, the label of its tag (none for a tag no label row holds),
+    /// the mention's line, and whether the mention is test code, by its own mark or its file's
+    /// scope, a test twin's sharing its product's id. An id naming no definition of a code file
+    /// has none. `Composed` answers the product items alone under every tests setting, near or
+    /// whole, and none when the worktree cannot be compared.
     #[test]
     fn a_referrer_is_listed_under_each_id_its_mention_lists() {
         let lib = code(

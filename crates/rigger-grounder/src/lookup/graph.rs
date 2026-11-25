@@ -1,9 +1,9 @@
 //! The graph half: each term resolved against the code graph ([`ContextGraph::locate`] first,
 //! then the name index's exact, prefix and fuzzy tiers) and answered with each entity's definition
 //! site, its doc, its product referrers under each label and the sites of its direct callees. The
-//! graph describes the caller's tree:
-//! the files it differs in are read from the tree over the store's stamp. When the tree cannot be
-//! compared, the graph withholds every code hit and counts it in its label
+//! graph describes the caller's tree: the files it differs in are read from the tree over the
+//! store's stamp. When the tree cannot be compared, the graph withholds every code hit and counts
+//! it in its label
 //! ([`ContextGraph::stamp_label`]), which heads the half, so the graph half never answers from
 //! bytes the caller no longer holds; the text half answers from the tree's bytes.
 
