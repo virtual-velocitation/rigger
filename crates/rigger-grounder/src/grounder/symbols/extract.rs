@@ -7027,7 +7027,8 @@ pub fn f() -> u8 {
     /// macro, its arguments split where a call's are, when that argument is one string literal,
     /// with `{{`, `}}` and escapes skipped, and a
     /// named argument's name read neither in the string nor where it is bound; a lowercase capture,
-    /// a literal at another argument, a non-format macro's literal and an excluded name read none.
+    /// a literal at another argument, a non-format macro's literal, a token tree read as no
+    /// argument list and an excluded name read none.
     #[test]
     fn rust_reads_pattern_and_format_constants() {
         let cases = [
@@ -7336,6 +7337,17 @@ fn q<A, B, W>(a: u8, b: u8, x: u8, y: u8) {
 5 ref const X q
 6 ref call panic q
 6 ref call to_owned q",
+            ),
+            (
+                "a format macro whose token tree is read as no argument list has no format string",
+                "\
+fn r() {
+    format!(\"{X}\", 1 2);
+}
+",
+                "\
+1 def Function r to 3
+2 ref call format r",
             ),
             (
                 "a named argument's name is read neither in the format string nor where it is \
