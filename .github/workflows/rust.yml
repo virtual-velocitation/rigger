@@ -81,6 +81,10 @@ jobs:
         run: cargo build --workspace --verbose
       - name: test
         run: cargo test --workspace --no-fail-fast --verbose
+      # The held-apart row needs the runner's user service manager and skips without one; run on
+      # its own with its output shown, its SKIP line, with the reason, or its pass is in this log.
+      - name: the held-apart end row (run or skip, shown)
+        run: cargo test --workspace --test all -- --nocapture --exact child_tree::a_kept_end_leaves_a_process_the_service_manager_holds_in_a_scope_of_its_own_and_names_it
       # The deliberate light opt-out: `--no-default-features` drops the `symbols` grounder, so the
       # grep-only build stays green. The lanes script gives it the default lane's battery - clippy
       # over every workspace target with warnings denied, then every workspace test - so a warning

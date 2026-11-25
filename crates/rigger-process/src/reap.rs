@@ -4291,19 +4291,21 @@ mod tests {
                 .map(|held| (held.process.pid, held.unit.clone()))
                 .collect();
             let (sent, rest) = split(report);
-            let left_running = witness.read();
-            let released = witness.release();
             assert_eq!(
-                (sent, held, rest.skipped, rest.residue, left_running, released),
+                (sent, held, rest.skipped, rest.residue, witness.read()),
                 (
                     vec![deepest],
                     vec![(middle, "run-r9.scope".to_string())],
                     vec![],
                     vec![],
                     Reading::Held,
-                    Reading::Ended
                 ),
                 "{ending:?}: the held-apart middle runs on, named with its unit; its child is ended"
+            );
+            assert_eq!(
+                witness.release(),
+                Reading::Ended,
+                "{ending:?}: the release ends what the end left"
             );
             assert!(
                 !os.sent
