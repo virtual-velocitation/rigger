@@ -6784,6 +6784,336 @@ pub fn f() -> u8 {
             .join("\n")
     }
 
+    /// Spec 117, RUST READS PATTERN AND FORMAT CONSTANTS: a const-spelled name in a refutable
+    /// pattern - a match arm's, an `if let`'s, a `while let`'s or a let-else's, nested in a tuple,
+    /// or-, range, slice, reference or struct pattern or not - is a const read, a path's leaf
+    /// (`Self::MAX`, `Mode::RO`) alike but a primitive's, while a parameter, a plain `let`, a
+    /// `for`, a closure parameter, a tuple struct pattern's head and a binder's own name read
+    /// none. A format string's inline capture is a const read at its own line - a placeholder's
+    /// argument and each width or precision `NAME$` - read from the format argument of each format
+    /// macro when that argument is one string literal, with `{{`, `}}` and escapes skipped, and a
+    /// named argument's name read neither in the string nor where it is bound; a lowercase capture,
+    /// a literal at another argument, a non-format macro's literal and an excluded name read none.
+    #[test]
+    fn rust_reads_pattern_and_format_constants() {
+        let cases = [
+            (
+                "a const in a match arm's pattern is a const read",
+                "\
+fn a(k: &str) -> u8 {
+    match k {
+        REF_KIND_TYPE => 1,
+        _ => 0,
+    }
+}
+",
+                "\
+1 def Function a to 6
+3 ref const REF_KIND_TYPE a",
+            ),
+            (
+                "a const in a tuple or an or-pattern is read, as a guard's is",
+                "\
+fn b(k: (u8, u8)) -> u8 {
+    match k {
+        (MIN, x) | (x, MAX) if x > LIMIT => x,
+        _ => 0,
+    }
+}
+",
+                "\
+1 def Function b to 6
+3 ref const LIMIT b
+3 ref const MAX b
+3 ref const MIN b",
+            ),
+            (
+                "a const in a range, a slice, a reference or a struct field pattern is read",
+                "\
+fn c(k: u8) {
+    match k {
+        0..=TOP | BOTTOM..=9 => 0,
+        [FIRST, .., LAST] => 0,
+        &S { f: FIELD } => 0,
+        _ => 0,
+    };
+}
+",
+                "\
+1 def Function c to 8
+3 ref const BOTTOM c
+3 ref const TOP c
+4 ref const FIRST c
+4 ref const LAST c
+5 ref const FIELD c
+5 ref field f c q S::
+5 ref type S c",
+            ),
+            (
+                "an if let, a while let and a let-else read a const, while a parameter, a plain let, \
+                 a for and a closure parameter bind the name",
+                "\
+fn d(o: Option<u8>, SEVEN: u8) {
+    if let Some(ONE) = o {}
+    while let Some(TWO) = o {}
+    let Some(THREE) = o else { return };
+    let FOUR = o;
+    for FIVE in [o] {}
+    let _ = |SIX: u8| 0;
+}
+",
+                "\
+1 def Function d to 8
+2 ref const ONE d
+3 ref const TWO d
+4 ref const THREE d",
+            ),
+            (
+                "a tuple struct pattern's head and a binder's own name read no const, the patterns \
+                 under them do",
+                "\
+fn e(k: Kind) {
+    match k {
+        Kind::A(B) => 0,
+        C(D) => 0,
+        E @ F => 0,
+        (ref G, mut H) => 0,
+    };
+}
+",
+                "\
+1 def Function e to 8
+1 ref type Kind e
+3 ref const B e
+3 ref type Kind e
+4 ref const D e
+5 ref const F e",
+            ),
+            (
+                "a path's const leaf in a pattern is a const read, Self's alike, a primitive's none",
+                "\
+impl Gauge {
+    fn f(n: u8) -> u8 {
+        match n {
+            Self::MAX => 1,
+            Mode::RO => 2,
+            u8::MAX => 3,
+            _ => 0,
+        }
+    }
+}
+",
+                "\
+1 def Impl impl Gauge to 10
+1 ref impl Gauge impl Gauge
+2 def Method Gauge::f to 9 in impl Gauge
+4 ref const MAX Gauge::f
+5 ref const RO Gauge::f
+5 ref type Mode Gauge::f",
+            ),
+            (
+                "a format string's inline capture is a const read, a lowercase capture and an \
+                 escaped brace none, and assert_eq!'s compared literal is no format string",
+                "\
+fn g(a: u8, b: u8, out: &str) {
+    format!(\"{TEMP}\");
+    format!(\"{temp}\");
+    format!(\"{{TEMP}}\");
+    assert_eq!(a, b, \"{LIMIT}\");
+    assert_eq!(out, \"{TEMP}\");
+}
+",
+                "\
+1 def Function g to 7
+2 ref call format g
+2 ref const TEMP g
+3 ref call format g
+4 ref call format g
+5 ref call assert_eq g
+5 ref const LIMIT g
+6 ref call assert_eq g",
+            ),
+            (
+                "each format macro reads its format string at its own argument, a path-written one \
+                 alike, and vec! reads none",
+                "\
+fn h() {
+    format!(\"{A0}\", \"{A1}\", \"{A2}\", \"{A3}\");
+    print!(\"{A0}\", \"{A1}\", \"{A2}\", \"{A3}\");
+    println!(\"{A0}\", \"{A1}\", \"{A2}\", \"{A3}\");
+    eprint!(\"{A0}\", \"{A1}\", \"{A2}\", \"{A3}\");
+    eprintln!(\"{A0}\", \"{A1}\", \"{A2}\", \"{A3}\");
+    panic!(\"{A0}\", \"{A1}\", \"{A2}\", \"{A3}\");
+    format_args!(\"{A0}\", \"{A1}\", \"{A2}\", \"{A3}\");
+    unreachable!(\"{A0}\", \"{A1}\", \"{A2}\", \"{A3}\");
+    todo!(\"{A0}\", \"{A1}\", \"{A2}\", \"{A3}\");
+    unimplemented!(\"{A0}\", \"{A1}\", \"{A2}\", \"{A3}\");
+    write!(\"{A0}\", \"{A1}\", \"{A2}\", \"{A3}\");
+    writeln!(\"{A0}\", \"{A1}\", \"{A2}\", \"{A3}\");
+    assert!(\"{A0}\", \"{A1}\", \"{A2}\", \"{A3}\");
+    debug_assert!(\"{A0}\", \"{A1}\", \"{A2}\", \"{A3}\");
+    assert_eq!(\"{A0}\", \"{A1}\", \"{A2}\", \"{A3}\");
+    assert_ne!(\"{A0}\", \"{A1}\", \"{A2}\", \"{A3}\");
+    debug_assert_eq!(\"{A0}\", \"{A1}\", \"{A2}\", \"{A3}\");
+    debug_assert_ne!(\"{A0}\", \"{A1}\", \"{A2}\", \"{A3}\");
+    vec![\"{A0}\", \"{A1}\", \"{A2}\", \"{A3}\"];
+    std::println!(\"{A0}\");
+}
+",
+                "\
+1 def Function h to 22
+2 ref call format h
+2 ref const A0 h
+3 ref call print h
+3 ref const A0 h
+4 ref call println h
+4 ref const A0 h
+5 ref call eprint h
+5 ref const A0 h
+6 ref call eprintln h
+6 ref const A0 h
+7 ref call panic h
+7 ref const A0 h
+8 ref call format_args h
+8 ref const A0 h
+9 ref call unreachable h
+9 ref const A0 h
+10 ref call todo h
+10 ref const A0 h
+11 ref call unimplemented h
+11 ref const A0 h
+12 ref call write h
+12 ref const A1 h
+13 ref call writeln h
+13 ref const A1 h
+14 ref call assert h
+14 ref const A1 h
+15 ref call debug_assert h
+15 ref const A1 h
+16 ref call assert_eq h
+16 ref const A2 h
+17 ref call assert_ne h
+17 ref const A2 h
+18 ref call debug_assert_eq h
+18 ref const A2 h
+19 ref call debug_assert_ne h
+19 ref const A2 h
+20 ref call vec h
+21 ref const A0 h",
+            ),
+            (
+                "a placeholder's argument and its width and precision parameters are captures, an \
+                 integer, a type, a fill and an escape none, a raw string's text all of it",
+                r##"fn i() {
+    format!("{A:?} {B:>5} {:W$} {:.P$} {:>1$} {0} {} {c} {D:X$.Y$} {:X} {:Z<5} {E }");
+    format!("{{{TEMP}}} }}{{N}} \u{FEFF}{F} \n{G}");
+    format!(r"{RAW} \u{FE}");
+    format!(r#"{HASH}"#);
+}
+"##,
+                "\
+1 def Function i to 6
+2 ref call format i
+2 ref const A i
+2 ref const B i
+2 ref const D i
+2 ref const E i
+2 ref const P i
+2 ref const W i
+2 ref const X i
+2 ref const Y i
+3 ref call format i
+3 ref const F i
+3 ref const G i
+3 ref const TEMP i
+4 ref call format i
+4 ref const FE i
+4 ref const RAW i
+5 ref call format i
+5 ref const HASH i",
+            ),
+            (
+                "a named argument's name is read neither in the format string nor where it is \
+                 bound, its value is, and a non-format macro's assignment stays a read",
+                "\
+fn j() -> String {
+    my!(STATE = 1);
+    format!(
+        \"{TEMP} {MAX} {n}\",
+        TEMP = 1,
+        n = LIMIT,
+    )
+}
+",
+                "\
+1 def Function j to 8
+2 ref call my j
+2 ref const STATE j
+3 ref call format j
+4 ref const MAX j
+6 ref const LIMIT j",
+            ),
+            (
+                "a capture on a multi-line format string's later line is read at that line",
+                "fn k() {\n    println!(\n        \"first {A}\nsecond {B}\"\n    );\n}\n",
+                "\
+1 def Function k to 6
+2 ref call println k
+3 ref const A k
+4 ref const B k",
+            ),
+            (
+                "a capture naming a std import or an enclosing const generic stages nothing",
+                "\
+use std::f64::consts::PI;
+fn l<const N: usize>() {
+    format!(\"{PI} {N} {Self} {M}\");
+}
+",
+                "\
+2 def Function l to 4
+3 ref call format l
+3 ref const M l",
+            ),
+            (
+                "a format argument that is no lone string literal reads nothing, a comment beside \
+                 it aside, and a format macro nested in a token tree is read",
+                "\
+fn m(a: u8, ok: bool) {
+    println!();
+    assert!(ok);
+    format!(concat!(\"{A}\", \"x\"));
+    assert_eq!(a, a, /* c */ \"{B}\");
+    assert_eq!(f(a, a), a, \"{C}\");
+    format!(\"{D}\",);
+    vec![format!(\"{E}\")];
+    my!(\"{F}\");
+}
+",
+                "\
+1 def Function m to 10
+2 ref call println m
+3 ref call assert m
+4 ref call concat m
+4 ref call format m
+5 ref call assert_eq m
+5 ref const B m
+6 ref call assert_eq m
+6 ref call f m
+6 ref const C m
+7 ref call format m
+7 ref const D m
+8 ref call format m
+8 ref call vec m
+8 ref const E m
+9 ref call my m",
+            ),
+        ];
+        for (why, src, expected) in cases {
+            assert_eq!(read_lines(src), expected, "{why}");
+        }
+    }
+
     /// Spec 117, MACRO TOKEN TREES: a macro invocation's token tree is re-parsed and read like
     /// the code around it - a call inside `vec![..]`, a constant inside `assert_eq!(..)`, a call
     /// inside `json!({"k": f(x)})` and a `static` inside `thread_local!` yield a call, a const, a
