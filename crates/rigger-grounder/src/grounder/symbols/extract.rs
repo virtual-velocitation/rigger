@@ -7260,6 +7260,23 @@ fn h() {
 2 ref const Y n",
             ),
             (
+                "an unclosed placeholder reads nothing past its brace, and an argument comparing a \
+                 name binds no named argument",
+                "\
+fn o() {
+    format!(\"{A} {B\");
+    format!(\"{X} {}\", X == 1);
+}
+",
+                "\
+1 def Function o to 4
+2 ref call format o
+2 ref const A o
+3 ref call format o
+3 ref const X o
+3 ref const X o",
+            ),
+            (
                 "a named argument's name is read neither in the format string nor where it is \
                  bound, its value is, and a non-format macro's assignment stays a read",
                 "\
