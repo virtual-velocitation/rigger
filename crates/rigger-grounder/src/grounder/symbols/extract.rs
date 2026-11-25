@@ -7077,7 +7077,8 @@ mod plat {
     /// An invocation nested in another's token tree has no generic parameter, impl or inline
     /// module around it in the tree it was re-parsed in, so its token tree stages with those of
     /// its outer invocation ([`Scope::at`]); an impl re-parsed out of a token tree gives its
-    /// methods its self type's path, read off its re-parse ([`def_paths`]); and what a token tree
+    /// methods its self type's path, read off its re-parse ([`def_paths`]), and encloses its
+    /// header's `impl` mentions, inside a function too; and what a token tree
     /// neither parse accepts holds inside a token tree its argument-list parse breaks is read
     /// once, by that token tree's own read ([`read_tokens`]), never by the outer parse as well,
     /// while one that parse holds whole is read inside it, as is a `,` or `:` it holds inside a
@@ -7124,6 +7125,16 @@ impl S {
 3 def Impl impl S to 5
 3 ref impl S impl S
 4 def Method S::f to 4 in impl S",
+            ),
+            (
+                "a fn-local token tree's trait impl header is the impl's, never the function's",
+                "fn f() {\n    items! { impl Draw for Kestrel {} }\n}\n",
+                "\
+1 def Function f to 3
+2 def Impl f::impl Draw for Kestrel to 2 in f
+2 ref call items f
+2 ref impl Draw f::impl Draw for Kestrel
+2 ref impl Kestrel f::impl Draw for Kestrel",
             ),
             (
                 "a struct inside a broken token tree is one definition with one field and one type read",
