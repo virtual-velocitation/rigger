@@ -356,7 +356,8 @@ fn toctou_still_same_process(
 /// [`toctou_still_same_process`]. This is the cwd half of the TOCTOU guard (spec 78): a pid
 /// that exited and was recycled onto an unrelated process (even one that happens to also be
 /// rooted under `base`) between the scan and this call is silently skipped, never signalled,
-/// and so is a pid whose cwd cannot be read or that cannot be addressed.
+/// and so is a pid whose cwd cannot be read or that cannot be addressed. One a service manager
+/// holds apart ([`EndOs::held_apart`]) is never signalled either: answers its unit.
 fn signal_if_unchanged(
     os: &mut impl EndOs,
     target: &Identity,
@@ -364,16 +365,18 @@ fn signal_if_unchanged(
     self_pid: u32,
     self_ancestors: &HashSet<u32>,
     signal: Signal,
-) {
-    let Some(to) = os.address(target.pid) else {
-        return;
-    };
-    if !os_process::cwd_lies_in(target.pid, base) {
-        return;
+) -> Option<String> {
+    let to = os.address(target.pid)?;
+    if !os_process::cwd_lies_in(target.pid, base)
+        || !toctou_still_same_process(target, started(&to), self_pid, self_ancestors)
+    {
+        return None;
     }
-    if toctou_still_same_process(target, started(&to), self_pid, self_ancestors) {
+    let held = os.held_apart(target.pid);
+    if held.is_none() {
         os.send(signal, &to);
     }
+    held
 }
 
 /// The fault an end reports when a freeze it sent to `pid` by the pid alone reached another
@@ -1981,10 +1984,10 @@ pub fn reap_then_remove_dir(dir: &Path, authorized_root: &Path) {
 /// removed out from under a still-running process is exactly the case this reaps).
 /// Best-effort and platform-tolerant throughout - on an OS the process interface cannot read
 /// the scan finds nothing and this is a graceful no-op.
+///
+/// A process a service manager holds in a unit other than this process's is left running, never
+/// signalled, and named with its unit in one line ([`left_to_their_units`]).
 pub fn reap_authorized(base: PathBuf) {
-    let self_pid = std::process::id();
-    let self_ancestors = ancestor_pids(self_pid);
-
     let term_targets = scan_with_starttime(&base);
     if term_targets.is_empty() {
         return;
@@ -1993,15 +1996,42 @@ pub fn reap_authorized(base: PathBuf) {
     if let Some(reason) = &os.by_pid_because {
         say_signalled_by_pid(reason);
     }
+    let held = reap_authorized_with(os, &base, term_targets);
+    if !held.is_empty() {
+        let reap = format!("the reap of {}", base.display());
+        crate::whole_line::say(format_args!(
+            "rigger: {}",
+            left_to_their_units(&reap, &held)
+        ));
+    }
+}
+
+/// [`reap_authorized`]'s signals over `os`, from `term_targets`, the scan of `base` it began
+/// with: answers each process it left to the unit a service manager holds it in, once.
+fn reap_authorized_with(
+    os: &mut impl EndOs,
+    base: &Path,
+    term_targets: Vec<Identity>,
+) -> Vec<HeldApart> {
+    let self_pid = std::process::id();
+    let self_ancestors = ancestor_pids(self_pid);
+    let mut report = EndReport::default();
     for target in &term_targets {
-        signal_if_unchanged(os, target, &base, self_pid, &self_ancestors, Signal::Term);
+        let held = signal_if_unchanged(os, target, base, self_pid, &self_ancestors, Signal::Term);
+        if let Some(unit) = held {
+            report.hold_apart(target, unit);
+        }
     }
     std::thread::sleep(GRACE);
     // Re-scan so only processes STILL rooted inside are force-killed - each gets its own
     // fresh start-time baseline here, then is rechecked again immediately below.
-    for target in scan_with_starttime(&base) {
-        signal_if_unchanged(os, &target, &base, self_pid, &self_ancestors, Signal::Hard);
+    for target in scan_with_starttime(base) {
+        let held = signal_if_unchanged(os, &target, base, self_pid, &self_ancestors, Signal::Hard);
+        if let Some(unit) = held {
+            report.hold_apart(&target, unit);
+        }
     }
+    report.held_apart
 }
 
 #[cfg(test)]
@@ -4286,6 +4316,52 @@ mod tests {
             assert!(
                 took < END_BOUND / 2,
                 "{ending:?}: the end returns without waiting on what it left: {took:?}"
+            );
+        }
+
+        /// A reap of a directory two fixture processes run in, one of them held apart by a
+        /// service manager: the held-apart one is sent nothing, left running and answered with its
+        /// unit, and the other, its child, is ended. The test's release, never a signal, ends what
+        /// is left.
+        #[test]
+        fn a_reap_leaves_a_process_a_service_manager_holds_apart() {
+            let repo = FakeRepo::new();
+            let base = repo.base("scratch");
+            let mut witness = Witness::new();
+            let mut root = StdCommand::new("sh")
+                .arg("-c")
+                .arg(Witness::script("holder; up; held"))
+                .envs(witness.env())
+                .current_dir(&base)
+                .spawn()
+                .expect("spawn the fixture shell");
+            assert!(witness.wait_up(2), "the fixture's two processes are up");
+            let child = only_child(root.id());
+            let mut os = Rigged {
+                held: Some((root.id(), "run-r9.scope")),
+                ..Rigged::default()
+            };
+
+            let held = reap_authorized_with(&mut os, &base, scan_with_starttime(&base));
+
+            let held: Vec<(u32, String)> = held
+                .into_iter()
+                .map(|held| (held.process.pid, held.unit))
+                .collect();
+            let left_running = witness.read();
+            let ended = ended_by(&os, 0);
+            let released = witness.release();
+            root.wait().expect("reap the fixture shell");
+            assert_eq!(
+                (held, ended, left_running, released),
+                (
+                    vec![(root.id(), "run-r9.scope".to_string())],
+                    vec![child],
+                    Reading::Held,
+                    Reading::Ended
+                ),
+                "the held-apart process runs on, named with its unit; its child is ended: {:?}",
+                os.sent
             );
         }
 
