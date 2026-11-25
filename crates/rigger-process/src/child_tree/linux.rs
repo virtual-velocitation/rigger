@@ -506,7 +506,12 @@ impl Kept {
     /// Reports `held` as left to the unit that holds it, unless it is already.
     fn hold_apart(&mut self, held: HeldApart) {
         let pid = held.process.pid;
-        if !self.report.held_apart.iter().any(|known| known.process.pid == pid) {
+        if !self
+            .report
+            .held_apart
+            .iter()
+            .any(|known| known.process.pid == pid)
+        {
             self.report.held_apart.push(held);
         }
     }
@@ -887,7 +892,10 @@ mod tests {
         ]
         .map(|record| record.encode());
         let merged = EndReport {
-            held_apart: vec![held(7, "conmon", "run-r9.scope"), held(8, "dbus", "dbus.service")],
+            held_apart: vec![
+                held(7, "conmon", "run-r9.scope"),
+                held(8, "dbus", "dbus.service"),
+            ],
             ..EndReport::default()
         };
 
@@ -895,7 +903,10 @@ mod tests {
 
         assert_eq!(
             report.held_apart,
-            vec![held(7, "conmon", "run-r9.scope"), held(8, "dbus", "dbus.service")]
+            vec![
+                held(7, "conmon", "run-r9.scope"),
+                held(8, "dbus", "dbus.service")
+            ]
         );
     }
 
