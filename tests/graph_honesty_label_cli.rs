@@ -1046,9 +1046,9 @@ fn the_overlay_carries_new_references() {
     }
 }
 
-/// Each case's term looked up through the binary in the built project at `root`, `options` passed
-/// after it: the printed lines from the term's heading on, as many as the case holds, are exactly
-/// the case's block.
+/// Each case's term looked up through the binary from `root`, a worktree of a built project,
+/// `options` passed after it: the printed lines from the term's heading on, as many as the case
+/// holds, are exactly the case's block.
 fn lookup_prints_blocks(root: &std::path::Path, options: &[&str], cases: &[(&str, &[&str])]) {
     for (term, block) in cases {
         let args: Vec<&str> = ["graph", "--lookup", term]
