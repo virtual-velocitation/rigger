@@ -5909,6 +5909,77 @@ fn l(s: u8) {
         }
     }
 
+    /// Spec 117, RUST TAGS IMPL HEADERS: every impl block stages an `impl` mention of its self
+    /// type, and a trait impl one of its trait as well, each by its base name with its path and
+    /// generics stripped, enclosed by the impl definition itself even inside a function, and no
+    /// call or `type` row; a header name [`excluded`] holds (a prelude trait, a trait rooted at
+    /// the standard library, a generic self type) stages none, nor does a self type with no base
+    /// name (a tuple), whose own types stage by the type rule.
+    #[test]
+    fn rust_tags_impl_headers() {
+        let cases = [
+            (
+                "a generic trait impl stages impl mentions of its trait and its self type",
+                "impl<T> CodeView for FactsView<T> {}\n",
+                "\
+1 def Impl impl CodeView for FactsView<T> to 1
+1 ref impl CodeView impl CodeView for FactsView<T>
+1 ref impl FactsView impl CodeView for FactsView<T>",
+            ),
+            (
+                "an inherent impl stages one impl mention of its self type",
+                "impl FactsView {}\n",
+                "\
+1 def Impl impl FactsView to 1
+1 ref impl FactsView impl FactsView",
+            ),
+            (
+                "a function-local impl's header mentions are enclosed by the impl, not the function",
+                "fn host() {\n    impl Draw for Local {}\n}\n",
+                "\
+1 def Function host to 3
+2 def Impl host::impl Draw for Local to 2 in host
+2 ref impl Draw host::impl Draw for Local
+2 ref impl Local host::impl Draw for Local",
+            ),
+            (
+                "a path-qualified header stages the leaves of its trait and its self type",
+                "impl a::Draw for b::Local<u8> {}\n",
+                "\
+1 def Impl impl a::Draw for b::Local<u8> to 1
+1 ref impl Draw impl a::Draw for b::Local<u8>
+1 ref impl Local impl a::Draw for b::Local<u8>",
+            ),
+            (
+                "a prelude trait, a std-rooted trait and a generic self type stage no impl mention",
+                "\
+impl Default for Shape {}
+impl std::fmt::Debug for Shape {}
+impl<T> Draw for T {}
+",
+                "\
+1 def Impl impl Default for Shape to 1
+1 ref impl Shape impl Default for Shape
+2 def Impl impl std::fmt::Debug for Shape to 2
+2 ref impl Shape impl std::fmt::Debug for Shape
+3 def Impl impl Draw for T to 3
+3 ref impl Draw impl Draw for T",
+            ),
+            (
+                "a tuple self type stages no impl mention, its types staging by the type rule",
+                "impl Draw for (A, B) {}\n",
+                "\
+1 def Impl impl Draw for (A, B) to 1
+1 ref impl Draw impl Draw for (A, B)
+1 ref type A impl Draw for (A, B)
+1 ref type B impl Draw for (A, B)",
+            ),
+        ];
+        for (why, src, expected) in cases {
+            assert_eq!(read_lines(src), expected, "{why}");
+        }
+    }
+
     #[test]
     fn malformed_tags_query_surfaces_as_err_not_panic() {
         let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
