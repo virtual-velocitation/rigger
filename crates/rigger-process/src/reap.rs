@@ -4274,8 +4274,7 @@ mod tests {
             let mut witness = Witness::new();
             let mut root = tree(&witness, "( holder; up; held ) & up; held");
             assert!(witness.wait_up(3), "the fixture's three processes are up");
-            let root_pid = root.id();
-            let middle = only_child(root_pid);
+            let middle = only_child(root.id());
             let deepest = only_child(middle);
             let mut os = Rigged {
                 held: Some((middle, "run-r9.scope")),
@@ -4303,55 +4302,10 @@ mod tests {
                 ),
                 "{ending:?}: the held-apart middle runs on, named with its unit; its child is ended"
             );
-            let released = witness.release();
-            let still: Vec<_> = [root_pid, middle, deepest]
-                .into_iter()
-                .map(|pid| (pid, os_process::state(pid), os_process::parent(pid)))
-                .collect();
-            let ps = StdCommand::new("ps")
-                .args(["-A", "-o", "pid,ppid,stat,wchan,command"])
-                .output()
-                .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
-                .unwrap_or_default();
-            let near: Vec<&str> = ps
-                .lines()
-                .filter(|line| {
-                    [root_pid, middle, deepest].iter().any(|pid| {
-                        line.split_whitespace()
-                            .take(2)
-                            .any(|f| f == pid.to_string())
-                    })
-                })
-                .collect();
-            let run = |args: Vec<String>| {
-                StdCommand::new("lsof")
-                    .args(&args)
-                    .output()
-                    .map(|out| {
-                        format!(
-                            "{}{}",
-                            String::from_utf8_lossy(&out.stdout),
-                            String::from_utf8_lossy(&out.stderr)
-                        )
-                    })
-                    .unwrap_or_else(|e| e.to_string())
-            };
-            let fifos: Vec<String> = witness.env().into_iter().map(|(_, p)| p).collect();
-            let of_middle = run(vec!["-p".into(), middle.to_string()]);
-            let dir = Path::new(&fifos[0])
-                .parent()
-                .and_then(|d| d.file_name())
-                .map(|d| d.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            let all = run(vec!["-nP".into()]);
-            let mut of_fifos: Vec<&str> = all.lines().filter(|l| l.contains(&dir)).collect();
-            let own = run(vec!["-p".into(), std::process::id().to_string()]);
-            of_fifos.extend(own.lines());
             assert_eq!(
-                released,
+                witness.release(),
                 Reading::Ended,
-                "{ending:?}: the release ends what the end left: {still:?} {near:#?} {:?}\nMIDDLE\n{of_middle}\nFIFOS\n{of_fifos:#?}",
-                os.sent
+                "{ending:?}: the release ends what the end left"
             );
             assert!(
                 !os.sent
