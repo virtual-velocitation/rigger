@@ -1,5 +1,5 @@
 //! Periphery (API / contract / integration) tests for spec 117, RUST REFERENCES: a Rust const
-//! read, type reference, field use and `use` are extracted tagged with their
+//! read, type reference, field use, variant use and `use` are extracted tagged with their
 //! `ref_kind`, and no consumer that counts calls - the fold's `REFERENCES` and `CALLS` edges among
 //! them - reads one. The crate's own tests pin the extraction, the emit pass, the grounder's
 //! counts and the fold arm one module at a time over hand-built input; these run OUTSIDE the
@@ -35,11 +35,18 @@
 //!    bare and `Cursor::new()` under `use std::io::Cursor;`, its qualifier excluded, is not stored
 //!    at all, and each stored call lands where its name reaches - nowhere for a qualifier naming no
 //!    type of the tree, and the trait's own `file` over its same-file namesake;
-//!  - and Rust stages its field uses: `opts.system_prompt = x`, `SpawnOpts { system_prompt }` and
+//!  - Rust stages its field uses: `opts.system_prompt = x`, `SpawnOpts { system_prompt }` and
 //!    `self.root` inside `impl Store` are stored as the `field` mentions `system_prompt`,
 //!    `SpawnOpts::system_prompt` and `Store.root`, and `opts.run()` as a call alone; the
 //!    unqualified one lands on its one field `inferred`, the qualified two `extracted`, and the
-//!    call as the call's two edges onto its method.
+//!    call as the call's two edges onto its method;
+//!  - and Rust stages its variant uses: `InstallOutcome::AlreadyCurrent` and `Located::Many(c) =>`
+//!    are stored as the `variant` mentions `InstallOutcome::AlreadyCurrent` and `Located::Many`
+//!    beside their enum's `type` mention, `Kind::RejectRecurrence { n } =>` as the `variant`
+//!    mention `Kind::RejectRecurrence` and the `field` mention `RejectRecurrence::n` with no `type`
+//!    mention, `Hop::Frontier(cs)` as a call and `-> Self::Target` as a `type` mention alone; each
+//!    lands `extracted` on the one variant, field, enum or associated type its name narrows to,
+//!    and the call as the call's two edges onto its variant.
 
 #[cfg(feature = "symbols")]
 use crate::common;
@@ -782,93 +789,202 @@ fn graph_build_names_a_rust_call_by_the_qualifier_rust_writes() {
 #[cfg(feature = "symbols")]
 const FIELD_USES_SOURCE: &str = "struct SpawnOpts { system_prompt: u8 }\nimpl SpawnOpts { fn run(&self) {} }\nstruct Store { root: u8 }\nimpl Store { fn at(&self) -> u8 { self.root } }\nfn a(mut opts: SpawnOpts, x: u8) { opts.system_prompt = x; opts.run(); }\nfn b(system_prompt: u8) { SpawnOpts { system_prompt }; }\n";
 
-/// GIVEN a project whose one Rust file ([`FIELD_USES_SOURCE`]) assigns `opts.system_prompt`,
-/// calls `opts.run()`, writes `SpawnOpts { system_prompt }` and reads `self.root` inside
-/// `impl Store`,
+/// A Rust file holding the variant uses RUST STAGES VARIANT USES names (spec 117) beside the
+/// enums that declare them: `InstallOutcome` with the unit variant `AlreadyCurrent` (line 1),
+/// `Located` with the tuple variant `Many` (line 2), `Kind` with the struct variant
+/// `RejectRecurrence { n }` (line 3) and `Hop` with the tuple variant `Frontier` (line 4), a trait
+/// `Tr` whose `get` returns `Self::Target` (line 5), and one fn per use: `a` reading
+/// `InstallOutcome::AlreadyCurrent` (line 6), `b` matching `Located::Many(c) =>` (line 7), `c`
+/// matching `Kind::RejectRecurrence { n } =>` (line 8) and `e` calling `Hop::Frontier(cs)` (line
+/// 9). No fn takes or returns a type of the file, so each type mention is its path's.
+#[cfg(feature = "symbols")]
+const VARIANT_USES_SOURCE: &str = "enum InstallOutcome { AlreadyCurrent }\nenum Located { Many(u8) }\nenum Kind { RejectRecurrence { n: u8 } }\nenum Hop { Frontier(u8) }\ntrait Tr { type Target; fn get(&self) -> Self::Target; }\nfn a() { let o = InstallOutcome::AlreadyCurrent; }\nfn b(x: u8) -> u8 { match x { Located::Many(c) => c, _ => 0 } }\nfn c(k: u8) -> u8 { match k { Kind::RejectRecurrence { n } => n, _ => 0 } }\nfn e(cs: u8) { Hop::Frontier(cs); }\n";
+
+/// GIVEN a project whose one Rust file holds a row's uses - the field uses of
+/// [`FIELD_USES_SOURCE`] or the variant uses of [`VARIANT_USES_SOURCE`] -
 /// WHEN the operator runs `rigger graph build`,
-/// THEN the code store holds each field use as a `field` mention of its bare leaf, named as the
-/// Rust qualifier rule writes it - `system_prompt` unqualified, `SpawnOpts::system_prompt` as a
-/// path and `Store.root` as a member access - and `opts.run()` as a call alone, beside the type
-/// mentions of `SpawnOpts` and the impl headers' calls of their self types; and the graph's
-/// `REFERENCES` and `CALLS` edges land each where its name reaches: the unqualified
-/// `system_prompt` onto the one field of that name, `inferred` though that field is in its own
+/// THEN the code store holds exactly the row's mentions, each named as the Rust qualifier rule
+/// writes it, and the graph's `REFERENCES` and `CALLS` edges are exactly the row's, each landing
+/// where its name reaches, with the row's definitions as its code entities and no placeholder
+/// standing for any mention.
+///
+/// The field row: `system_prompt` unqualified, `SpawnOpts::system_prompt` as a path and
+/// `Store.root` as a member access are `field` mentions and `opts.run()` a call alone, beside the
+/// type mentions of `SpawnOpts` and the impl headers' calls of their self types; the unqualified
+/// `system_prompt` lands on the one field of that name `inferred` though that field is in its own
 /// file, as an unqualified field use never prefers its file; `SpawnOpts::system_prompt` and
-/// `Store.root` onto it and onto `Store`'s `root`, `extracted`, each qualifier narrowing its
+/// `Store.root` land on it and on `Store`'s `root` `extracted`, each qualifier narrowing its
 /// candidates to the one field its struct holds; and `opts.run()` as the call's two edges onto
-/// `SpawnOpts::run`. Its code entities are the definitions alone, no placeholder standing for any
-/// mention.
+/// `SpawnOpts::run`.
+///
+/// The variant row: `InstallOutcome::AlreadyCurrent` and `Located::Many(c) =>` are `variant`
+/// mentions named by their enum beside the `type` mention of that enum; `Kind::RejectRecurrence
+/// { n } =>` is the `variant` mention `Kind::RejectRecurrence` and the `field` mention
+/// `RejectRecurrence::n`, with no `type` mention of `Kind`; `Hop::Frontier(cs)` is the call
+/// `Hop::Frontier` beside the `type` mention of `Hop`; and `-> Self::Target` is the `type` mention
+/// `Target` alone. Each qualifier narrows its candidates to the one variant or field its enum or
+/// variant holds, so every edge is `extracted`: each variant use onto its variant, the field onto
+/// `RejectRecurrence`'s `n`, the call as the call's two edges onto the variant `Hop::Frontier`,
+/// and each type mention onto its enum or associated type.
 #[cfg(feature = "symbols")]
 #[test]
-fn graph_build_lands_each_rust_field_use_on_its_field_and_a_method_call_as_a_call() {
+fn graph_build_lands_each_rust_field_and_variant_use_on_its_definition_and_a_call_as_a_call() {
     use crate::symbol_index::mention_in;
     use rigger::contextgraph::query::entity_id;
-    use rigger::contextgraph::{REF_KIND_FIELD, REF_KIND_TYPE, TIER_EXTRACTED, TIER_INFERRED};
+    use rigger::contextgraph::{
+        REF_KIND_FIELD, REF_KIND_TYPE, REF_KIND_VARIANT, TIER_EXTRACTED, TIER_INFERRED,
+    };
 
     let file = "f.rs";
-    let (_project, graph) = common::cli::built_graph(&[(file, FIELD_USES_SOURCE)]);
-
-    let call_in = |at, leaf, line| mention_in(Some(at), leaf, leaf, None, line, false);
+    let call_in = |at, name, leaf, line| mention_in(Some(at), name, leaf, None, line, false);
     let tagged_in =
         |at, name, leaf, kind, line| mention_in(Some(at), name, leaf, Some(kind), line, false);
-    // A mention inside the definition at index `at` (`Store::at` is 5, `a` 6, `b` 7, and the
-    // impls of `SpawnOpts` and `Store` 8 and 9).
-    let mentions = vec![
-        tagged_in(5, "Store.root", "root", REF_KIND_FIELD, 4),
-        tagged_in(6, "system_prompt", "system_prompt", REF_KIND_FIELD, 5),
-        call_in(6, "run", 5),
-        tagged_in(
-            7,
-            "SpawnOpts::system_prompt",
-            "system_prompt",
-            REF_KIND_FIELD,
-            6,
-        ),
-        call_in(8, "SpawnOpts", 2),
-        call_in(9, "Store", 4),
-        tagged_in(6, "SpawnOpts", "SpawnOpts", REF_KIND_TYPE, 5),
-        tagged_in(7, "SpawnOpts", "SpawnOpts", REF_KIND_TYPE, 6),
-    ];
     let id = |path| entity_id(file, path);
-    let field = id("SpawnOpts.system_prompt");
-    let mut edges = [
-        common::fixtures::a_call_from(file, "impl SpawnOpts", &id("SpawnOpts"), TIER_EXTRACTED),
-        common::fixtures::a_call_from(file, "impl Store", &id("Store"), TIER_EXTRACTED),
-        common::fixtures::a_call_from(file, "a", &id("SpawnOpts::run"), TIER_EXTRACTED),
-    ]
-    .concat();
-    edges.extend([
-        common::fixtures::reference(&id("a"), &field, TIER_INFERRED),
-        common::fixtures::reference(&id("a"), &id("SpawnOpts"), TIER_EXTRACTED),
-        common::fixtures::reference(&id("b"), &field, TIER_EXTRACTED),
-        common::fixtures::reference(&id("b"), &id("SpawnOpts"), TIER_EXTRACTED),
-        common::fixtures::reference(&id("Store::at"), &id("Store.root"), TIER_EXTRACTED),
-    ]);
-    edges.sort();
-    let entities = [
-        "SpawnOpts",
-        "SpawnOpts.system_prompt",
-        "SpawnOpts::run",
-        "Store",
-        "Store.root",
-        "Store::at",
-        "a",
-        "b",
-        "impl SpawnOpts",
-        "impl Store",
-    ]
-    .map(id)
-    .to_vec();
-    assert_eq!(
+    // Each row: its source, the mentions the store holds for it, the `(caller, to)` of each call
+    // landed `extracted`, the `(from, to, tier)` of each other `REFERENCES` edge, its code
+    // entities, and why. A mention sits inside the definition at index `at`.
+    let cases = [
         (
-            graph.mentions(file),
-            common::fixtures::landed(&graph),
-            common::fixtures::live_file_and_entity_ids(&graph.whole().unwrap()),
+            FIELD_USES_SOURCE,
+            // `Store::at` is 5, `a` 6, `b` 7, and the impls of `SpawnOpts` and `Store` 8 and 9.
+            vec![
+                tagged_in(5, "Store.root", "root", REF_KIND_FIELD, 4),
+                tagged_in(6, "system_prompt", "system_prompt", REF_KIND_FIELD, 5),
+                call_in(6, "run", "run", 5),
+                tagged_in(
+                    7,
+                    "SpawnOpts::system_prompt",
+                    "system_prompt",
+                    REF_KIND_FIELD,
+                    6,
+                ),
+                call_in(8, "SpawnOpts", "SpawnOpts", 2),
+                call_in(9, "Store", "Store", 4),
+                tagged_in(6, "SpawnOpts", "SpawnOpts", REF_KIND_TYPE, 5),
+                tagged_in(7, "SpawnOpts", "SpawnOpts", REF_KIND_TYPE, 6),
+            ],
+            vec![
+                ("impl SpawnOpts", "SpawnOpts"),
+                ("impl Store", "Store"),
+                ("a", "SpawnOpts::run"),
+            ],
+            vec![
+                ("a", "SpawnOpts.system_prompt", TIER_INFERRED),
+                ("a", "SpawnOpts", TIER_EXTRACTED),
+                ("b", "SpawnOpts.system_prompt", TIER_EXTRACTED),
+                ("b", "SpawnOpts", TIER_EXTRACTED),
+                ("Store::at", "Store.root", TIER_EXTRACTED),
+            ],
+            vec![
+                "SpawnOpts",
+                "SpawnOpts.system_prompt",
+                "SpawnOpts::run",
+                "Store",
+                "Store.root",
+                "Store::at",
+                "a",
+                "b",
+                "impl SpawnOpts",
+                "impl Store",
+            ],
+            "each field use is stored a field mention named as Rust writes its qualifier and \
+             `opts.run()` a call; each lands where its name reaches, the unqualified one inferred, \
+             the qualified two extracted, the call as a call; and no placeholder stands for any \
+             mention",
         ),
-        (Some(mentions), edges, [vec![file.to_string()], entities]),
-        "each field use is stored a field mention named as Rust writes its qualifier and `opts.run()` \
-         a call; each lands where its name reaches, the unqualified one inferred, the qualified two \
-         extracted, the call as a call; and no placeholder stands for any mention"
-    );
+        (
+            VARIANT_USES_SOURCE,
+            // `Tr` is 9, `a` 12, `b` 13, `c` 14 and `e` 15.
+            vec![
+                tagged_in(14, "RejectRecurrence::n", "n", REF_KIND_FIELD, 8),
+                call_in(15, "Hop::Frontier", "Frontier", 9),
+                tagged_in(9, "Target", "Target", REF_KIND_TYPE, 5),
+                tagged_in(12, "InstallOutcome", "InstallOutcome", REF_KIND_TYPE, 6),
+                tagged_in(
+                    12,
+                    "InstallOutcome::AlreadyCurrent",
+                    "AlreadyCurrent",
+                    REF_KIND_VARIANT,
+                    6,
+                ),
+                tagged_in(13, "Located", "Located", REF_KIND_TYPE, 7),
+                tagged_in(13, "Located::Many", "Many", REF_KIND_VARIANT, 7),
+                tagged_in(
+                    14,
+                    "Kind::RejectRecurrence",
+                    "RejectRecurrence",
+                    REF_KIND_VARIANT,
+                    8,
+                ),
+                tagged_in(15, "Hop", "Hop", REF_KIND_TYPE, 9),
+            ],
+            vec![("e", "Hop::Frontier")],
+            vec![
+                ("Tr", "Tr::Target", TIER_EXTRACTED),
+                ("a", "InstallOutcome", TIER_EXTRACTED),
+                ("a", "InstallOutcome::AlreadyCurrent", TIER_EXTRACTED),
+                ("b", "Located", TIER_EXTRACTED),
+                ("b", "Located::Many", TIER_EXTRACTED),
+                ("c", "Kind::RejectRecurrence", TIER_EXTRACTED),
+                ("c", "Kind::RejectRecurrence.n", TIER_EXTRACTED),
+                ("e", "Hop", TIER_EXTRACTED),
+            ],
+            vec![
+                "Hop",
+                "Hop::Frontier",
+                "Hop::Frontier.0",
+                "InstallOutcome",
+                "InstallOutcome::AlreadyCurrent",
+                "Kind",
+                "Kind::RejectRecurrence",
+                "Kind::RejectRecurrence.n",
+                "Located",
+                "Located::Many",
+                "Located::Many.0",
+                "Tr",
+                "Tr::Target",
+                "Tr::get",
+                "a",
+                "b",
+                "c",
+                "e",
+            ],
+            "each variant use is stored a variant mention named by its enum, a struct pattern's \
+             field a field mention named by its variant with no type mention of its enum, a tuple \
+             variant's construction a call and a type-position path a type mention alone; each \
+             lands extracted on the one definition its qualifier narrows to, the call as a call; \
+             and no placeholder stands for any mention",
+        ),
+    ];
+    for (source, mentions, calls, references, entities, why) in cases {
+        let (_project, graph) = common::cli::built_graph(&[(file, source)]);
+        let mut edges: Vec<_> = (calls.iter())
+            .flat_map(|(caller, to)| {
+                common::fixtures::a_call_from(file, caller, &id(to), TIER_EXTRACTED)
+            })
+            .collect();
+        edges.extend(
+            (references.iter())
+                .map(|(from, to, tier)| common::fixtures::reference(&id(from), &id(to), tier)),
+        );
+        edges.sort();
+        assert_eq!(
+            (
+                graph.mentions(file),
+                common::fixtures::landed(&graph),
+                common::fixtures::live_file_and_entity_ids(&graph.whole().unwrap()),
+            ),
+            (
+                Some(mentions),
+                edges,
+                [
+                    vec![file.to_string()],
+                    entities.into_iter().map(id).collect()
+                ],
+            ),
+            "{why}"
+        );
+    }
 }
 
 /// A production file whose `#[cfg(test)]` module imports `Kestrel` and, in `fn check`, takes it
