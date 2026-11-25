@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use super::budget::{self, PROSE_TOP, REPLY_LIMIT, TEXT_TOTAL};
-use super::graph::{Answered, Entity, Site, TermGraph};
+use super::graph::{Answered, Entity, ReferrerSite, Site, TermGraph};
 #[cfg(feature = "symbols")]
 use super::normalise;
 use super::prose::{ProseHit, ProseIndex, Ranked};
@@ -1146,9 +1146,9 @@ fn a_lookup_of_no_term_is_refused() {
 // --- the reply budget ----------------------------------------------------------------------
 
 /// The worst case each section can be handed for `n` terms: every term reaching the most entities,
-/// each with the longest doc, the most callees and the most referrers under two labels (a block
-/// one term's share of the graph section still holds), the most lines kept of the longest length,
-/// and the top prose results at their longest.
+/// each with the longest doc, the most callees and the most referrers under two labels, each
+/// marked ambiguous (a block one term's share of the graph section still holds), the most lines
+/// kept of the longest length, and the top prose results at their longest.
 fn worst_case(n: usize) -> (Vec<String>, String) {
     let terms: Vec<String> = (0..n)
         .map(|i| format!("term_{i}_{}", "x".repeat(40)))
@@ -1161,6 +1161,10 @@ fn worst_case(n: usize) -> (Vec<String>, String) {
         file: Some((format!("src/{long}/f{i}.rs"), 12)),
         test: false,
     };
+    let referrer = |i: usize| ReferrerSite {
+        site: site(i),
+        ambiguous: true,
+    };
     let graph = refs
         .iter()
         .map(|_| TermGraph::Found {
@@ -1170,8 +1174,8 @@ fn worst_case(n: usize) -> (Vec<String>, String) {
                     site: site(i),
                     doc: Some(long.clone()),
                     referrers: vec![
-                        ("called by", (0..40).map(site).collect()),
-                        ("reads", (0..40).map(site).collect()),
+                        ("called by", (0..40).map(referrer).collect()),
+                        ("reads", (0..40).map(referrer).collect()),
                     ],
                     callees: (0..40).map(site).collect(),
                 })
@@ -1236,14 +1240,17 @@ crate::test_cases! {
     ]);
 }
 
-/// `n` sites `<prefix>0 (fn)` .. with no file.
-fn sites(prefix: &str, n: usize) -> Vec<Site> {
+/// `n` referrers at sites `<prefix>0 (fn)` .. with no file, none ambiguous.
+fn sites(prefix: &str, n: usize) -> Vec<ReferrerSite> {
     (0..n)
-        .map(|i| Site {
-            id: format!("{prefix}{i}"),
-            kind: "fn".to_string(),
-            file: None,
-            test: false,
+        .map(|i| ReferrerSite {
+            site: Site {
+                id: format!("{prefix}{i}"),
+                kind: "fn".to_string(),
+                file: None,
+                test: false,
+            },
+            ambiguous: false,
         })
         .collect()
 }
@@ -1525,17 +1532,19 @@ crate::test_cases! {
 
 /// A term the graph locates but no name reaches is answered by what it locates: each entity's
 /// doc, its referrers under each label in the labels' order, whatever order the graph lists them
-/// in, each at its mention's line and marked when it is test code, a file referrer by its file, and
-/// its direct callees with none of the walk's seed among them.
+/// in, each at its mention's line, marked `[test]` when it is test code and then `?` when it is
+/// ambiguous, a file referrer by its file, and its direct callees with none of the walk's seed
+/// among them.
 #[cfg(feature = "symbols")]
 #[test]
 fn a_located_term_is_answered_with_its_doc_referrers_and_callees() {
-    let referrer = |site: &str, kind: &str, label, line, test| Referrer {
+    let referrer = |site: &str, kind: &str, label, line, test, ambiguous| Referrer {
         site: site.to_string(),
         kind: kind.to_string(),
         label,
         line,
         test,
+        ambiguous,
     };
     let (dir, graph) = (
         tree(&[("a.rs", "fn target() { callee() }\n")]),
@@ -1546,10 +1555,10 @@ fn a_located_term_is_answered_with_its_doc_referrers_and_callees() {
             referrers: [(
                 "a.rs::target".to_string(),
                 vec![
-                    referrer("b.rs::reader", "function", "reads", 4, false),
-                    referrer("b.rs::caller", "function", "called by", 2, false),
-                    referrer("b.rs", KIND_FILE, "reads", 9, false),
-                    referrer("b.rs::checks", "function", "called by", 6, true),
+                    referrer("b.rs::reader", "function", "reads", 4, false, false),
+                    referrer("b.rs::caller", "function", "called by", 2, false, false),
+                    referrer("b.rs", KIND_FILE, "reads", 9, false, true),
+                    referrer("b.rs::checks", "function", "called by", 6, true, true),
                 ],
             )]
             .into(),
@@ -1563,7 +1572,7 @@ fn a_located_term_is_answered_with_its_doc_referrers_and_callees() {
     let expected = format!(
         "{}\n{}\n\n### the-alias\nexact match: 1 entity\n- a.rs:1 a.rs::target (function)\n  \
          Aims.\n  called by: b.rs:2 b.rs::caller (function); b.rs:6 b.rs::checks (function) \
-         [test]\n  reads: b.rs:4 b.rs::reader (function); b.rs:9 b.rs (file)\n  calls: c.rs:1 \
+         [test] ?\n  reads: b.rs:4 b.rs::reader (function); b.rs:9 b.rs (file) ?\n  calls: c.rs:1 \
          c.rs::callee (function)\n",
         held_label(),
         budget::GRAPH_FILTERED
