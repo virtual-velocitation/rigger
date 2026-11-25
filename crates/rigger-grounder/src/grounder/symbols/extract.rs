@@ -5383,6 +5383,29 @@ fn t(x: u8) {
 4 ref call vec t
 4 ref call vec t",
             ),
+            (
+                "a bare uppercase name no exclusion holds is no function value",
+                "fn u(v: u8) {\n    v.map(Wrap);\n}\n",
+                "\
+1 def Function u to 3
+2 ref call map u",
+            ),
+            (
+                "a path's prefix is no function value, the path whole one",
+                "fn y(v: u8) {\n    v.map(a::b::<u8>::c);\n}\n",
+                "\
+1 def Function y to 3
+2 ref call c y
+2 ref call map y",
+            ),
+            (
+                "a `let` of an `if`'s block condition binds nothing in its body",
+                "fn z(v: bool) {\n    if { let f = v; f } {\n        w(f);\n    }\n}\n",
+                "\
+1 def Function z to 5
+3 ref call f z
+3 ref call w z",
+            ),
         ];
         for (why, src, expected) in cases {
             assert_eq!(read_lines(src), expected, "{why}");
