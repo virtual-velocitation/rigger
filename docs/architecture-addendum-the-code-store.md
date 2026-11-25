@@ -348,7 +348,7 @@ format-string argument is one string literal, raw or not: the first argument of 
 `print!`, `println!`, `eprint!`, `eprintln!`, `panic!`, `format_args!`, `unreachable!`, `todo!`
 and `unimplemented!`, the second of `write!`, `writeln!`, `assert!` and `debug_assert!`, the third
 of `assert_eq!`, `assert_ne!`, `debug_assert_eq!` and `debug_assert_ne!`. A placeholder's argument
-and a width or precision `NAME$` count (`{TEMP}`, `{:W$}`), each at its own line; a `{{` or `}}`
+and a width or precision `NAME$` count (`{TEMP}`, `{:W$}`, the `W` of `{:0W$}`), each at its own line; a `{{` or `}}`
 escape, a name not so spelled (`{temp}`) and a name a named argument binds stage none, and neither
 does that argument's own name (`TEMP` of `format!("{TEMP}", TEMP = 1)`). A name the exclusions hold
 (a standard-library import, an enclosing const generic parameter) stages none in either position.

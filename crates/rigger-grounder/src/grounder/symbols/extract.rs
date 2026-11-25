@@ -1957,9 +1957,9 @@ fn format_arguments<'t>(
 
 /// THE FORMAT CAPTURES (spec 117, CONST READ): the byte spans of the names a format macro's
 /// `invocation` captures inline when its format string's argument is one string literal, raw or
-/// not ([`format_arguments`]): each [`inline_captures`] reads off a run of its literal text (an
-/// escape sequence is no such run), spelled as a constant ([`is_const_spelled`]) and bound by none
-/// of its named arguments.
+/// not ([`format_arguments`]), the one token holding `string_content`: each [`inline_captures`]
+/// reads off a run of its literal text (an escape sequence is no such run), spelled as a constant
+/// ([`is_const_spelled`]) and bound by none of its named arguments.
 fn format_captures(invocation: tree_sitter::Node, source: &[u8]) -> Vec<std::ops::Range<usize>> {
     let Some((string, named)) = format_arguments(invocation, source) else {
         return Vec::new();
@@ -1967,9 +1967,6 @@ fn format_captures(invocation: tree_sitter::Node, source: &[u8]) -> Vec<std::ops
     let [literal] = string[..] else {
         return Vec::new();
     };
-    if !matches!(literal.kind(), "string_literal" | "raw_string_literal") {
-        return Vec::new();
-    }
     let named: Vec<&[u8]> = named.iter().map(|n| &source[n.byte_range()]).collect();
     let mut cursor = literal.walk();
     let contents: Vec<_> = literal
@@ -1995,7 +1992,7 @@ fn format_captures(invocation: tree_sitter::Node, source: &[u8]) -> Vec<std::ops
 /// The byte spans in `text`, a format string's literal text, of what each of its placeholders
 /// CAPTURES inline (spec 117, CONST READ): a `{argument}`'s or `{argument:spec}`'s argument, its
 /// trailing whitespace trimmed, and each name the `spec` writes a width or precision `NAME$` by
-/// (`{:W$}`, `{:.P$}`). `{{` and `}}` escape a brace and open or close no placeholder. A span may
+/// (`{:W$}`, `{:.P$}`, the `W` of `{:0W$}` past its zero flag). `{{` and `}}` escape a brace and open or close no placeholder. A span may
 /// hold no name (`{}`, `{0}`, `{:1$}`); [`format_captures`] keeps the const-spelled ones.
 fn inline_captures(text: &str) -> Vec<std::ops::Range<usize>> {
     let bytes = text.as_bytes();
@@ -2014,12 +2011,15 @@ fn inline_captures(text: &str) -> Vec<std::ops::Range<usize>> {
                 spans.push(open..open + argument.trim_end().len());
                 let spec_at = open + argument.len() + 1;
                 for (dollar, _) in spec.match_indices('$') {
-                    let name = spec[..dollar]
+                    let run = spec[..dollar]
                         .bytes()
                         .rev()
                         .take_while(|b| b.is_ascii_alphanumeric() || *b == b'_')
                         .count();
-                    spans.push(spec_at + dollar - name..spec_at + dollar);
+                    // An identifier opens with no digit: `0W$` is the zero flag, then `W$`.
+                    let name =
+                        spec[dollar - run..dollar].trim_start_matches(|c: char| c.is_ascii_digit());
+                    spans.push(spec_at + dollar - name.len()..spec_at + dollar);
                 }
                 at = open + len + 1;
             }
@@ -2353,32 +2353,23 @@ fn is_const_read(node: tree_sitter::Node, leaf: tree_sitter::Node, source: &[u8]
         && leaf.utf8_text(source).is_ok_and(is_const_spelled)
 }
 
-/// Whether `node`, an `identifier` or a whole `scoped_identifier`, is a pattern of its own in a
-/// REFUTABLE pattern (spec 117, CONST READ), where a const-spelled name is a constant matched
-/// (`REF_KIND_TYPE =>`, `Some(ONE)`, `0..=TOP`) and never a binding: under a match arm's pattern
-/// (never its guard), an `if let`'s or `while let`'s pattern, or a let-else's, through any patterns
-/// nesting it. A tuple struct pattern's head (`C(D)` gives `C`), a `ref` or `mut` binding and the
-/// name a `name @` binds are none, nor is any name of an irrefutable pattern: a parameter's, a
-/// plain `let`'s, a `for`'s or a closure's.
+/// Whether `node`, an `identifier` or a whole `scoped_identifier` no expression reads
+/// ([`is_read`]), is a pattern of its own in a REFUTABLE pattern (spec 117, CONST READ), where a
+/// const-spelled name is a constant matched (`REF_KIND_TYPE =>`, `Some(ONE)`, `0..=TOP`) and never
+/// a binding: a match arm's pattern, an `if let`'s or `while let`'s, or a let-else's, through any
+/// patterns nesting it - a guard and a `let`'s value are read, so only a pattern climbs to them.
+/// A tuple struct pattern's head (`C(D)` gives `C`), a `ref` or `mut` binding and the name a
+/// `name @` binds are none, nor is any name of an irrefutable pattern: a parameter's, a plain
+/// `let`'s, a `for`'s or a closure's.
 fn in_refutable_pattern(node: tree_sitter::Node) -> bool {
-    let mut child = node;
-    while let Some(parent) = child.parent() {
-        let field = field_of(child);
-        match parent.kind() {
-            "match_pattern" => return field != Some("condition"),
-            "let_condition" => return field == Some("pattern"),
-            "let_declaration" => {
-                return field == Some("pattern")
-                    && parent.child_by_field_name("alternative").is_some();
-            }
-            "tuple_struct_pattern" if field == Some("type") => return false,
-            "ref_pattern" | "mut_pattern" => return false,
-            "captured_pattern" if parent.named_child(0) == Some(child) => return false,
-            kind if kind.ends_with("_pattern") => child = parent,
-            _ => return false,
-        }
-    }
-    false
+    node.parent().is_some_and(|parent| match parent.kind() {
+        "match_pattern" | "let_condition" => true,
+        "let_declaration" => parent.child_by_field_name("alternative").is_some(),
+        "tuple_struct_pattern" if field_of(node) == Some("type") => false,
+        "ref_pattern" | "mut_pattern" => false,
+        "captured_pattern" if parent.named_child(0) == Some(node) => false,
+        kind => kind.ends_with("_pattern") && in_refutable_pattern(parent),
+    })
 }
 
 /// Whether `node`, a `scoped_identifier`, is a WHOLE expression or pattern path: no prefix of a
@@ -6510,7 +6501,8 @@ class K
     fn rust_references_are_tagged_by_kind_and_every_excluded_name_stages_nothing() {
         let cases = [
             // A const read is an all-caps identifier or the final identifier of a whole expression
-            // path, a type reference a type name or an uppercase path's final identifier in
+            // path (or refutable pattern path, or a format string's inline capture:
+            // `rust_reads_pattern_and_format_constants`), a type reference a type name or an uppercase path's final identifier in
             // expression position, a `use` each imported leaf; a definition's own name stages
             // nothing.
             (
@@ -6761,7 +6753,8 @@ impl Clone for Kestrel {}
             // match arm's pattern, a digit-bearing const and a whole path's final identifier do,
             // and an uppercase segment before it is a type.
             (
-                "no non-read or opaque position stages a const read",
+                "no irrefutable, non-read or opaque position stages a const read, a match arm's \
+                 pattern does",
                 "\
 #![doc = INNER_CAP]
 #[doc = OUTER_CAP]
