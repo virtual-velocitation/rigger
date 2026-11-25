@@ -691,10 +691,11 @@ fn it_starts() {
 /// GIVEN a built project holding [`READERS`], WHEN `rigger graph --lookup` reads the constant and
 /// the type, THEN the lookup names each one's referrers by kind: the constant's doc's first line
 /// under its site line, then a `reads:` line naming the two product functions at the lines that
-/// read it, in source order, and neither test reader, though the `#[cfg(test)]` reader's id is the
-/// product `helper`'s; the type's `type use:` line names the function whose signature names it.
-/// Read the same way, the function's `called by:` line names each product call at the call's own
-/// line, once per call, in source order, and not the `#[test]` function's call.
+/// read it, in mention order (line order here, since no reader sits in a macro's arguments), and
+/// neither test reader, though the `#[cfg(test)]` reader's id is the product `helper`'s; the type's
+/// `type use:` line names the function whose signature names it. Read the same way, the
+/// function's `called by:` line names each product call at the call's own line, once per call, in
+/// mention order, and not the `#[test]` function's call.
 #[test]
 fn the_lookup_names_referrers_by_kind() {
     let dir = temp_project();

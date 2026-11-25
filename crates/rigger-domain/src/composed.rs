@@ -427,7 +427,7 @@ pub trait CodeHalf: Neighbors {
     /// The candidate ids the down-hop of the placeholder `id` keeps, when it is keyed by a
     /// qualified name ([`CodeGraph::down_hop`]); none for any other id.
     fn down_hop(&self, id: &str) -> Option<Vec<String>>;
-    /// Every referrer of the code entity `id`, test ones too, in path then source order
+    /// Every referrer of the code entity `id`, test ones too, in path then mention order
     /// ([`crate::resolve::Resolver::referrers`]).
     fn referrers(&self, id: &str) -> Vec<Referrer>;
     /// The files the attributes of the grouping `id` summarise, by [`fact_file`]: its members'

@@ -865,9 +865,9 @@ impl<'v> Resolver<'v> {
         }
     }
 
-    /// The referrers `mentions`, mentions of `facts` in file order, make, each with an id it is
-    /// listed under ([`Self::listed`]): one per mention and id, in mention order. A mention of a
-    /// tag [`crate::contextgraph::REFERRER_LABELS`] holds no row for makes none.
+    /// The referrers `mentions`, mentions of `facts` in the order `facts` lists them, make, each
+    /// with an id it is listed under ([`Self::listed`]): one per mention and id, in mention order.
+    /// A mention of a tag [`crate::contextgraph::REFERRER_LABELS`] holds no row for makes none.
     pub fn file_referrers<'f>(
         &self,
         facts: &'f FileFacts,
@@ -906,9 +906,10 @@ impl<'v> Resolver<'v> {
         referrers
     }
 
-    /// Every referrer of the code entity `id` ([`Self::file_referrers`]), in path then source
-    /// order, read from the code files holding a mention of a name its definitions carry
-    /// ([`Self::leaves_of`]); none for an id no definition of a code file holds.
+    /// Every referrer of the code entity `id` ([`Self::file_referrers`]), in path then mention
+    /// order (the order a file's extraction lists its mentions, which need not be line order), read
+    /// from the code files holding a mention of a name its definitions carry ([`Self::leaves_of`]);
+    /// none for an id no definition of a code file holds.
     pub fn referrers(&self, id: &str) -> Vec<Referrer> {
         let leaves = self.leaves_of(id);
         let files: BTreeSet<&str> = (leaves.iter())
@@ -2687,7 +2688,7 @@ pub(crate) mod tests {
     }
 
     /// READERS (spec 117): `Resolver::referrers` lists each mention under every id its own rule
-    /// lists it under, in path then source order, one item per mention, a repeated call
+    /// lists it under, in path then mention order, one item per mention, a repeated call
     /// included: a settled call or reference under its target, the one its qualifier keeps or
     /// its one field included, a call through a placeholder under each candidate the
     /// placeholder keeps, a reference no one candidate takes under each it took none from, the

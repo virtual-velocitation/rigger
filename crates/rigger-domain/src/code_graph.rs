@@ -303,7 +303,7 @@ impl<'v> CodeGraph<'v> {
     }
 
     /// Every referrer the view's code files make ([`Resolver::file_referrers`]), test ones too,
-    /// by the id each is listed under, each id's in path then source order: what
+    /// by the id each is listed under, each id's in path then mention order: what
     /// [`Resolver::referrers`] reads for one id. Read apart from [`Self::resolved`], so a read
     /// that is never walked lists none.
     pub fn referrers(&self) -> BTreeMap<String, Vec<Referrer>> {
