@@ -151,7 +151,20 @@ const CSHARP_DEFINITION_TAGS: [&str; 18] = [
 ///   before a conditional's `?`, and the type argument of a one-argument generic the grammar
 ///   splits there into comparisons, `A` of `x is Gen<A> & ok ? 1 : 0`, read `x is Gen < A > &ok`,
 ///   whose last operand is a prefix `&` or `^`, `&&` read as two, directly or first in the node
-///   there, as in `& s switch { _ => ok }`.
+///   there, as in `& s switch { _ => ok }`;
+/// - a generic name of two type arguments the grammar splits at its comma into two adjacent
+///   elements of a list ([`CSHARP_SPLIT_LISTS`]), an argument list, an index, parentheses it
+///   reads as a tuple, an initializer, a collection expression, an interpolation, whose comma it
+///   reads as an alignment, or a `for` clause, as it reads `F(x is Gen<A, B> & s is null)` as
+///   `x is Gen < A` and `B > &s is null`: the generic's own name and its first type argument, a
+///   generic one's type arguments included, from the `<` comparison the grammar keeps as the
+///   constant pattern after `is`, under a `not` or as the right of an `and` or an `or`, so
+///   `x is Foo < ok` stages both too; and its second type argument, the left operand of the `>`
+///   comparison opening the next element, when the first element ends in the `is` expression
+///   through at most [`CSHARP_SPLIT_BOUND`], 2, nodes, its last named children, as a lambda's
+///   body, an assigned value and a right operand are, and the second reaches that left operand
+///   through at most [`CSHARP_SPINE_BOUND`], 16, nodes, its first named children, each operator
+///   one, so `& s is null` and fourteen `&& ok` after it are staged and fifteen none.
 ///
 /// None is a type in:
 ///
@@ -171,7 +184,7 @@ const CSHARP_DEFINITION_TAGS: [&str; 18] = [
 ///   since no pattern keyword stands there, and so does a name only starting with a keyword,
 ///   `notable` of `x is notable<A> && ok`;
 /// - a predefined type; an identifier that is itself an operand of an arithmetic, a shift or a
-///   relational expression, as `case Cf + 1:`, `x is Foo << 1` and `x is Foo < ok` are, the right
+///   relational expression, as `case Cf + 1:`, `x is Foo << 1` and `case Cf < 1:` are, the right
 ///   operand of a looser operator, `Bar` of `x is Foo == Bar`, or a prefix expression's operand,
 ///   `case -Ch:`, while `case (Cf) + 1:` is a cast of `+1` to the grammar, `Cf` the cast's type,
 ///   and the leftmost operand of a looser chain that, in parentheses, is the first operand of such
@@ -180,11 +193,9 @@ const CSHARP_DEFINITION_TAGS: [&str; 18] = [
 ///   `var` pattern and a discard; a property subpattern's name, an extended one the field it
 ///   names; a tuple pattern's elements; and a list after `is` whose slice holds a pattern or
 ///   precedes one, which the grammar fails to parse;
-/// - a left operand past the bound above; and a generic name of two or more type arguments the
-///   grammar splits at its commas into elements of a list, an argument list, an index, an
-///   initializer, a collection, a `for` update, an interpolation or parentheses it then reads as
-///   a tuple, as `F(x is Gen<A, B> & s is null)` is, whose kept `Gen < A` is a relational
-///   expression, while `F(x is Gen<A, B> & ok)`, kept whole, is the left operand above;
+/// - a left operand past the bound above, and a split generic's second type argument past either
+///   bound above, `B` of `F(b = b = b = x is Gen<A, B> & s is null)`, its own name and first type
+///   argument staged still;
 /// - a call in a case's body or `when` or in an expression's collection; a positional pattern
 ///   directly in a second pair of parentheses, which the grammar nests as a further expression,
 ///   and a list directly in a second pair or nested in a collection-expression list's element; a
@@ -201,14 +212,44 @@ fn csharp_reference_tags() -> String {
         format!("(collection_expression (collection_element (expression_element {element})))");
     let operand = format!("[{names} {list} (parenthesized_expression [{names} {list}])]");
     let left = format!("(_ left: {operand} operator: {CSHARP_LOOSER_OPERATORS})");
-    let spines = std::iter::successors(Some(left), |spine| Some(first_child(spine)));
     let chains = std::iter::once(operand)
-        .chain(spines.take(CSHARP_SPINE_BOUND))
+        .chain(nested(left, first_child).take(CSHARP_SPINE_BOUND))
         .map(|spine| format!("((constant_pattern {spine}) @reference.type {guard})"))
         .collect::<Vec<_>>()
         .join("\n");
     let prefix = r#"(prefix_unary_expression ["&" "^"])"#;
     let closing = format!("[{prefix} {}]", first_child(prefix));
+    let after_is = |kept: &str| {
+        format!(
+            "(is_pattern_expression pattern: [{kept} (negated_pattern {kept}) \
+             (and_pattern right: {kept}) (or_pattern right: {kept})])"
+        )
+    };
+    let kept = |own: &str, first: &str| {
+        format!(r#"(constant_pattern (_ left: {own} operator: "<" right: {first}))"#)
+    };
+    let generic = "[(identifier) (generic_name)]";
+    let own = after_is(&kept("(identifier) @name", generic));
+    let first = after_is(&kept("(identifier)", &format!("{generic} @name")));
+    let split = after_is(&kept("(identifier)", generic));
+    let opening = r#"(_ left: (identifier) @name operator: ">")"#.to_string();
+    let within = |inner: String, wrap: fn(&str) -> String, spines: usize| {
+        format!(
+            "[{}]",
+            nested(inner, wrap)
+                .take(spines)
+                .collect::<Vec<_>>()
+                .join(" ")
+        )
+    };
+    let before = within(split, last_child, CSHARP_SPLIT_BOUND + 1);
+    let after = within(opening, first_child, CSHARP_SPINE_BOUND);
+    let lists = CSHARP_SPLIT_LISTS
+        .map(|list| {
+            let list = list.replace("{before}", &before).replace("{after}", &after);
+            format!("({list} @reference.type {guard})")
+        })
+        .join("\n");
     format!(
         r#"
 (class_declaration
@@ -242,6 +283,9 @@ fn csharp_reference_tags() -> String {
   operator: ">"
   right: {closing})
   @reference.type
+({own} @reference.type {guard})
+({first} @reference.type {guard})
+{lists}
 (type_argument_list [(identifier) (generic_name)] @name) @reference.type
 ((invocation_expression
   function: (member_access_expression expression: (identifier) @qualifier.member name: (identifier) @name))
@@ -270,13 +314,40 @@ const CSHARP_CALLED: &str = "(_ function: (identifier) @name)";
 /// one, and compiles far faster than the typed node.
 const CSHARP_LOOSER_OPERATORS: &str = r#"["==" "!=" "&" "^" "|" "&&" "||" "??"]"#;
 
-/// The most nodes between a constant pattern and the left operand it stages.
+/// The most nodes between a constant pattern, or the place of the element after a generic's split
+/// comma, and the left operand it stages.
 const CSHARP_SPINE_BOUND: usize = 16;
 
 /// Any node whose first named child is `inner`.
 fn first_child(inner: &str) -> String {
     format!("(_ . {inner})")
 }
+
+/// Any node whose last named child is `inner`.
+fn last_child(inner: &str) -> String {
+    format!("(_ {inner} .)")
+}
+
+/// `inner`, then `wrap` of it, then `wrap` of that, and so on.
+fn nested(inner: String, wrap: fn(&str) -> String) -> impl Iterator<Item = String> {
+    std::iter::successors(Some(inner), move |spine| Some(wrap(spine)))
+}
+
+/// The most nodes between the place of the element before a generic's split comma and the `is`
+/// expression that element ends in.
+const CSHARP_SPLIT_BOUND: usize = 2;
+
+/// The C# lists whose elements a generic's comma can split, read as the list's own: the element
+/// before it, `{before}`, directly followed by the element after it, `{after}`.
+const CSHARP_SPLIT_LISTS: [&str; 7] = [
+    "(argument_list (argument {before}) . (argument {after}))",
+    "(bracketed_argument_list (argument {before}) . (argument {after}))",
+    "(tuple_expression (argument {before}) . (argument {after}))",
+    "(initializer_expression {before} . {after})",
+    "(collection_expression (collection_element (expression_element {before})) . (collection_element (expression_element {after})))",
+    "(interpolation {before} . (interpolation_alignment_clause {after}))",
+    "(for_statement {before} . {after})",
+];
 
 /// The comment runs a C# definition's doc patterns capture, in order ([`csharp_tags`]): the whole
 /// run of comments directly above the definition, then that run less its first comment, then
