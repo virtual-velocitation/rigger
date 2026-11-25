@@ -441,6 +441,7 @@ fn a_sibling_using_a_daemon_the_session_started(
     );
 }
 
+// Each end names the one process besides the main it was sent to.
 rigger::test_cases! {
     a_sibling_sees_a_kept_sessions_daemon_end_with_it:
         a_sibling_using_a_daemon_the_session_started(
@@ -458,6 +459,62 @@ rigger::test_cases! {
             1,
             Reading::Held,
         );
+}
+
+/// Why the user's service manager cannot start a transient scope here, read from the attempt's own
+/// error; `None` when it can.
+fn no_user_scope() -> Option<String> {
+    match std::process::Command::new("systemd-run")
+        .args(["--user", "--scope", "--quiet", "true"])
+        .output()
+    {
+        Err(error) => Some(format!("systemd-run cannot run: {error}")),
+        Ok(out) if !out.status.success() => Some(format!(
+            "systemd-run --user --scope fails ({}): {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        )),
+        Ok(_) => None,
+    }
+}
+
+/// A process the user's service manager moved into a transient scope of its own runs on past the
+/// keeper's end, named with that scope, and the end returns inside its bound, never waiting it out.
+/// The test runner's user namespace (`.cargo/pidns-runner.sh`) cannot reach the user's service manager, so
+/// on a workstation the row skips, saying why; CI runs its tests outside that namespace.
+#[test]
+fn a_kept_end_leaves_a_process_the_service_manager_holds_in_a_scope_of_its_own_and_names_it() {
+    if let Some(reason) = no_user_scope() {
+        eprintln!("SKIP: no transient user scope here, so no process is held apart: {reason}");
+        return;
+    }
+    let mut witness = Witness::new();
+    let mut tree = kept(
+        &witness,
+        "systemd-run --user --scope --quiet sh -c 'printf u >&9; read -r unused <&8' & up; held",
+    );
+    assert!(witness.wait_up(2), "the scoped process and the main are up");
+    let shell = os_process::executable_name(tree.id());
+    let started = Instant::now();
+
+    let report = tree.end();
+
+    let elapsed = started.elapsed();
+    let held: Vec<(String, bool)> = report
+        .held_apart
+        .iter()
+        .map(|held| (held.process.program.clone(), held.unit.starts_with("run-")))
+        .collect();
+    assert_eq!(
+        (held, report.residue.is_empty(), witness.read()),
+        (vec![(shell, true)], true, Reading::Held),
+        "the scoped process runs on, named with its unit: {report:?}"
+    );
+    assert!(
+        elapsed < END_BOUND,
+        "the end waits on no process it leaves: {elapsed:?}"
+    );
+    assert_eq!(witness.release(), Reading::Ended);
 }
 
 #[test]

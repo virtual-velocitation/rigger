@@ -152,6 +152,12 @@ pub(super) fn arguments(pid: u32) -> Option<Vec<String>> {
     })
 }
 
+/// `/proc/<pid>/cgroup` read whole: one `hierarchy-ID:controllers:path` line per hierarchy
+/// (`cgroups(7)`), the single line `0::<path>` on a host with the unified hierarchy alone.
+pub(super) fn cgroup(pid: u32) -> Option<String> {
+    std::fs::read_to_string(proc_of(pid).join("cgroup")).ok()
+}
+
 /// The first letter of `/proc/<pid>/stat`'s state field: `R` running, `S` sleeping, `D`
 /// uninterruptible sleep, `T` stopped by job control, `t` stopped under a tracer, `Z` zombie, and
 /// so on.

@@ -1307,8 +1307,8 @@ mod forks_at_stop {
     /// What a row's ending leaves running.
     #[derive(Clone, Copy, Debug)]
     enum Leaves {
-        /// Nothing the session started; an ordinary end names in its progress line the holder it
-        /// was sent to.
+        /// Nothing the session started; its end, a stop's or an ordinary one, names in its
+        /// progress line the holder it was sent to.
         Nothing,
         /// The process the session started before its result, which a watched tree's ordinary
         /// end leaves alone (its main has exited), or one that left a watched tree before the
@@ -1428,6 +1428,17 @@ mod forks_at_stop {
             assert!(
                 named,
                 "{mode}: the ordinary end names the holder it was sent to: {:?}",
+                fx.activities()
+            );
+        }
+        if let (Window::Silence(_), Leaves::Nothing) = (window, leaves) {
+            let holder = format!(" ({})", shell_name());
+            let named = fx.activities().into_iter().any(|line| {
+                line.contains("the end of the session was sent to ") && line.contains(&holder)
+            });
+            assert!(
+                named,
+                "{held:?} {mode}: the stop names the holder it was sent to: {:?}",
                 fx.activities()
             );
         }

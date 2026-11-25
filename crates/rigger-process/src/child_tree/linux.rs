@@ -14,7 +14,7 @@
 //! standard streams once the main holds them, so it keeps none of the session's streams open.
 
 use super::{line_channel, Contain, Containment, Hold, ReapedChild, Why};
-use crate::reap::{self, EndReport, Identity, Leftover, END_BOUND};
+use crate::reap::{self, EndReport, HeldApart, Identity, Leftover, END_BOUND};
 use crate::{os_process, subprocess, whole_line};
 use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
@@ -302,7 +302,8 @@ impl Keeper {
 
     /// Ends the tree ([`crate::reap::end_own_descendants`]), asking each member to exit first when
     /// `graceful` and reaping as it walks, then writes why it signalled by pid if it did, what the
-    /// end was sent to, what it left running and what it never signalled, then that it ended.
+    /// end was sent to, what it left running, what it never signalled and what it left to the unit
+    /// a service manager holds it in, then that it ended.
     fn end(mut self, graceful: bool) -> i32 {
         let report = reap::end_own_descendants(graceful, || self.reap_ready());
         let records = report
@@ -312,6 +313,7 @@ impl Keeper {
             .chain(report.sent.into_iter().map(Record::Sent))
             .chain(report.residue.into_iter().map(Record::Residue))
             .chain(report.skipped.into_iter().map(Record::Skipped))
+            .chain(report.held_apart.into_iter().map(Record::Left))
             .chain([Record::Ended]);
         for record in records {
             tell(&mut self.status, &record);
@@ -481,6 +483,7 @@ impl Kept {
             Some(Record::Sent(left)) => self.report.add_sent(left),
             Some(Record::Residue(left)) => self.report.residue.push(left),
             Some(Record::Skipped(left)) => self.report.skipped.push(left),
+            Some(Record::Left(held)) => self.hold_apart(held),
             Some(Record::ByPid(reason)) => self.report.by_pid_because = Some(reason),
             Some(Record::Ended) => self.ended = true,
             _ => whole_line::say(format_args!(
@@ -491,6 +494,19 @@ impl Kept {
         }
     }
 
+    /// Reports `held` as left to the unit that holds it, unless it is already.
+    fn hold_apart(&mut self, held: HeldApart) {
+        let pid = held.process.pid;
+        if !self
+            .report
+            .held_apart
+            .iter()
+            .any(|known| known.process.pid == pid)
+        {
+            self.report.held_apart.push(held);
+        }
+    }
+
     /// Adds `other` to what the end reports.
     fn merge(&mut self, other: EndReport) {
         for left in other.sent {
@@ -498,6 +514,9 @@ impl Kept {
         }
         self.report.residue.extend(other.residue);
         self.report.skipped.extend(other.skipped);
+        for held in other.held_apart {
+            self.hold_apart(held);
+        }
         self.report.faults.extend(other.faults);
         self.report.by_pid_because = self.report.by_pid_because.take().or(other.by_pid_because);
     }
@@ -665,10 +684,12 @@ pub(super) enum Record {
     Residue(Leftover),
     /// A process the keeper's end found and never signalled.
     Skipped(Leftover),
+    /// A process the keeper's end left running to the unit a service manager holds it in.
+    Left(HeldApart),
     /// The keeper's end addressed each process by its pid, for this reason
     /// ([`crate::reap::EndReport::by_pid_because`]).
     ByPid(String),
-    /// The keeper's end left no process of the tree running but those its residue and skipped
+    /// The keeper's end left no process of the tree running but those its residue, skipped and left
     /// records named.
     Ended,
 }
@@ -676,7 +697,9 @@ pub(super) enum Record {
 impl Record {
     /// The record as one line, without its line end: its tag, then its fields, each after one
     /// space. A leftover's program is its last field, everything after its pid's space, and a
-    /// reason is all after its tag's space, each line end in either written as a space.
+    /// reason is all after its tag's space, each line end in either written as a space. A left
+    /// record's unit follows its program as one last field, escaped as a service manager escapes a
+    /// unit name ([`Record::escaped`]), so a space in the program never moves it.
     pub(super) fn encode(&self) -> String {
         match self {
             Record::Spawned(pid) => format!("spawned {pid}"),
@@ -687,6 +710,11 @@ impl Record {
             Record::Sent(left) => format!("sent {}", Record::fields(left)),
             Record::Residue(left) => format!("residue {}", Record::fields(left)),
             Record::Skipped(left) => format!("skipped {}", Record::fields(left)),
+            Record::Left(held) => format!(
+                "left {} {}",
+                Record::fields(&held.process),
+                Record::escaped(&held.unit)
+            ),
             Record::ByPid(reason) => format!("bypid {}", reason.replace(['\n', '\r'], " ")),
             Record::Ended => "ended".to_string(),
         }
@@ -708,6 +736,7 @@ impl Record {
             ("sent", Some(rest)) => Record::leftover(rest).map(Record::Sent),
             ("residue", Some(rest)) => Record::leftover(rest).map(Record::Residue),
             ("skipped", Some(rest)) => Record::leftover(rest).map(Record::Skipped),
+            ("left", Some(rest)) => Record::held(rest).map(Record::Left),
             ("bypid", Some(reason)) => Some(Record::ByPid(reason.to_string())),
             _ => None,
         }
@@ -727,6 +756,35 @@ impl Record {
             program: program.to_string(),
             stopped: false,
         })
+    }
+
+    /// The held-apart process `fields` names: a leftover's fields ([`Record::leftover`]), then a
+    /// space and its escaped unit ([`Record::escaped`]); `None` unless they are all there.
+    fn held(fields: &str) -> Option<HeldApart> {
+        let (pid, rest) = fields.split_once(' ')?;
+        let (program, unit) = rest.rsplit_once(' ')?;
+        Some(HeldApart {
+            process: Record::leftover(&format!("{pid} {program}"))?,
+            unit: Record::unescaped(unit),
+        })
+    }
+
+    /// `unit` as one field: each backslash, space and line end written as `\x` and its two hex
+    /// digits, as systemd escapes a unit name (`systemd-escape(1)`).
+    fn escaped(unit: &str) -> String {
+        unit.replace('\\', "\\x5c")
+            .replace(' ', "\\x20")
+            .replace('\n', "\\x0a")
+            .replace('\r', "\\x0d")
+    }
+
+    /// The unit [`Record::escaped`] wrote as `field`.
+    fn unescaped(field: &str) -> String {
+        field
+            .replace("\\x20", " ")
+            .replace("\\x0a", "\n")
+            .replace("\\x0d", "\r")
+            .replace("\\x5c", "\\")
     }
 }
 
@@ -766,6 +824,10 @@ mod tests {
         a_residue_record_round_trips: round_trips(Record::Residue(leftover(7, "sh -c sleep 30")));
         a_skipped_record_round_trips: round_trips(Record::Skipped(leftover(9, " sh  -c x ")));
         a_leftover_with_no_program_round_trips: round_trips(Record::Residue(leftover(11, "")));
+        a_left_record_round_trips: round_trips(Record::Left(held(13, "conmon", "run-r9.scope")));
+        a_left_record_with_spaces_and_escapes_in_its_program_and_unit_round_trips: round_trips(
+            Record::Left(held(13, " my  prog ", "a b\\x20\\x5c.scope"))
+        );
         an_end_record_round_trips: round_trips(Record::Ended);
         a_signalled_by_pid_record_round_trips: round_trips(Record::ByPid(
             "opening one fails here: Too many open files (os error 24)".to_string()
@@ -780,6 +842,51 @@ mod tests {
         assert_eq!(
             Record::decode(&line),
             Some(Record::ByPid("fails here ".to_string()))
+        );
+    }
+
+    /// A process `program`, left to the unit named `unit`, as the keeper reports one.
+    fn held(pid: u32, program: &str, unit: &str) -> HeldApart {
+        HeldApart {
+            process: leftover(pid, program),
+            unit: unit.to_string(),
+        }
+    }
+
+    /// A left record's unit is written as a service manager escapes a unit name, a space as `\x20`
+    /// and a backslash as `\x5c`, so the record stays one line of fields its program cannot shift.
+    #[test]
+    fn a_left_record_writes_its_unit_as_one_escaped_field() {
+        let line = Record::Left(held(13, "a b", "x y\\z\n.scope")).encode();
+
+        assert_eq!(line, "left 13 a b x\\x20y\\x5cz\\x0a.scope");
+    }
+
+    /// The keeper's records and an end merged after them may each leave one process to its unit:
+    /// the kept end names each such process once.
+    #[test]
+    fn a_kept_end_names_each_process_left_to_its_unit_once() {
+        let lines = [
+            Record::Left(held(7, "conmon", "run-r9.scope")),
+            Record::Left(held(7, "conmon", "run-r9.scope")),
+        ]
+        .map(|record| record.encode());
+        let merged = EndReport {
+            held_apart: vec![
+                held(7, "conmon", "run-r9.scope"),
+                held(8, "dbus", "dbus.service"),
+            ],
+            ..EndReport::default()
+        };
+
+        let report = kept_report(&lines, merged);
+
+        assert_eq!(
+            report.held_apart,
+            vec![
+                held(7, "conmon", "run-r9.scope"),
+                held(8, "dbus", "dbus.service")
+            ]
         );
     }
 
@@ -862,6 +969,8 @@ mod tests {
 
     crate::test_cases! {
         an_empty_line_is_no_record: refused("");
+        a_left_record_with_no_unit_is_no_record: refused("left 7 conmon");
+        a_left_record_with_no_program_or_unit_is_no_record: refused("left 7");
         an_unknown_tag_is_no_record: refused("launched 12");
         a_spawn_record_with_no_pid_is_no_record: refused("spawned");
         a_spawn_record_with_a_negative_pid_is_no_record: refused("spawned -1");

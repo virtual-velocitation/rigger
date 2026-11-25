@@ -429,4 +429,5 @@ pub(super) use super::read_then_checked as arguments_of;
 
 /// The path the OS reports for the image this process runs.
 pub(super) use super::command_file_name as executable_name;
+pub(super) use super::no_cgroup as cgroup;
 pub(super) use super::reported_image as running_image;

@@ -356,7 +356,8 @@ fn toctou_still_same_process(
 /// [`toctou_still_same_process`]. This is the cwd half of the TOCTOU guard (spec 78): a pid
 /// that exited and was recycled onto an unrelated process (even one that happens to also be
 /// rooted under `base`) between the scan and this call is silently skipped, never signalled,
-/// and so is a pid whose cwd cannot be read or that cannot be addressed.
+/// and so is a pid whose cwd cannot be read or that cannot be addressed. One a service manager
+/// holds apart ([`EndOs::held_apart`]) is never signalled either: answers its unit.
 fn signal_if_unchanged(
     os: &mut impl EndOs,
     target: &Identity,
@@ -364,16 +365,18 @@ fn signal_if_unchanged(
     self_pid: u32,
     self_ancestors: &HashSet<u32>,
     signal: Signal,
-) {
-    let Some(to) = os.address(target.pid) else {
-        return;
-    };
-    if !os_process::cwd_lies_in(target.pid, base) {
-        return;
+) -> Option<String> {
+    let to = os.address(target.pid)?;
+    if !os_process::cwd_lies_in(target.pid, base)
+        || !toctou_still_same_process(target, started(&to), self_pid, self_ancestors)
+    {
+        return None;
     }
-    if toctou_still_same_process(target, started(&to), self_pid, self_ancestors) {
+    let held = os.held_apart(target.pid);
+    if held.is_none() {
         os.send(signal, &to);
     }
+    held
 }
 
 /// The fault an end reports when a freeze it sent to `pid` by the pid alone reached another
@@ -769,6 +772,47 @@ impl Leftover {
     }
 }
 
+/// A process an end left running, never signalled, because a service manager holds it in a unit
+/// other than the one the process ending it runs in ([`held_apart`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HeldApart {
+    /// The process, as it read when the end left it.
+    pub process: Leftover,
+    /// The name of the unit that holds it, as the service manager names it: `run-r9.scope`.
+    pub unit: String,
+}
+
+/// The unit a service manager holds a process in apart from the process ending it: the name of
+/// the process's unit when `reference`, the ending process's cgroup file
+/// ([`crate::os_process::cgroup`]), and `process`, the process's, each read the unified hierarchy
+/// alone and each name a unit ([`unit_of`]), and the two units differ. Every other reading, a file
+/// that is missing or unreadable, a host with a v1 or hybrid hierarchy, or a group under no unit,
+/// answers `None`: the process is ended, as every process was before an end read cgroups.
+fn held_apart(reference: Option<&str>, process: Option<&str>) -> Option<String> {
+    let reference = unit_of(unified_path(reference?)?)?;
+    let unit = unit_of(unified_path(process?)?)?;
+    (unit != reference).then(|| unit.rsplit('/').next().unwrap_or(unit).to_string())
+}
+
+/// The path of the one group a cgroup file names on a host with the unified hierarchy alone: the
+/// file is the single line `0::<path>` (`cgroups(7)`). `None` for any other file.
+fn unified_path(cgroup: &str) -> Option<&str> {
+    let mut lines = cgroup.lines();
+    let path = lines.next()?.strip_prefix("0::")?;
+    lines.next().is_none().then_some(path)
+}
+
+/// The unit a group's `path` lies in: the path through its deepest component a service manager
+/// names a unit it runs a process in, a `.scope` or a `.service`. `None` for a path under no unit.
+fn unit_of(path: &str) -> Option<&str> {
+    let end = path
+        .match_indices('/')
+        .map(|(at, _)| at)
+        .chain([path.len()])
+        .rfind(|&at| path[..at].ends_with(".scope") || path[..at].ends_with(".service"))?;
+    Some(&path[..end])
+}
+
 /// What an end signalled and what it left: `sent`, the processes besides the main it sent its end
 /// to, each running just before its signal; `residue`, the processes it signalled that are still
 /// running past [`END_BOUND`]; `skipped`, those still running that it found but never signalled,
@@ -787,6 +831,9 @@ pub struct EndReport {
     pub residue: Vec<Leftover>,
     /// Found, never signalled, and still running.
     pub skipped: Vec<Leftover>,
+    /// Found, never signalled, and left running, since a service manager holds each in a unit of
+    /// its own ([`HeldApart`]).
+    pub held_apart: Vec<HeldApart>,
     /// Each call the OS refused the end, said whole with what followed from it.
     pub faults: Vec<String>,
     /// Why the end addressed each process by its pid, with every check kept, where this host has
@@ -798,16 +845,41 @@ pub struct EndReport {
 
 impl EndReport {
     /// Report `target` as found and never signalled, once, while it is still running: a process
-    /// that is gone by then left nothing to report, and one the end sent its end to
-    /// ([`EndReport::sent`]) was signalled.
+    /// that is gone by then left nothing to report, one the end sent its end to
+    /// ([`EndReport::sent`]) was signalled, and one a service manager holds apart is reported so
+    /// ([`EndReport::held_apart`]).
     fn skip(&mut self, target: &Identity) {
         let reported = self
             .skipped
             .iter()
             .any(|leftover| leftover.pid == target.pid);
-        if !reported && !self.was_sent(target.pid) && running(target) {
+        let accounted = reported || self.was_sent(target.pid) || self.is_held_apart(target.pid);
+        if !accounted && running(target) {
             self.skipped.push(Leftover::of(target.pid, false));
         }
+    }
+
+    /// Report `target` as held apart in `unit` ([`EndReport::held_apart`]), once, while it is
+    /// still running.
+    fn hold_apart(&mut self, target: &Identity, unit: String) {
+        if !self.is_held_apart(target.pid) && running(target) {
+            self.held_apart.push(HeldApart {
+                process: Leftover::of(target.pid, false),
+                unit,
+            });
+        }
+    }
+
+    /// Whether the end left `pid` to the unit that holds it ([`EndReport::held_apart`]).
+    fn is_held_apart(&self, pid: u32) -> bool {
+        self.held_apart.iter().any(|held| held.process.pid == pid)
+    }
+
+    /// Whether every process of `walk` still running is one a service manager holds apart, and
+    /// one is: what is left of the tree is no end's to wait for.
+    fn only_held_apart_runs(&self, walk: &[Identity]) -> bool {
+        let mut runs = walk.iter().filter(|target| running(target)).peekable();
+        runs.peek().is_some() && runs.all(|target| self.is_held_apart(target.pid))
     }
 
     /// Whether the end sent its end to `pid` ([`EndReport::sent`]).
@@ -826,6 +898,95 @@ impl EndReport {
     fn unskip(&mut self, target: &Identity) {
         self.skipped.retain(|leftover| leftover.pid != target.pid);
     }
+
+    /// The lines this end of a session's tree is said in, each led by `host`, the host that says
+    /// it: first how many processes besides the main the end was sent to; then how many it left to
+    /// a service manager that holds each in a unit of its own ([`left_to_their_units`]); then, in a
+    /// line of its own, each call the OS refused the end, as the report says it, and how many
+    /// processes the end signalled and could not end, and how many it left running and never
+    /// signalled. Each process is named by pid and program, a still-frozen one marked so. Empty
+    /// when the end was sent to nothing besides the main, left nothing and nothing was refused.
+    pub fn lines(&self, host: &str) -> Vec<String> {
+        let named = |left: &[Leftover]| {
+            left.iter()
+                .map(|left| {
+                    let frozen = if left.stopped { ", stopped" } else { "" };
+                    format!("{} ({}{frozen})", left.pid, left.program)
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let mut parts = Vec::new();
+        if !self.residue.is_empty() {
+            parts.push(format!(
+                "{} it signalled and could not end: {}",
+                self.residue.len(),
+                named(&self.residue)
+            ));
+        }
+        if !self.skipped.is_empty() {
+            parts.push(format!(
+                "{} left running, never signalled: {}",
+                self.skipped.len(),
+                named(&self.skipped)
+            ));
+        }
+        let left = (!parts.is_empty()).then(|| {
+            format!(
+                "the end of the session left processes running; {}",
+                parts.join("; ")
+            )
+        });
+        let said: Vec<String> = self.faults.iter().cloned().chain(left).collect();
+        let mut lines = Vec::new();
+        if !self.sent.is_empty() {
+            let noun = if self.sent.len() == 1 {
+                "process"
+            } else {
+                "processes"
+            };
+            lines.push(format!(
+                "{host}: the end of the session was sent to {} {noun} besides its main: {}",
+                self.sent.len(),
+                named(&self.sent)
+            ));
+        }
+        if !self.held_apart.is_empty() {
+            lines.push(format!(
+                "{host}: {}",
+                left_to_their_units("the end of the session", &self.held_apart)
+            ));
+        }
+        if !said.is_empty() {
+            lines.push(format!("{host}: {}", said.join("; ")));
+        }
+        lines
+    }
+}
+
+/// What `end` left running to the service manager that holds each of `held` in a unit of its own,
+/// each named by pid, program and unit: one line an end report and a reap say alike.
+fn left_to_their_units(end: &str, held: &[HeldApart]) -> String {
+    let noun = if held.len() == 1 {
+        "process"
+    } else {
+        "processes"
+    };
+    let named = held
+        .iter()
+        .map(|held| {
+            format!(
+                "{} ({}) in {}",
+                held.process.pid, held.process.program, held.unit
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "{end} left {} {noun} running that a service manager holds apart, each in a unit of its \
+         own: {named}",
+        held.len()
+    )
 }
 
 /// The OS facilities an end and a sweep use, so a test can add a stranger to the table an end
@@ -854,19 +1015,25 @@ trait EndOs {
     fn ties(&self) -> Ties;
     /// Whether this OS freezes a process ([`FREEZES`]).
     fn freezes(&self) -> bool;
+    /// The unit a service manager holds `pid` in apart from the process ending it
+    /// ([`held_apart`]), read now.
+    fn held_apart(&mut self, pid: u32) -> Option<String>;
 }
 
-/// The live OS, and why it addresses a process by its pid rather than through a process
-/// descriptor ([`no_process_descriptors`]), read once when it is made.
+/// The live OS, why it addresses a process by its pid rather than through a process descriptor
+/// ([`no_process_descriptors`]), and the cgroup file of this process, the one ending
+/// ([`crate::os_process::cgroup`]), each read once when it is made.
 struct LiveOs {
     by_pid_because: Option<String>,
+    cgroup: Option<String>,
 }
 
 impl LiveOs {
-    /// The live OS as this host addresses a process now.
+    /// The live OS as this host addresses a process now, seen from this process's cgroup.
     fn new() -> LiveOs {
         LiveOs {
             by_pid_because: no_process_descriptors(),
+            cgroup: os_process::cgroup(std::process::id()),
         }
     }
 
@@ -906,6 +1073,10 @@ impl EndOs for LiveOs {
 
     fn freezes(&self) -> bool {
         FREEZES
+    }
+
+    fn held_apart(&mut self, pid: u32) -> Option<String> {
+        held_apart(self.cgroup.as_deref(), os_process::cgroup(pid).as_deref())
     }
 }
 
@@ -958,8 +1129,9 @@ impl Tree {
     /// start the read answered, read once more: only while the pid still names it, and otherwise
     /// it is sent nothing more and the fault says so. A hard end or a TERM sent to a target still
     /// running just before it is reported as sent the end ([`EndReport::sent`]), named as it read
-    /// then. Answers whether it was sent: a process that cannot be addressed, or fails either
-    /// check, is never signalled.
+    /// then. A target a service manager holds apart ([`EndOs::held_apart`]) is sent nothing but a
+    /// resume and is reported held apart. Answers whether it was sent: a process that cannot be
+    /// addressed, fails either check, or is held apart, is never signalled.
     fn send(
         &self,
         os: &mut impl EndOs,
@@ -974,6 +1146,12 @@ impl Tree {
             && toctou_still_same_process(target, started(&to), self.self_pid, &self.self_ancestors);
         if !holds {
             return false;
+        }
+        if signal != Signal::Resume {
+            if let Some(unit) = os.held_apart(target.pid) {
+                report.hold_apart(target, unit);
+                return false;
+            }
         }
         let ends = matches!(signal, Signal::Term | Signal::Hard);
         let named = (ends && running(target)).then(|| Leftover::of(target.pid, false));
@@ -1123,11 +1301,12 @@ pub fn left_running(main: &Identity) -> Vec<Leftover> {
 /// signalled through the pid its unreaped handle keeps its own. Each walk checks every process it
 /// lists afresh, and one that refuses a process no walk refused before is followed by another: a
 /// process the checks refuse at every walk, and a remembered one still running outside the tree, is
-/// reported skipped and never signalled. A process still running past [`END_BOUND`] is resumed if
-/// the end froze it, and reported as residue. One the end froze and then could no longer reach,
-/// as when a third party ends its frozen parent, is reported still frozen: no signal leaves the
-/// tree, a resume among them. A main that has already exited is reaped and nothing is signalled:
-/// what it left has a parent outside the tree, and its pid may name another process.
+/// reported skipped and never signalled, and one a service manager holds apart is never frozen or
+/// ended and is reported so ([`EndReport::held_apart`]). A process still running past [`END_BOUND`]
+/// is resumed if the end froze it, and reported as residue. One the end froze and then could no
+/// longer reach, as when a third party ends its frozen parent, is reported still frozen: no signal
+/// leaves the tree, a resume among them. A main that has already exited is reaped and nothing is
+/// signalled: what it left has a parent outside the tree, and its pid may name another process.
 pub fn end_watched(main: &mut std::process::Child, remembered: &[Identity]) -> EndReport {
     let mut os = LiveOs::new();
     let report = end_watched_with(&mut os, main, remembered, END_BOUND);
@@ -1313,10 +1492,12 @@ fn end_found(
 /// End every descendant of this process: the keeper's end, where every orphan of the tree it
 /// keeps reparents to it, so every descendant's parent chain reaches it. `graceful` first asks
 /// each to exit and waits up to [`GRACE`] for them; then each one a walk finds is ended, walking
-/// again until `children_left` answers that no child is left, or [`END_BOUND`] passes, when what
-/// the last walk ended is given up to [`FLOOR`] to be gone and what is still running is reported
-/// as residue. Every signal passes [`Tree::send`]'s checks, made afresh at every walk; a process
-/// they refuse at every walk is reported skipped and never signalled.
+/// again until `children_left` answers that no child is left, a walk finds nothing still running
+/// but processes a service manager holds apart, which are left running and reported so
+/// ([`EndReport::held_apart`]), or [`END_BOUND`] passes, when what the last walk ended is given up
+/// to [`FLOOR`] to be gone and what is still running is reported as residue. Every signal passes
+/// [`Tree::send`]'s checks, made afresh at every walk; a process they refuse at every walk is
+/// reported skipped and never signalled.
 pub fn end_own_descendants(graceful: bool, children_left: impl FnMut() -> bool) -> EndReport {
     let mut os = LiveOs::new();
     let report = end_descendants_with(
@@ -1347,10 +1528,16 @@ fn end_descendants_with(
     }
     while children_left() {
         let walk = tree.signal_walk(os, &mut report, Signal::Hard);
+        if report.only_held_apart_runs(&walk) {
+            break;
+        }
         if Instant::now() >= deadline {
             let ended: Vec<Identity> = walk
                 .into_iter()
-                .filter(|target| !report.skipped.iter().any(|left| left.pid == target.pid))
+                .filter(|target| {
+                    let left = |pid| report.skipped.iter().any(|left| left.pid == pid);
+                    !left(target.pid) && !report.is_held_apart(target.pid)
+                })
                 .collect();
             poll_until(Instant::now() + FLOOR, || !ended.iter().any(running));
             for target in ended.iter().filter(|target| running(target)) {
@@ -1796,10 +1983,10 @@ pub fn reap_then_remove_dir(dir: &Path, authorized_root: &Path) {
 /// removed out from under a still-running process is exactly the case this reaps).
 /// Best-effort and platform-tolerant throughout - on an OS the process interface cannot read
 /// the scan finds nothing and this is a graceful no-op.
+///
+/// A process a service manager holds in a unit other than this process's is left running, never
+/// signalled, and named with its unit in one line ([`left_to_their_units`]).
 pub fn reap_authorized(base: PathBuf) {
-    let self_pid = std::process::id();
-    let self_ancestors = ancestor_pids(self_pid);
-
     let term_targets = scan_with_starttime(&base);
     if term_targets.is_empty() {
         return;
@@ -1808,15 +1995,42 @@ pub fn reap_authorized(base: PathBuf) {
     if let Some(reason) = &os.by_pid_because {
         say_signalled_by_pid(reason);
     }
+    let held = reap_authorized_with(os, &base, term_targets);
+    if !held.is_empty() {
+        let reap = format!("the reap of {}", base.display());
+        crate::whole_line::say(format_args!(
+            "rigger: {}",
+            left_to_their_units(&reap, &held)
+        ));
+    }
+}
+
+/// [`reap_authorized`]'s signals over `os`, from `term_targets`, the scan of `base` it began
+/// with: answers each process it left to the unit a service manager holds it in, once.
+fn reap_authorized_with(
+    os: &mut impl EndOs,
+    base: &Path,
+    term_targets: Vec<Identity>,
+) -> Vec<HeldApart> {
+    let self_pid = std::process::id();
+    let self_ancestors = ancestor_pids(self_pid);
+    let mut report = EndReport::default();
     for target in &term_targets {
-        signal_if_unchanged(os, target, &base, self_pid, &self_ancestors, Signal::Term);
+        let held = signal_if_unchanged(os, target, base, self_pid, &self_ancestors, Signal::Term);
+        if let Some(unit) = held {
+            report.hold_apart(target, unit);
+        }
     }
     std::thread::sleep(GRACE);
     // Re-scan so only processes STILL rooted inside are force-killed - each gets its own
     // fresh start-time baseline here, then is rechecked again immediately below.
-    for target in scan_with_starttime(&base) {
-        signal_if_unchanged(os, &target, &base, self_pid, &self_ancestors, Signal::Hard);
+    for target in scan_with_starttime(base) {
+        let held = signal_if_unchanged(os, &target, base, self_pid, &self_ancestors, Signal::Hard);
+        if let Some(unit) = held {
+            report.hold_apart(&target, unit);
+        }
     }
+    report.held_apart
 }
 
 #[cfg(test)]
@@ -2478,6 +2692,7 @@ mod tests {
     fn an_end_that_signalled_by_pid_says_why_in_its_report() {
         let os = LiveOs {
             by_pid_because: Some("this kernel has no process descriptors".to_string()),
+            cgroup: None,
         };
 
         let report = os.reporting(EndReport::default());
@@ -3051,16 +3266,17 @@ mod tests {
         /// to the table, `vanishing` left out of every read of the table once it was sent a freeze,
         /// the parent of `unreadable_once` unreadable at its first read, the parent of `stranded`'s
         /// pid unreadable once that pid was sent its signal, every freeze of `unstoppable` and
-        /// every hard end of `swallowed` dropped, and `forker` started on one more process ahead
-        /// of each read of the table or each hard end, as its [`ForkAt`] says. `tied`'s parent's
+        /// every hard end of `swallowed` dropped, and `forker` started on one more process ahead of
+        /// each read of the table or each hard end, as its [`ForkAt`] says. `tied`'s parent's
         /// record reads `tied`'s start, and `ties`, where some, is the tie rule a walk reads the
         /// table by. Every process is addressed by its pid alone where `by_pid` holds, as on an OS
         /// without process descriptors, and the next reads, as many as `misfires` names, of where a
         /// freeze sent to its pid by the pid alone landed read another process's start. Where
         /// `no_freeze` holds, the OS has no freeze, as on Windows: every freeze and resume is
-        /// dropped. Every signal the end sends is recorded, dropped or not, and so is each process
-        /// sent a freeze while its parent did not read frozen, and each address and parent read, in
-        /// order.
+        /// dropped. `held`, where some, is a process a service manager holds apart in the unit
+        /// named with it. Every signal the end sends is recorded, dropped or not, and so is each
+        /// process sent a freeze while its parent did not read frozen, and each address and parent
+        /// read, in order.
         #[derive(Default)]
         struct Rigged {
             tied: Option<u32>,
@@ -3076,6 +3292,7 @@ mod tests {
             by_pid: bool,
             misfires: Option<(u32, usize)>,
             no_freeze: bool,
+            held: Option<(u32, &'static str)>,
             sent: Vec<(Signal, u32)>,
             frozen_under_a_running_parent: Vec<u32>,
             steps: Vec<Step>,
@@ -3228,6 +3445,11 @@ mod tests {
 
             fn freezes(&self) -> bool {
                 FREEZES && !self.no_freeze
+            }
+
+            fn held_apart(&mut self, pid: u32) -> Option<String> {
+                let (held, unit) = self.held?;
+                (held == pid).then(|| unit.to_string())
             }
         }
 
@@ -4044,6 +4266,111 @@ mod tests {
                 an_end_never_reports_a_process_gone_before_its_signal(Ending::Descendants);
         }
 
+        /// `ending` over a tree whose middle process a service manager holds apart: the middle is
+        /// sent nothing and is named with its unit, its own child, still in the ending process's
+        /// unit, is ended and named as sent, and the end returns well within its bound, without
+        /// waiting on the process it left. The test's release, never a signal, ends what is left.
+        fn an_end_leaves_a_process_a_service_manager_holds_apart(ending: Ending) {
+            let mut witness = Witness::new();
+            let mut root = tree(&witness, "( holder; up; held ) & up; held");
+            assert!(witness.wait_up(3), "the fixture's three processes are up");
+            let middle = only_child(root.id());
+            let deepest = only_child(middle);
+            let mut os = Rigged {
+                held: Some((middle, "run-r9.scope")),
+                ..Rigged::default()
+            };
+
+            let began = Instant::now();
+            let report = end(ending, &mut os, &mut root, END_BOUND);
+            let took = began.elapsed();
+
+            let held: Vec<(u32, String)> = report
+                .held_apart
+                .iter()
+                .map(|held| (held.process.pid, held.unit.clone()))
+                .collect();
+            let (sent, rest) = split(report);
+            let left_running = witness.read();
+            let released = witness.release();
+            assert_eq!(
+                (sent, held, rest.skipped, rest.residue, left_running, released),
+                (
+                    vec![deepest],
+                    vec![(middle, "run-r9.scope".to_string())],
+                    vec![],
+                    vec![],
+                    Reading::Held,
+                    Reading::Ended
+                ),
+                "{ending:?}: the held-apart middle runs on, named with its unit; its child is ended"
+            );
+            assert!(
+                !os.sent
+                    .iter()
+                    .any(|(signal, pid)| *pid == middle && *signal != Signal::Resume),
+                "{ending:?}: nothing is sent to the held-apart middle: {:?}",
+                os.sent
+            );
+            assert!(
+                took < END_BOUND / 2,
+                "{ending:?}: the end returns without waiting on what it left: {took:?}"
+            );
+        }
+
+        /// A reap of a directory two fixture processes run in, one of them held apart by a
+        /// service manager: the held-apart one is sent nothing, left running and answered with its
+        /// unit, and the other, its child, is ended. The test's release, never a signal, ends what
+        /// is left.
+        #[test]
+        fn a_reap_leaves_a_process_a_service_manager_holds_apart() {
+            let repo = FakeRepo::new();
+            let base = repo.base("scratch");
+            let mut witness = Witness::new();
+            let mut root = StdCommand::new("sh")
+                .arg("-c")
+                .arg(Witness::script("holder; up; held"))
+                .envs(witness.env())
+                .current_dir(&base)
+                .spawn()
+                .expect("spawn the fixture shell");
+            assert!(witness.wait_up(2), "the fixture's two processes are up");
+            let child = only_child(root.id());
+            let mut os = Rigged {
+                held: Some((root.id(), "run-r9.scope")),
+                ..Rigged::default()
+            };
+
+            let held = reap_authorized_with(&mut os, &base, scan_with_starttime(&base));
+
+            let held: Vec<(u32, String)> = held
+                .into_iter()
+                .map(|held| (held.process.pid, held.unit))
+                .collect();
+            let left_running = witness.read();
+            let ended = ended_by(&os, 0);
+            let released = witness.release();
+            root.wait().expect("reap the fixture shell");
+            assert_eq!(
+                (held, ended, left_running, released),
+                (
+                    vec![(root.id(), "run-r9.scope".to_string())],
+                    vec![child],
+                    Reading::Held,
+                    Reading::Ended
+                ),
+                "the held-apart process runs on, named with its unit; its child is ended: {:?}",
+                os.sent
+            );
+        }
+
+        crate::test_cases! {
+            the_watched_end_leaves_a_process_a_service_manager_holds_apart:
+                an_end_leaves_a_process_a_service_manager_holds_apart(Ending::Watched);
+            the_descendant_end_leaves_a_process_a_service_manager_holds_apart:
+                an_end_leaves_a_process_a_service_manager_holds_apart(Ending::Descendants);
+        }
+
         /// `ending` over a tree whose member has a child that exited and is left unreaped: the
         /// member starts the child and becomes `cat`, which never waits for a child, and the child
         /// exits only once `cat` opens the FIFO the child writes to, so it exits after that exec
@@ -4245,5 +4572,188 @@ mod tests {
                 Ok(Some(_))
             )));
         }
+    }
+
+    /// The lines the stream host says an end that answered `sent`, `residue`, `skipped` and
+    /// `faults` in.
+    fn assert_end_lines(
+        sent: &[(u32, &str, bool)],
+        residue: &[(u32, &str, bool)],
+        skipped: &[(u32, &str, bool)],
+        faults: &[&str],
+        expected: &[&str],
+    ) {
+        let left = |rows: &[(u32, &str, bool)]| {
+            rows.iter()
+                .map(|&(pid, program, stopped)| Leftover {
+                    pid,
+                    program: program.to_string(),
+                    stopped,
+                })
+                .collect()
+        };
+        let report = EndReport {
+            sent: left(sent),
+            residue: left(residue),
+            skipped: left(skipped),
+            faults: faults.iter().map(|fault| fault.to_string()).collect(),
+            ..EndReport::default()
+        };
+        assert_eq!(report.lines("stream"), expected);
+    }
+
+    crate::test_cases! {
+        an_end_sent_to_nothing_that_left_nothing_is_no_line: assert_end_lines(&[], &[], &[], &[], &[]);
+        an_end_that_could_not_end_a_process_names_it_and_whether_it_is_stopped: assert_end_lines(
+            &[],
+            &[(41, "sleep", false), (42, "node", true)],
+            &[],
+            &[],
+            &["stream: the end of the session left processes running; 2 it signalled and could \
+               not end: 41 (sleep), 42 (node, stopped)"],
+        );
+        an_end_names_each_process_it_was_sent_to_by_pid_and_program: assert_end_lines(
+            &[(41, "sleep", false), (42, "node", false)],
+            &[],
+            &[],
+            &[],
+            &["stream: the end of the session was sent to 2 processes besides its main: 41 \
+               (sleep), 42 (node)"],
+        );
+        an_end_sent_to_one_process_that_left_one_says_each_in_a_line_of_its_own:
+            assert_end_lines(
+                &[(41, "sleep", false)],
+                &[],
+                &[(77, "daemon", false)],
+                &[],
+                &[
+                    "stream: the end of the session was sent to 1 process besides its main: 41 \
+                     (sleep)",
+                    "stream: the end of the session left processes running; 1 left running, \
+                     never signalled: 77 (daemon)",
+                ],
+            );
+        an_end_that_never_signalled_a_process_names_it_as_left_running:
+            assert_end_lines(
+                &[],
+                &[(41, "sleep", false)],
+                &[(77, "daemon", false)],
+                &[],
+                &["stream: the end of the session left processes running; 1 it signalled and \
+                   could not end: 41 (sleep); 1 left running, never signalled: 77 (daemon)"],
+            );
+        an_end_the_os_refused_says_why: assert_end_lines(
+            &[],
+            &[],
+            &[],
+            &["the job of session 7 could not be ended (denied), so the end did not wait for it"],
+            &["stream: the job of session 7 could not be ended (denied), so the end did not wait \
+               for it"],
+        );
+        an_end_that_hit_a_fault_and_left_a_process_says_both: assert_end_lines(
+            &[],
+            &[(41, "sleep", false)],
+            &[],
+            &["the job of session 7 could not be ended (denied), so the end did not wait for it"],
+            &["stream: the job of session 7 could not be ended (denied), so the end did not wait \
+               for it; the end of the session left processes running; 1 it signalled and could \
+               not end: 41 (sleep)"],
+        );
+    }
+
+    /// An end that left a process to the unit a service manager holds it in names it, its program
+    /// and its unit in a line of its own, between what the end was sent to and what it left.
+    #[test]
+    fn an_end_that_left_a_process_to_its_unit_names_the_unit_in_a_line_of_its_own() {
+        let left = |pid, program: &str| Leftover {
+            pid,
+            program: program.to_string(),
+            stopped: false,
+        };
+        let report = EndReport {
+            sent: vec![left(41, "sleep")],
+            held_apart: vec![
+                HeldApart {
+                    process: left(50, "conmon"),
+                    unit: "run-r9.scope".to_string(),
+                },
+                HeldApart {
+                    process: left(51, "dbus-daemon"),
+                    unit: "dbus.service".to_string(),
+                },
+            ],
+            skipped: vec![left(77, "daemon")],
+            ..EndReport::default()
+        };
+
+        assert_eq!(
+            report.lines("stream"),
+            [
+                "stream: the end of the session was sent to 1 process besides its main: 41 (sleep)",
+                "stream: the end of the session left 2 processes running that a service manager \
+                 holds apart, each in a unit of its own: 50 (conmon) in run-r9.scope, 51 \
+                 (dbus-daemon) in dbus.service",
+                "stream: the end of the session left processes running; 1 left running, never \
+                 signalled: 77 (daemon)",
+            ]
+        );
+    }
+
+    /// The cgroup file of a process in the terminal scope an end of a session runs in.
+    const SESSION: &str =
+        "0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-term-7.scope\n";
+
+    /// Which unit, if any, holds a process whose cgroup file reads `process` apart from the end
+    /// whose own reads `reference`.
+    fn assert_held_apart(reference: Option<&str>, process: Option<&str>, expected: Option<&str>) {
+        assert_eq!(
+            held_apart(reference, process),
+            expected.map(String::from),
+            "{reference:?} ending {process:?}"
+        );
+    }
+
+    crate::test_cases! {
+        a_process_in_the_ends_own_scope_is_ended:
+            assert_held_apart(Some(SESSION), Some(SESSION), None);
+        a_process_in_a_group_under_the_ends_own_scope_is_ended: assert_held_apart(
+            Some(SESSION),
+            Some("0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-term-7.scope/sub\n"),
+            None,
+        );
+        a_process_a_service_manager_holds_in_a_scope_of_its_own_is_held_apart: assert_held_apart(
+            Some(SESSION),
+            Some("0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-r9.scope\n"),
+            Some("run-r9.scope"),
+        );
+        a_process_a_service_holds_is_held_apart_by_that_service: assert_held_apart(
+            Some(SESSION),
+            Some("0::/user.slice/user-1000.slice/user@1000.service/app.slice/dbus.service/x\n"),
+            Some("dbus.service"),
+        );
+        a_process_with_no_cgroup_file_is_ended: assert_held_apart(Some(SESSION), None, None);
+        an_end_that_reads_no_cgroup_file_of_its_own_ends_every_process: assert_held_apart(
+            None,
+            Some("0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-r9.scope\n"),
+            None,
+        );
+        a_process_in_no_unit_is_ended: assert_held_apart(Some(SESSION), Some("0::/\n"), None);
+        an_end_in_no_unit_ends_every_process: assert_held_apart(
+            Some("0::/\n"),
+            Some("0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-r9.scope\n"),
+            None,
+        );
+        a_process_on_a_v1_host_is_ended: assert_held_apart(
+            Some("4:pids:/user.slice/app-term-7.scope\n1:name=systemd:/user.slice/app-term-7.scope\n"),
+            Some("4:pids:/user.slice/run-r9.scope\n1:name=systemd:/user.slice/run-r9.scope\n"),
+            None,
+        );
+        a_process_on_a_hybrid_host_is_ended: assert_held_apart(
+            Some("1:name=systemd:/user.slice/app-term-7.scope\n0::/user.slice/app-term-7.scope\n"),
+            Some("1:name=systemd:/user.slice/run-r9.scope\n0::/user.slice/run-r9.scope\n"),
+            None,
+        );
+        a_process_whose_cgroup_file_reads_empty_is_ended:
+            assert_held_apart(Some(SESSION), Some(""), None);
     }
 }
