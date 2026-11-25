@@ -553,7 +553,9 @@ pub enum Located {
 /// the graph and the attrs it carries, those built by [`entity_site`] alone, so every show surface
 /// prints the entries [`site_fields`] gives, the MCP `around` less its `summary`, and the CLI
 /// bounds the body it reads from the working tree. Only the adapter's site read fills its
-/// [`unresolved`](EntitySite::unresolved) leaves (spec 117, READERS).
+/// [`unresolved`](EntitySite::unresolved) leaves, and only the composed graph's
+/// [`ContextGraph::locate`] its [`doc_comment`](EntitySite::doc_comment) and
+/// [`referrers`](EntitySite::referrers) (spec 117, READERS).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EntitySite {
     /// The node id (`<file>::<path>` for a definition).
@@ -576,6 +578,14 @@ pub struct EntitySite {
     /// its live `type`, `const` and `use` rows that resolve to nothing, read at its site read;
     /// empty for any other node and for a site [`entity_site`] builds.
     pub unresolved: Vec<String>,
+    /// The node's doc (spec 117, READERS), as [`ContextGraph::doc`] reads it at the composed
+    /// graph's [`ContextGraph::locate`]: a definition's doc comment or a file's leading doc,
+    /// stripped of its markers. `None` for a node with none and for a site [`entity_site`] builds.
+    pub doc_comment: Option<String>,
+    /// The node's referrers (spec 117, READERS), as [`ContextGraph::referrers`] reads them at the
+    /// composed graph's [`ContextGraph::locate`] under the tests mode the graph was opened under;
+    /// empty for a site [`entity_site`] builds.
+    pub referrers: Vec<Referrer>,
 }
 
 /// The one separator a list-valued [`site_fields`] entry joins its items by (spec 117), so a
@@ -596,6 +606,7 @@ const SITE_ATTRS: [&str; 8] = [
 /// attrs whole. The adapter's `site_of` calls it over the row it read with that row's one-hop
 /// degree, and the MCP `around` over each node of the `Graph` it loaded with the node's edge count
 /// there, so neither reads a node twice. It lists no unresolved leaf, which the adapter's site read
+/// alone adds, and no doc and no referrer, which the composed graph's [`ContextGraph::locate`]
 /// alone adds (spec 117).
 pub fn entity_site(node: &Node, degree: usize) -> EntitySite {
     let attr = |key: &str| node.attrs.get(key).map(String::as_str);
@@ -610,17 +621,22 @@ pub fn entity_site(node: &Node, degree: usize) -> EntitySite {
         degree,
         attrs: node.attrs.clone(),
         unresolved: Vec::new(),
+        doc_comment: None,
+        referrers: Vec::new(),
     }
 }
 
 /// The ordered closed list of entries a show surface prints for `site` (spec 119, SHOW IS ONE
-/// RENDERER): `file`, `line`, `kind`, `degree`, then [`SITE_ATTRS`]' order, then `unresolved`
+/// RENDERER): `file`, `line`, `kind`, `degree`, then [`SITE_ATTRS`]' order, then `doc_comment`,
+/// `unresolved` and one `referenced by <label>` entry per [`REFERRER_LABELS`] label in its order
 /// (spec 117) - `line` and `degree` JSON numbers, `unresolved` the site's unresolved leaves joined
-/// by [`LIST_SEP`], every other entry its recorded value verbatim. A node with no `file` has no
-/// `line` entry either; `kind` and `degree` are always given; an attr whose value is empty, and an
-/// empty unresolved list, give no entry. The CLI prints it (its live healed line and a value's
-/// newlines collapsed at print only), the MCP `show` carries it as keys beside the node's `id`,
-/// and the MCP `around` the same less its `summary` entry.
+/// by [`LIST_SEP`], a `referenced by` entry the label's first [`REFERRERS_SHOWN`] referrers as the
+/// lookup lists them, joined by [`LIST_SEP`], then `(+N more)` for the rest, and every other entry
+/// its recorded value verbatim. A node with no `file` has no `line` entry either; `kind` and
+/// `degree` are always given; an attr whose value is empty, an absent or empty doc, an empty
+/// unresolved list and a label no referrer is under give no entry. The CLI prints it (its live
+/// healed line and a value's newlines collapsed at print only), the MCP `show` carries it as keys
+/// beside the node's `id`, and the MCP `around` the same less its `summary` entry.
 pub fn site_fields(site: &EntitySite) -> Vec<(&'static str, serde_json::Value)> {
     let located = site.file.iter().flat_map(|file| {
         [
@@ -638,14 +654,42 @@ pub fn site_fields(site: &EntitySite) -> Vec<(&'static str, serde_json::Value)> 
             .filter(|value| !value.is_empty())
             .map(|value| (key, serde_json::Value::from(value.as_str())))
     });
+    let doc = (site.doc_comment.as_deref())
+        .filter(|doc| !doc.is_empty())
+        .map(|doc| ("doc_comment", doc.into()));
     let unresolved = (!site.unresolved.is_empty())
         .then(|| ("unresolved", site.unresolved.join(LIST_SEP).into()));
+    let referred = REFERRER_LABELS
+        .iter()
+        .zip(REFERRED_BY)
+        .filter_map(|((_, label), key)| {
+            let listed: Vec<&Referrer> = (site.referrers.iter())
+                .filter(|r| r.label == *label)
+                .collect();
+            if listed.is_empty() {
+                return None;
+            }
+            let shown = listed.len().min(REFERRERS_SHOWN);
+            let mut text = (listed[..shown].iter())
+                .map(|r| referrer_text(r))
+                .collect::<Vec<_>>()
+                .join(LIST_SEP);
+            if listed.len() > shown {
+                text.push_str(&format!(" (+{} more)", listed.len() - shown));
+            }
+            Some((key, text.into()))
+        });
     located
         .chain(graph)
         .chain(attrs)
+        .chain(doc)
         .chain(unresolved)
+        .chain(referred)
         .collect()
 }
+
+/// The most referrers a `referenced by` entry of [`site_fields`] lists (spec 117, READERS).
+const REFERRERS_SHOWN: usize = 50;
 
 /// One disambiguation candidate for an ambiguous query (spec 58): the full node id and its file.
 /// [`crate::composed::locate`] returns these SORTED by id, so the listing is deterministic.
@@ -1068,7 +1112,9 @@ pub trait ContextGraph: Send + Sync {
     /// FINDS A LEAF OR PATH); and the three outcomes ([`Located`]) are never a guess among
     /// candidates. The default returns `Located::None`, so a graph with no locate support (a test
     /// double) degrades honestly rather than erroring;
-    /// [`Composed`](crate::composed::Composed) overrides it ([`crate::composed::locate`]).
+    /// [`Composed`](crate::composed::Composed) overrides it ([`crate::composed::locate`]), its one
+    /// site carrying the node's doc ([`Self::doc`]) and its referrers ([`Self::referrers`]) under
+    /// the tests mode the graph was opened under (spec 117, READERS).
     fn locate(&self, _entity: &str) -> Result<Located, Error> {
         Ok(Located::None)
     }
@@ -1571,6 +1617,19 @@ pub const REFERRER_LABELS: [(Option<&str>, &str); 8] = [
     (Some(REF_KIND_MODULE), "declared by"),
 ];
 
+/// The [`site_fields`] key of each [`REFERRER_LABELS`] label, `referenced by <label>`, in the
+/// table's order (spec 117, READERS); a unit test holds each to its label.
+const REFERRED_BY: [&str; REFERRER_LABELS.len()] = [
+    "referenced by called by",
+    "referenced by reads",
+    "referenced by type use",
+    "referenced by implemented by",
+    "referenced by field use",
+    "referenced by variant use",
+    "referenced by imported by",
+    "referenced by declared by",
+];
+
 /// The label a referrer whose mention is of `kind` is listed under ([`REFERRER_LABELS`]); `None`
 /// for a tag the table holds no row for.
 pub fn referrer_label(kind: &MentionKind) -> Option<&'static str> {
@@ -1602,6 +1661,21 @@ pub struct Referrer {
     /// Whether the mention gave the entity no single edge: it lists under each of several
     /// candidates, which the lookup marks `?`.
     pub ambiguous: bool,
+}
+
+/// `referrer` as a `referenced by` entry of [`site_fields`] lists it, the line the lookup prints
+/// for it: `<file>:<line> <id> (<kind>)`, its file the one its site id names and the `:<line>`
+/// left out at line 0, then ` [test]` for a test referrer and ` ?` for an ambiguous one.
+fn referrer_text(referrer: &Referrer) -> String {
+    let file = query::split_id(&referrer.site).0;
+    let at = match referrer.line {
+        0 => String::new(),
+        line => format!(":{line}"),
+    };
+    let test = if referrer.test { " [test]" } else { "" };
+    let ambiguous = if referrer.ambiguous { " ?" } else { "" };
+    let (site, kind) = (&referrer.site, &referrer.kind);
+    format!("{file}{at} {site} ({kind}){test}{ambiguous}")
 }
 
 /// Whether a `rel` edge onto a node of kind `target_kind` declares a module (spec 117, MODULE
@@ -2004,6 +2078,15 @@ mod referrer_label_rule {
             [Some("call"), Some(""), Some("reads")].map(|tag| referrer_label(&kind(tag))),
             [None, None, None],
             "a tag the table holds no row for reads no label"
+        );
+    }
+
+    /// Each label names its show entry `referenced by <label>`, in the table's order.
+    #[test]
+    fn each_label_names_its_referenced_by_entry() {
+        assert_eq!(
+            REFERRED_BY.map(String::from),
+            REFERRER_LABELS.map(|(_, label)| format!("referenced by {label}"))
         );
     }
 }
@@ -2480,6 +2563,8 @@ mod site_renderer {
                 degree: 3,
                 attrs: all.attrs.clone(),
                 unresolved: vec![],
+                doc_comment: None,
+                referrers: vec![],
             },
             "an extensionless file's definition names its file and keeps every attr"
         );
@@ -2574,6 +2659,154 @@ mod site_renderer {
                 ("unresolved", json!("Quill, Rook")),
             ]
         );
+    }
+
+    /// Spec 117, READERS: a site's doc gives the entry `doc_comment` after `partial` and before
+    /// `unresolved`, verbatim. After `unresolved`, its referrers give one `referenced by <label>`
+    /// entry per label holding any, in the label table's order whatever order they come in. Each
+    /// entry lists its sites in their order, joined by [`LIST_SEP`], each as `<file>:<line> <id>
+    /// (<kind>)`, the `:<line>` left out at line 0, and marked ` [test]` for a test referrer and
+    /// ` ?` for an ambiguous one. It holds at most 50 sites, then `(+N more)` for the rest. An
+    /// absent or empty doc, and a label with no referrer, give no entry.
+    #[test]
+    fn site_fields_gives_the_doc_before_unresolved_and_each_labels_referrers_after_it() {
+        let referrer = |label: &'static str, line: u32, test: bool, ambiguous: bool| Referrer {
+            site: format!("src/r.rs::f{line}"),
+            kind: CODE_KIND_FUNCTION.to_string(),
+            label,
+            line,
+            test,
+            ambiguous,
+        };
+        let reading = |count: u32| -> Vec<Referrer> {
+            (1..=count)
+                .map(|line| referrer("reads", line, false, false))
+                .collect()
+        };
+        let listed = |count: u32| -> String {
+            (1..=count)
+                .map(|line| format!("src/r.rs:{line} src/r.rs::f{line} (function)"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let partial = ("partial", json!("true"));
+        let unresolved = ("unresolved", json!("Quill"));
+        let reads = |text: String| ("referenced by reads", json!(text));
+        // (case, the doc, the referrers, the entries from `partial` on)
+        let cases = vec![
+            (
+                "no doc and no referrer",
+                None,
+                vec![],
+                vec![partial.clone(), unresolved.clone()],
+            ),
+            (
+                "an empty doc",
+                Some(""),
+                vec![],
+                vec![partial.clone(), unresolved.clone()],
+            ),
+            (
+                "a doc",
+                Some("first\nsecond"),
+                vec![],
+                vec![
+                    partial.clone(),
+                    ("doc_comment", json!("first\nsecond")),
+                    unresolved.clone(),
+                ],
+            ),
+            (
+                "labels in the table's order, sites in theirs",
+                None,
+                vec![
+                    referrer("reads", 4, false, false),
+                    referrer("called by", 9, false, false),
+                    referrer("reads", 2, false, false),
+                ],
+                vec![
+                    partial.clone(),
+                    unresolved.clone(),
+                    (
+                        "referenced by called by",
+                        json!("src/r.rs:9 src/r.rs::f9 (function)"),
+                    ),
+                    reads(
+                        "src/r.rs:4 src/r.rs::f4 (function), src/r.rs:2 src/r.rs::f2 (function)"
+                            .to_string(),
+                    ),
+                ],
+            ),
+            (
+                "a test, an ambiguous, and a test ambiguous referrer",
+                None,
+                vec![
+                    referrer("reads", 1, true, false),
+                    referrer("reads", 2, false, true),
+                    referrer("reads", 3, true, true),
+                ],
+                vec![
+                    partial.clone(),
+                    unresolved.clone(),
+                    reads(
+                        "src/r.rs:1 src/r.rs::f1 (function) [test], \
+                         src/r.rs:2 src/r.rs::f2 (function) ?, \
+                         src/r.rs:3 src/r.rs::f3 (function) [test] ?"
+                            .to_string(),
+                    ),
+                ],
+            ),
+            (
+                "a referrer at line 0",
+                None,
+                vec![referrer("reads", 0, false, false)],
+                vec![
+                    partial.clone(),
+                    unresolved.clone(),
+                    reads("src/r.rs src/r.rs::f0 (function)".to_string()),
+                ],
+            ),
+            (
+                "49 sites",
+                None,
+                reading(49),
+                vec![partial.clone(), unresolved.clone(), reads(listed(49))],
+            ),
+            (
+                "50 sites",
+                None,
+                reading(50),
+                vec![partial.clone(), unresolved.clone(), reads(listed(50))],
+            ),
+            (
+                "51 sites",
+                None,
+                reading(51),
+                vec![
+                    partial.clone(),
+                    unresolved.clone(),
+                    reads(format!("{} (+1 more)", listed(50))),
+                ],
+            ),
+            (
+                "53 sites",
+                None,
+                reading(53),
+                vec![
+                    partial.clone(),
+                    unresolved.clone(),
+                    reads(format!("{} (+3 more)", listed(50))),
+                ],
+            ),
+        ];
+        let file = node_with_attrs("src/lister.rs", KIND_FILE, &[("partial", "true")]);
+        for (case, doc, referrers, from_partial) in cases {
+            let mut site = entity_site(&file, 2);
+            site.unresolved = vec!["Quill".to_string()];
+            site.doc_comment = doc.map(str::to_string);
+            site.referrers = referrers;
+            assert_eq!(&site_fields(&site)[4..], from_partial.as_slice(), "{case}");
+        }
     }
 
     /// A node with no file gives neither a `file` nor a `line` entry whatever its `line` attr, an

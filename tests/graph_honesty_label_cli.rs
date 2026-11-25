@@ -2,11 +2,15 @@
 //! describes, or the caller's worktree over it when the two differ, and what it withheld when the
 //! worktree cannot be compared. Under it the lookup names each entity's referrers by kind, its test
 //! referrers only under `--tests include` or `only`, and marks `?` a referrer whose mention gave the entity
-//! no single edge.
+//! no single edge. `--show` prints a node's doc and its referrers by kind as entries of its site,
+//! each referrer as the lookup prints it. A reader an uncommitted edit adds is listed by a lookup
+//! from the worktree holding the edit, and by none from another worktree at the same head.
 
 use crate::common;
 use common::cli::{run_rigger, run_rigger_ok, temp_project};
-use common::fixtures::{git_commit_all, git_out, write_text};
+use common::fixtures::{git_commit_all, git_out, write_files, write_text};
+use common::git::linked_worktree;
+use rigger::contextgraph::REFERRER_LABELS;
 
 /// GIVEN a project whose source is committed and built, WHEN `rigger graph --around` reads it
 /// from a clean worktree, from one with an unread file edited, and from one with the read file
@@ -436,6 +440,18 @@ fn a_design_link_to_an_inline_test_is_test_code() {
     }
 }
 
+/// The source of a Python module that imports `f` from `y.py` and calls it at module level,
+/// outside every definition.
+const TOP_LEVEL_CALL: &str = "from y import f\n\nf()\n";
+
+/// A Python function `f` in `y.py`, called at module level by the product module `z.py` and by the
+/// test module `test_y.py`.
+const FILE_CALLS: [(&str, &str); 3] = [
+    ("y.py", "def f():\n    return 1\n"),
+    ("z.py", TOP_LEVEL_CALL),
+    ("test_y.py", TOP_LEVEL_CALL),
+];
+
 /// GIVEN a built project whose product module and test module each call a function at module
 /// level, outside every definition, WHEN the graph reads the function's neighbourhood under each
 /// `--tests` setting, THEN each call is its file's: the product module calls the function, and the
@@ -444,10 +460,7 @@ fn a_design_link_to_an_inline_test_is_test_code() {
 fn a_call_outside_every_definition_is_its_files_call() {
     let dir = temp_project();
     let root = dir.path();
-    let call = "from y import f\n\nf()\n";
-    write_text(root, "y.py", "def f():\n    return 1\n");
-    write_text(root, "z.py", call);
-    write_text(root, "test_y.py", call);
+    write_files(root, &FILE_CALLS);
     git_commit_all(root, "source");
     run_rigger_ok(root, &["graph", "build"]);
     let around = ["--around", "y.py::f", "--depth", "1"];
@@ -745,6 +758,25 @@ fn the_lookup_names_referrers_by_kind() {
     lookup_prints_blocks(root, &[], &cases);
 }
 
+/// A constant `LIMIT` defined in `src/a.rs` and `src/b.rs` and read by `fits` in `src/c.rs`; a
+/// function `shared` defined in `src/d.rs` and `src/e.rs` and `alone` defined in `src/g.rs`, each
+/// called by `spill` in `src/f.rs`.
+const AMBIGUOUS: [(&str, &str); 7] = [
+    ("src/a.rs", "pub const LIMIT: usize = 3;\n"),
+    ("src/b.rs", "pub const LIMIT: usize = 4;\n"),
+    (
+        "src/c.rs",
+        "pub fn fits(n: usize) -> bool {\n    n <= LIMIT\n}\n",
+    ),
+    ("src/d.rs", "pub fn shared() {}\n"),
+    ("src/e.rs", "pub fn shared() {}\n"),
+    (
+        "src/f.rs",
+        "pub fn spill() {\n    shared();\n    alone();\n}\n",
+    ),
+    ("src/g.rs", "pub fn alone() {}\n"),
+];
+
 /// GIVEN a built project whose constant `LIMIT` is defined in two files and read by one function
 /// in a third, WHEN `rigger graph --lookup` reads the constant, THEN each constant's `reads:` line
 /// names the reading function marked `?`: its mention gave neither constant a single edge. Read the
@@ -756,21 +788,7 @@ fn the_lookup_names_referrers_by_kind() {
 fn an_ambiguous_referrer_is_marked() {
     let dir = temp_project();
     let root = dir.path();
-    write_text(root, "src/a.rs", "pub const LIMIT: usize = 3;\n");
-    write_text(root, "src/b.rs", "pub const LIMIT: usize = 4;\n");
-    write_text(
-        root,
-        "src/c.rs",
-        "pub fn fits(n: usize) -> bool {\n    n <= LIMIT\n}\n",
-    );
-    write_text(root, "src/d.rs", "pub fn shared() {}\n");
-    write_text(root, "src/e.rs", "pub fn shared() {}\n");
-    write_text(
-        root,
-        "src/f.rs",
-        "pub fn spill() {\n    shared();\n    alone();\n}\n",
-    );
-    write_text(root, "src/g.rs", "pub fn alone() {}\n");
+    write_files(root, &AMBIGUOUS);
     git_commit_all(root, "source");
     run_rigger_ok(root, &["graph", "build"]);
     // (the term, its block's lines from its heading to the next section's)
@@ -816,6 +834,18 @@ fn an_ambiguous_referrer_is_marked() {
     lookup_prints_blocks(root, &[], &cases);
 }
 
+/// The lookup's block for [`READERS`]'s `LIMIT`, from its heading to the next section's, while
+/// tests are hidden: its `reads:` line names the two product functions alone.
+const LIMIT_READ_BY_PRODUCTS: &[&str] = &[
+    "### LIMIT",
+    "exact match: 1 entity",
+    "- src/lib.rs:3 src/lib.rs::LIMIT (constant)",
+    "  The most widgets one bin holds.",
+    "  reads: src/lib.rs:11 src/lib.rs::spill (function); src/lib.rs:16 src/lib.rs::fits (function)",
+    "",
+    "## text",
+];
+
 /// GIVEN a built project holding [`READERS`], WHEN `rigger graph --lookup` reads the constant with
 /// no `--tests` option, under `--tests exclude`, under `--tests include` and under `--tests only`,
 /// THEN its `reads:` line names the two product functions alone unless tests are shown. Under
@@ -830,15 +860,7 @@ fn a_test_referrer_is_hidden_by_default() {
     write_text(root, "src/lib.rs", READERS);
     git_commit_all(root, "source");
     run_rigger_ok(root, &["graph", "build"]);
-    let product: &[&str] = &[
-        "### LIMIT",
-        "exact match: 1 entity",
-        "- src/lib.rs:3 src/lib.rs::LIMIT (constant)",
-        "  The most widgets one bin holds.",
-        "  reads: src/lib.rs:11 src/lib.rs::spill (function); src/lib.rs:16 src/lib.rs::fits (function)",
-        "",
-        "## text",
-    ];
+    let product = LIMIT_READ_BY_PRODUCTS;
     let every: &[&str] = &[
         "### LIMIT",
         "exact match: 1 entity",
@@ -861,9 +883,172 @@ fn a_test_referrer_is_hidden_by_default() {
     }
 }
 
-/// Each case's term looked up through the binary in the built project at `root`, `options` passed
-/// after it: the printed lines from the term's heading on, as many as the case holds, are exactly
-/// the case's block.
+/// GIVEN a built project holding [`READERS`] and a file opening with `//!` lines, WHEN `rigger
+/// graph --show` shows the documented constant with no `--tests` option and under `--tests
+/// include`, and shows the file, THEN the constant's entries after its attrs are its doc, stripped
+/// of its markers and printed on one line, then a `referenced by reads` entry naming the two product
+/// readers as the lookup's `reads:` line names them, joined by `, `. Under include, the test readers
+/// follow them marked `[test]`, and a `referenced by imported by` entry names the test module. The
+/// file's entries end with the file's doc.
+#[test]
+fn show_prints_the_doc_and_the_referrers() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_text(root, "src/lib.rs", READERS);
+    write_text(
+        root,
+        "src/notes.rs",
+        "//! Notes on bins.\n//! Kept apart from the readers.\n\npub fn noted() {}\n",
+    );
+    git_commit_all(root, "source");
+    run_rigger_ok(root, &["graph", "build"]);
+    let doc = "  doc_comment The most widgets one bin holds. It bounds every bin.";
+    let product =
+        "src/lib.rs:11 src/lib.rs::spill (function), src/lib.rs:16 src/lib.rs::fits (function)";
+    let reads = format!("  referenced by reads {product}");
+    let every = format!(
+        "{reads}, src/lib.rs:21 src/lib.rs::helper (function) [test], \
+         src/lib.rs:34 src/lib.rs::tests::the_bound_holds (method) [test]"
+    );
+    // (the show's arguments, its entry lines between the site line and the body or the note)
+    let rows: [(&[&str], Vec<&str>); 3] = [
+        (
+            &["graph", "--show", "src/lib.rs::LIMIT"],
+            vec!["  name LIMIT", "  lang rust", doc, reads.as_str()],
+        ),
+        (
+            &["graph", "--show", "src/lib.rs::LIMIT", "--tests", "include"],
+            vec![
+                "  name LIMIT",
+                "  lang rust",
+                doc,
+                every.as_str(),
+                "  referenced by imported by src/lib.rs:30 src/lib.rs::tests (module) [test]",
+            ],
+        ),
+        (
+            &["graph", "--show", "src/notes.rs"],
+            vec![
+                "  lang rust",
+                "  doc_comment Notes on bins. Kept apart from the readers.",
+            ],
+        ),
+    ];
+    for (args, entries) in rows {
+        let out = common::cli::past_label(&run_rigger_ok(root, args));
+        let printed: Vec<&str> = (out.lines().skip(2))
+            .take_while(|l| !common::cli::is_body_line(l) && !l.starts_with("  ("))
+            .collect();
+        assert_eq!(printed, entries, "{args:?}:\n{out}");
+    }
+}
+
+/// One row of [`show_lists_each_referrer_as_the_lookup_does`]: the project's files, the shown id,
+/// the looked-up name, the options both reads pass, and the show's `referenced by` entries.
+type ReferrerRow = (
+    &'static [(&'static str, &'static str)],
+    &'static str,
+    &'static str,
+    &'static [&'static str],
+    &'static [&'static str],
+);
+
+/// GIVEN a built project holding [`AMBIGUOUS`] and one holding [`FILE_CALLS`], WHEN `rigger graph
+/// --show` shows an entity and `rigger graph --lookup` looks up its name under the same `--tests`
+/// option, THEN each `referenced by <label>` entry of the show lists the sites that the lookup's
+/// `<label>:` line under that entity lists. They come in the same order and each is printed the
+/// same way; the show joins them by `, ` where the lookup joins them by `; `. The rows are a reader
+/// in another file marked `?`, and, under `--tests include`, the module-level calls of a product
+/// and a test module, each site naming its file alone.
+#[test]
+fn show_lists_each_referrer_as_the_lookup_does() {
+    let rows: [ReferrerRow; 2] = [
+        (
+            &AMBIGUOUS,
+            "src/a.rs::LIMIT",
+            "LIMIT",
+            &[],
+            &["  referenced by reads src/c.rs:2 src/c.rs::fits (function) ?"],
+        ),
+        (
+            &FILE_CALLS,
+            "y.py::f",
+            "f",
+            &["--tests", "include"],
+            &["  referenced by called by test_y.py:3 test_y.py (file) [test], z.py:3 z.py (file)"],
+        ),
+    ];
+    for (files, id, term, options, entries) in rows {
+        let dir = temp_project();
+        let root = dir.path();
+        write_files(root, files);
+        git_commit_all(root, "source");
+        run_rigger_ok(root, &["graph", "build"]);
+        let read = |verb: &str, query: &str| {
+            run_rigger_ok(root, &[&["graph", verb, query][..], options].concat())
+        };
+        let show = read("--show", id);
+        let shown: Vec<&str> = (show.lines())
+            .filter(|l| l.starts_with("  referenced by "))
+            .collect();
+        assert_eq!(shown, entries, "{id} {options:?}:\n{show}");
+        // The lookup's label lines under the entity's site line, keyed and joined as the show's.
+        let lookup = read("--lookup", term);
+        let site = format!(" {id} (");
+        let listed: Vec<String> = (lookup.lines())
+            .skip_while(|l| !(l.starts_with("- ") && l.contains(&site)))
+            .skip(1)
+            .take_while(|l| l.starts_with("  "))
+            .filter_map(|l| {
+                REFERRER_LABELS.iter().find_map(|(_, label)| {
+                    let sites = l.strip_prefix(&format!("  {label}: "))?;
+                    Some(format!(
+                        "  referenced by {label} {}",
+                        sites.replace("; ", ", ")
+                    ))
+                })
+            })
+            .collect();
+        assert_eq!(listed, entries, "{term} {options:?}:\n{lookup}");
+    }
+}
+
+/// GIVEN a built project holding [`READERS`] and two linked worktrees at its head, WHEN one
+/// worktree's uncommitted edit appends a function reading the constant and `rigger graph --lookup`
+/// reads the constant from that worktree and then from the other, THEN the editing worktree's
+/// `reads:` line names the new reader after the two product functions, at the line that reads
+/// it, and the other's names the two product functions alone.
+#[test]
+fn the_overlay_carries_new_references() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_text(root, "src/lib.rs", READERS);
+    git_commit_all(root, "source");
+    run_rigger_ok(root, &["graph", "build"]);
+    let trees = tempfile::tempdir().unwrap();
+    let [edited, other] =
+        ["edited", "other"].map(|name| linked_worktree(root, trees.path().join(name)));
+    let drain = "pub fn drain() -> usize {\n    LIMIT\n}\n";
+    write_text(&edited, "src/lib.rs", &format!("{READERS}{drain}"));
+    let carried: &[&str] = &[
+        "### LIMIT",
+        "exact match: 1 entity",
+        "- src/lib.rs:3 src/lib.rs::LIMIT (constant)",
+        "  The most widgets one bin holds.",
+        "  reads: src/lib.rs:11 src/lib.rs::spill (function); src/lib.rs:16 src/lib.rs::fits (function); src/lib.rs:56 src/lib.rs::drain (function)",
+        "",
+        "## text",
+    ];
+    // (the worktree the lookup reads from, the constant's block from its heading to the next
+    // section's)
+    for (worktree, block) in [(&edited, carried), (&other, LIMIT_READ_BY_PRODUCTS)] {
+        lookup_prints_blocks(worktree, &[], &[("LIMIT", block)]);
+    }
+}
+
+/// Each case's term looked up through the binary from `root`, a worktree of a built project,
+/// `options` passed after it: the printed lines from the term's heading on, as many as the case
+/// holds, are exactly the case's block.
 fn lookup_prints_blocks(root: &std::path::Path, options: &[&str], cases: &[(&str, &[&str])]) {
     for (term, block) in cases {
         let args: Vec<&str> = ["graph", "--lookup", term]

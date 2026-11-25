@@ -964,6 +964,9 @@ pub struct Composed<'r, C = Whole> {
     code: C,
     /// What the read takes a node's doc from; none for a read that gives no doc.
     docs: Option<DocReader<'r>>,
+    /// The tests mode of the filter the graph was opened under, which
+    /// [`ContextGraph::locate`] reads a site's referrers under.
+    tests: Tests,
     /// Each recorded alias's canonical id.
     canonical: BTreeMap<String, String>,
     /// Each canonical id's recorded aliases.
@@ -1003,6 +1006,7 @@ impl<'r> Composed<'r> {
             Whole::at(view, filter, resolution),
             &view.stamp().tip,
             honesty,
+            filter.tests,
         )
     }
 
@@ -1018,7 +1022,7 @@ impl<'r> Composed<'r> {
         docs: Option<DocReader<'r>>,
     ) -> Result<impl ContextGraph + 'r, Error> {
         let code = crate::near::Near::new(view, filter);
-        let composed = Composed::over(records, code, &view.stamp().tip, honesty)?;
+        let composed = Composed::over(records, code, &view.stamp().tip, honesty, filter.tests)?;
         Ok(Composed { docs, ..composed })
     }
 }
@@ -1045,7 +1049,7 @@ impl<'r> Composed<'r> {
         resolution: f64,
     ) -> Result<WholeOpen<'r>, Error> {
         let code = Arc::new(Whole::read(view, filter, resolution, false));
-        Composed::over(records, code, &view.stamp().tip, honesty).map(WholeOpen)
+        Composed::over(records, code, &view.stamp().tip, honesty, filter.tests).map(WholeOpen)
     }
 
     /// [`Self::whole_at`] with the code half taken from `memo` when it holds it for this read,
@@ -1060,17 +1064,19 @@ impl<'r> Composed<'r> {
         memo: &WholeMemo,
     ) -> Result<WholeOpen<'r>, Error> {
         let code = memo.whole(view, filter, resolution);
-        Composed::over(records, code, &view.stamp().tip, honesty).map(WholeOpen)
+        Composed::over(records, code, &view.stamp().tip, honesty, filter.tests).map(WholeOpen)
     }
 }
 
 impl<'r, C: CodeHalf> Composed<'r, C> {
-    /// `records` composed with `code`, a view of the tree `tip`, labelled by `honesty`.
+    /// `records` composed with `code`, a view of the tree `tip` under the tests mode `tests`,
+    /// labelled by `honesty`.
     fn over(
         records: &'r dyn Neighbors,
         code: C,
         tip: &Tip,
         honesty: Honesty,
+        tests: Tests,
     ) -> Result<Self, Error> {
         let mut canonical = BTreeMap::new();
         let mut aliased: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -1085,6 +1091,7 @@ impl<'r, C: CodeHalf> Composed<'r, C> {
             records,
             code,
             docs: None,
+            tests,
             canonical,
             aliased,
             stale,
@@ -1481,7 +1488,14 @@ impl<C: CodeHalf> ContextGraph for Composed<'_, C> {
         }
     }
     fn locate(&self, entity: &str) -> Result<Located, Error> {
-        locate(self, entity)
+        Ok(match locate(self, entity)? {
+            Located::One(mut site) => {
+                site.doc_comment = self.node(&site.id)?.and_then(|node| self.doc(&node));
+                site.referrers = self.referrers(&site.id, self.tests);
+                Located::One(site)
+            }
+            other => other,
+        })
     }
     fn definition_end(&self, site: &EntitySite) -> Result<Option<u32>, Error> {
         let at = recorded_at(site).filter(|_| !self.label.compared.withholds_code());
@@ -2057,6 +2071,7 @@ pub(crate) fn hidden_named(graph: &dyn ContextGraph, query: &str) -> Result<Vec<
 
 /// [`ContextGraph::locate`] over `graph`: an exact id (a bare flat node's only once no definition
 /// answers), else the definitions [`shown_candidates`] names, one a site and more the candidates.
+/// The site carries no doc and no referrer, which the composed graph's `locate` adds to it.
 pub fn locate(graph: &dyn Neighbors, entity: &str) -> Result<Located, Error> {
     let (exact, deferred) = match graph.node(entity)? {
         Some(node) if is_bare_flat_node(&node) => (None, Some(node)),
@@ -3109,6 +3124,8 @@ mod tests {
                 degree: 0,
                 attrs: BTreeMap::from([("name".to_string(), "run".to_string())]),
                 unresolved: Vec::new(),
+                doc_comment: None,
+                referrers: Vec::new(),
             };
             let got = near.unwrap().definition_end(&site).unwrap();
             assert_eq!(got, want, "{case}");
