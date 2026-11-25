@@ -52,7 +52,7 @@ defaults:
   # already holds exactly 200 spawns, so a new run under 200 halts before its first
   # spawn. Spec 06 unit 1 scopes the fold per run, making this cumulative-count
   # artifact obsolete; revisit the number after it lands.
-  budget: 400
+  budget: 540
 
   # The remediation depth (§4.4): how many attempts a failed unit gets before it
   # escalates to a human. This is the REFINEMENT-depth knob, NOT a review-rigor
