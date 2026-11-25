@@ -18,8 +18,9 @@ const UNREAD: &str = "pub fn beta() -> u8 {\n    7\n}\n";
 
 /// GIVEN a built project holding [`READERS`] and an [`UNREAD`] `src/other.rs`,
 /// WHEN the operator runs `rigger graph --around` and `--show` on its entities from the clean
-/// worktree, served from the settled code half, and again once a comment is appended to
-/// `src/other.rs`, read through the overlay that resolves near the ids,
+/// worktree, where each read under the default filter is served from the settled code half, and
+/// again once a comment is appended to `src/other.rs`, where each read resolves near the ids
+/// through the overlay,
 /// THEN each read prints one exact answer under each worktree's own label: the same nodes, edges,
 /// degrees, referrers and hidden test count from both paths, the callers `ready`'s depth-1
 /// neighbourhood reaches through its incoming edges alone, the constant a bare name finds by its
@@ -190,13 +191,9 @@ fn a_graph_read_answers_alike_from_the_settled_half_and_near_its_ids() {
     ];
     // (the worktree, the comment appended to `src/other.rs` first, its label)
     let worktrees = [
+        ("the clean worktree", None, format!("describes {head}")),
         (
-            "the clean worktree, served from the settled half",
-            None,
-            format!("describes {head}"),
-        ),
-        (
-            "a worktree differing in an unread file, resolved near the ids",
+            "a worktree differing in an unread file",
             Some("// a note\n"),
             format!("describes {worktree} ({head} + 1 file); groupings describe {head}"),
         ),
