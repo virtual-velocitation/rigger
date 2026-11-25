@@ -1,9 +1,9 @@
 //! Periphery (API / contract / integration) tests for spec 117, RUST REFERENCES: a Rust const
-//! read, type reference, field use, variant use and `use` are extracted tagged with their
-//! `ref_kind`, and no consumer that counts calls - the fold's `REFERENCES` and `CALLS` edges among
-//! them - reads one. The crate's own tests pin the extraction, the emit pass, the grounder's
-//! counts and the fold arm one module at a time over hand-built input; these run OUTSIDE the
-//! crates and guard the boundary a tagged reference crosses on its way to an operator:
+//! read, type reference, field use, variant use, impl header and `use` are extracted tagged with
+//! their `ref_kind`, and no consumer that counts calls - the fold's `REFERENCES` and `CALLS`
+//! edges among them - reads one. The crate's own tests pin the extraction, the emit pass, the
+//! grounder's counts and the fold arm one module at a time over hand-built input; these run
+//! OUTSIDE the crates and guard the boundary a tagged reference crosses on its way to an operator:
 //!
 //!  - the graph `rigger graph build` folds: a real tree's tagged references fold no placeholder
 //!    and no edge of the event arm's, each landing instead as the staged row's one edge onto its
@@ -40,13 +40,20 @@
 //!    `SpawnOpts::system_prompt` and `Store.root`, and `opts.run()` as a call alone; the
 //!    unqualified one lands on its one field `inferred`, the qualified two `extracted`, and the
 //!    call as the call's two edges onto its method;
-//!  - and Rust stages its variant uses: `InstallOutcome::AlreadyCurrent` and `Located::Many(c) =>`
+//!  - Rust stages its variant uses: `InstallOutcome::AlreadyCurrent` and `Located::Many(c) =>`
 //!    are stored as the `variant` mentions `InstallOutcome::AlreadyCurrent` and `Located::Many`
 //!    beside their enum's `type` mention, `Kind::RejectRecurrence { n } =>` as the `variant`
 //!    mention `Kind::RejectRecurrence` and the `field` mention `RejectRecurrence::n` with no `type`
 //!    mention, `Hop::Frontier(cs)` as a call and `-> Self::Target` as a `type` mention alone; each
 //!    lands `extracted` on the one variant, field, enum or associated type its name narrows to,
-//!    and the call as the call's two edges onto its variant.
+//!    and the call as the call's two edges onto its variant;
+//!  - and Rust tags its impl headers: `impl<T> CodeView for FactsView<T>` is stored as the `impl`
+//!    mentions `CodeView` and `FactsView`, and `impl FactsView` as the `impl` mention
+//!    `FactsView`, each enclosed by its impl, a function-local impl's by the impl and never its
+//!    function, with no call and no `type` mention; each lands `extracted` from its impl on the
+//!    trait or type it names, and through them `FactsView::new()` lands on the `new` that
+//!    `impl FactsView` defines and `FactsView::file()` on the trait's `file`, over their same-file
+//!    namesakes.
 
 #[cfg(feature = "symbols")]
 use crate::common;
@@ -811,8 +818,19 @@ const FIELD_USES_SOURCE: &str = "struct SpawnOpts { system_prompt: u8 }\nimpl Sp
 #[cfg(feature = "symbols")]
 const VARIANT_USES_SOURCE: &str = "enum InstallOutcome { AlreadyCurrent }\nenum Located { Many(u8) }\nenum Kind { RejectRecurrence { n: u8 } }\nenum Hop { Frontier(u8) }\ntrait Tr { type Target; fn get(&self) -> Self::Target; }\nfn a() { let o = InstallOutcome::AlreadyCurrent; }\nfn b(x: u8) -> u8 { match x { Located::Many(c) => c, _ => 0 } }\nfn c(k: u8) -> u8 { match k { Kind::RejectRecurrence { n } => n, _ => 0 } }\nfn e(cs: u8) { Hop::Frontier(cs); }\n";
 
+/// A Rust file holding the impl headers RUST TAGS IMPL HEADERS names (spec 117) beside what they
+/// name: a trait `CodeView` with the method `file` (line 1), a struct `FactsView` (line 2), the
+/// trait impl `impl<T> CodeView for FactsView<T>` (line 3), the inherent `impl FactsView` with
+/// the method `new` (line 4), a free `new` (line 5) and `file` (line 6), a `fn a` calling
+/// `FactsView::new()` and `FactsView::file()` (line 7), and a `fn host` holding a struct `Local`
+/// and its trait impl `impl CodeView for Local` (line 8). Each call's leaf names two same-file
+/// functions, so only its qualifier can narrow it to one.
+#[cfg(feature = "symbols")]
+const IMPL_HEADERS_SOURCE: &str = "trait CodeView { fn file(&self) {} }\nstruct FactsView;\nimpl<T> CodeView for FactsView<T> {}\nimpl FactsView { fn new() {} }\nfn new() {}\nfn file() {}\nfn a() { FactsView::new(); FactsView::file(); }\nfn host() { struct Local; impl CodeView for Local {} }\n";
+
 /// GIVEN a project whose one Rust file holds a row's uses - the field uses of
-/// [`FIELD_USES_SOURCE`] or the variant uses of [`VARIANT_USES_SOURCE`] -
+/// [`FIELD_USES_SOURCE`], the variant uses of [`VARIANT_USES_SOURCE`] or the impl headers of
+/// [`IMPL_HEADERS_SOURCE`] -
 /// WHEN the operator runs `rigger graph build`,
 /// THEN the code store holds exactly the row's mentions, each named as the Rust qualifier rule
 /// writes it, and the graph's `REFERENCES` and `CALLS` edges are exactly the row's, each landing
@@ -838,9 +856,22 @@ const VARIANT_USES_SOURCE: &str = "enum InstallOutcome { AlreadyCurrent }\nenum 
 /// variant holds, so every edge is `extracted`: each variant use onto its variant, the field onto
 /// `RejectRecurrence`'s `n`, the call as the call's two edges onto the variant `Hop::Frontier`,
 /// and each type mention onto its enum or associated type.
+///
+/// The impl-header row: `impl<T> CodeView for FactsView<T>` is the `impl` mentions `CodeView` and
+/// `FactsView`, `impl FactsView` the `impl` mention `FactsView` and the fn-local
+/// `impl CodeView for Local` the `impl` mentions `CodeView` and `Local`, each enclosed by its own
+/// impl, the fn-local two by `host::impl CodeView for Local` and never `host`, and no header is a
+/// call or a `type` mention (spec 117, RUST TAGS IMPL HEADERS). Each lands `extracted` from its
+/// impl on the trait or type it names. The calls `FactsView::new()` and `FactsView::file()` read
+/// those mentions: `FactsView`'s impls are the impls enclosing an `impl` mention of it and the
+/// traits they implement are the ones their `impl` mentions name, so `FactsView::new()` lands on
+/// the `new` that `impl FactsView` defines and `FactsView::file()` on the trait's `file`, each
+/// `extracted` over its same-file namesake, beside the `type` mention of `FactsView` the calls'
+/// qualifier makes.
 #[cfg(feature = "symbols")]
 #[test]
-fn graph_build_lands_each_rust_field_and_variant_use_on_its_definition_and_a_call_as_a_call() {
+fn graph_build_lands_each_rust_field_variant_and_impl_header_mention_on_its_definition_and_a_call_as_a_call(
+) {
     use crate::symbol_index::mention_in;
     use rigger::contextgraph::query::entity_id;
     use rigger::contextgraph::{
@@ -965,6 +996,57 @@ fn graph_build_lands_each_rust_field_and_variant_use_on_its_definition_and_a_cal
              variant's construction a call and a type-position path a type mention alone; each \
              lands extracted on the one definition its qualifier narrows to, the call as a call; \
              and no placeholder stands for any mention",
+        ),
+        (
+            IMPL_HEADERS_SOURCE,
+            // `a` is 6, and the impls of `CodeView for FactsView<T>`, `FactsView` and
+            // `CodeView for Local` 9, 10 and 11.
+            vec![
+                call_in(6, "FactsView::new", "new", 7),
+                call_in(6, "FactsView::file", "file", 7),
+                tagged_in(6, "FactsView", "FactsView", REF_KIND_TYPE, 7),
+                tagged_in(9, "CodeView", "CodeView", REF_KIND_IMPL, 3),
+                tagged_in(9, "FactsView", "FactsView", REF_KIND_IMPL, 3),
+                tagged_in(10, "FactsView", "FactsView", REF_KIND_IMPL, 4),
+                tagged_in(11, "CodeView", "CodeView", REF_KIND_IMPL, 8),
+                tagged_in(11, "Local", "Local", REF_KIND_IMPL, 8),
+            ],
+            vec![("a", "FactsView::new"), ("a", "CodeView::file")],
+            vec![
+                ("a", "FactsView", TIER_EXTRACTED),
+                ("impl CodeView for FactsView<T>", "CodeView", TIER_EXTRACTED),
+                (
+                    "impl CodeView for FactsView<T>",
+                    "FactsView",
+                    TIER_EXTRACTED,
+                ),
+                ("impl FactsView", "FactsView", TIER_EXTRACTED),
+                ("host::impl CodeView for Local", "CodeView", TIER_EXTRACTED),
+                (
+                    "host::impl CodeView for Local",
+                    "host::Local",
+                    TIER_EXTRACTED,
+                ),
+            ],
+            vec![
+                "CodeView",
+                "CodeView::file",
+                "FactsView",
+                "FactsView::new",
+                "a",
+                "file",
+                "host",
+                "host::Local",
+                "host::impl CodeView for Local",
+                "impl CodeView for FactsView<T>",
+                "impl FactsView",
+                "new",
+            ],
+            "each impl header's trait and self type is stored an impl mention its impl encloses, \
+             a function-local impl's never its function, and no call or type mention; each lands \
+             extracted from its impl on what it names; and through them the type-qualified calls \
+             land extracted on the impl's method and the trait's method, no placeholder standing \
+             for any mention",
         ),
     ];
     for (source, mentions, calls, references, entities, why) in cases {
