@@ -137,7 +137,7 @@ impl Symbols {
             .len();
         scored_hits(sight, &words)
             .into_iter()
-            .filter(|h| !h.test && h.tier == 2 && h.name_coverage == distinct)
+            .filter(|h| !h.test && h.tier == EXACT_TIER && h.name_coverage == distinct)
             .for_each(|h| add(&h.file));
         seed
     }
@@ -563,6 +563,9 @@ impl ScoredHit {
     }
 }
 
+/// The [`ScoredHit::tier`] of a hit whose name equals a query term.
+const EXACT_TIER: u8 = 2;
+
 /// Score every (file, line) definition/call-reference location of the served files against
 /// `terms` (a tagged reference, spec 117, never a location), ranked by [`ScoredHit::rank`] - the
 /// ONE scored, sorted pass both [`Symbols::ground`] and [`Symbols::ground_ranked`] consume, so the
@@ -593,7 +596,7 @@ fn scored_hits(sight: &Sight<'_>, terms: &[&str]) -> Vec<ScoredHit> {
             let mut hit_tier = 0u8;
             for t in terms {
                 let tier = if name == *t {
-                    2u8
+                    EXACT_TIER
                 } else if name.contains(t) {
                     1u8
                 } else {
