@@ -1,6 +1,7 @@
 //! The honesty label (6.1) heads every graph answer the CLI prints: the commit the answer
 //! describes, or the caller's worktree over it when the two differ, and what it withheld when the
-//! worktree cannot be compared. Under it the lookup names each entity's referrers by kind.
+//! worktree cannot be compared. Under it the lookup names each entity's referrers by kind, and
+//! marks `?` a referrer whose mention gave the entity no single edge.
 
 use crate::common;
 use common::cli::{run_rigger, run_rigger_ok, temp_project};
@@ -740,6 +741,46 @@ fn the_lookup_names_referrers_by_kind() {
             ],
         ),
     ];
+    lookup_prints_blocks(root, &cases);
+}
+
+/// GIVEN a built project whose constant `LIMIT` is defined in two files and read by one function
+/// in a third, WHEN `rigger graph --lookup` reads the constant, THEN each constant's `reads:` line
+/// names the reading function marked `?`: its mention gave neither constant a single edge.
+#[test]
+fn an_ambiguous_referrer_is_marked() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_text(root, "src/a.rs", "pub const LIMIT: usize = 3;\n");
+    write_text(root, "src/b.rs", "pub const LIMIT: usize = 4;\n");
+    write_text(
+        root,
+        "src/c.rs",
+        "pub fn fits(n: usize) -> bool {\n    n <= LIMIT\n}\n",
+    );
+    git_commit_all(root, "source");
+    run_rigger_ok(root, &["graph", "build"]);
+    lookup_prints_blocks(
+        root,
+        &[(
+            "LIMIT",
+            &[
+                "### LIMIT",
+                "exact match: 2 entities",
+                "- src/a.rs:1 src/a.rs::LIMIT (constant)",
+                "  reads: src/c.rs:2 src/c.rs::fits (function) ?",
+                "- src/b.rs:1 src/b.rs::LIMIT (constant)",
+                "  reads: src/c.rs:2 src/c.rs::fits (function) ?",
+                "",
+                "## text",
+            ],
+        )],
+    );
+}
+
+/// Each case's term looked up through the binary in the built project at `root`: the printed
+/// lines from the term's heading on, as many as the case holds, are exactly the case's block.
+fn lookup_prints_blocks(root: &std::path::Path, cases: &[(&str, &[&str])]) {
     for (term, block) in cases {
         let (out, err, ok) = run_rigger(root, &["graph", "--lookup", term]);
         assert!(ok, "{term} answers; stderr:\n{err}");
@@ -748,6 +789,6 @@ fn the_lookup_names_referrers_by_kind() {
             .skip_while(|l| *l != heading)
             .take(block.len())
             .collect();
-        assert_eq!(printed, block, "{term}:\n{out}");
+        assert_eq!(printed, *block, "{term}:\n{out}");
     }
 }
