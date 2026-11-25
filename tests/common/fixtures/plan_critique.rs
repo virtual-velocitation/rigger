@@ -1,7 +1,6 @@
 //! Plan-critique fixtures: the widget unit a scripted planner proposes, the planning policy the
 //! planner persona states in place of the plan protocol, the plan protocol a planner's task closes
-//! with, the whole DAG critique prompt, each with the unit size cap sentence only when the workflow
-//! declares a cap, the disjoint overlap text, the line a re-plan round opens with and the verdict
+//! with, the whole DAG critique prompt, the disjoint overlap text, the line a re-plan round opens with and the verdict
 //! paragraph it is spelled from, the adjudicator's reject line and the records a spec-defect stop
 //! appends (spec 112, criterion 5).
 
@@ -35,14 +34,13 @@ pub fn policy_counts(text: &str) -> [usize; 6] {
 }
 
 /// The plan protocol that closes a planner's task, as the planner is served it: the framing and
-/// contract sentences, `cap`'s [`unit_size_cap_then`] a space in its slot, `implementer` as the
-/// agent of the `UnitProposed` shape and `criteria` as the criteria block, with none of the
-/// [`PLANNING_POLICY`].
-pub fn plan_protocol_text(implementer: &str, criteria: &str, cap: u32) -> String {
+/// contract sentences, `implementer` as the agent of the `UnitProposed` shape and `criteria` as the
+/// criteria block, with none of the [`PLANNING_POLICY`].
+pub fn plan_protocol_text(implementer: &str, criteria: &str) -> String {
     format!(
         "\n\nYou are the planner. The conductor has ALREADY created one baseline implement \
          unit per acceptance criterion below - the spec is decomposed by construction. Your \
-         job is to REFINE that baseline, not to re-decompose it. {}Each part of a split \
+         job is to REFINE that baseline, not to re-decompose it. Each part of a split \
          echoes the split criterion's id and ends its `criterion` text with an OWNS sentence \
          naming its part (the conductor keeps that sentence after the criterion's exact text as \
          that unit's contract).\n\
@@ -68,56 +66,25 @@ pub fn plan_protocol_text(implementer: &str, criteria: &str, cap: u32) -> String
          template's own gates; you never need to name them.\n\n\
          The acceptance criteria to refine against (echo the [id] shown next to each \
          criterion into that unit's `criterion_id`, and copy the text into `criterion`):\n\
-         {criteria}\n",
-        unit_size_cap_then(cap, " ")
+         {criteria}\n"
     )
 }
 
 /// The verdict paragraph every round of the DAG critique prompt closes with: its cause contract
 /// asks for `spec-ambiguity` - the cause the spec-defect stop reads, spelled here as the
 /// adjudicator must write it - only on a defect in a criterion's own text no decomposition can
-/// remove, and for `decomposition-conflict` on every defect a re-plan can fix and when unsure,
-/// naming [`DAG_SIZE_CAP_CAUSE`] among those defects only when `cap` declares a unit size cap.
-pub fn dag_critique_verdict_paragraph(cap: u32) -> String {
-    format!(
-        "Render your final verdict as a JSON line: {{\"verdict\":\"approve\"}} to release the \
-         fan-out, or {{\"verdict\":\"reject\"}} to send the decomposition back to the planner. \
+/// remove, and for `decomposition-conflict` on every defect a re-plan can fix and when unsure.
+pub fn dag_critique_verdict_paragraph() -> String {
+    "Render your final verdict as a JSON line: {\"verdict\":\"approve\"} to release the \
+         fan-out, or {\"verdict\":\"reject\"} to send the decomposition back to the planner. \
          A reject's cause follows this gate's contract, which governs it over any generic cause \
          wording in your persona: \"cause\":\"spec-ambiguity\" only when the upheld defect is in \
          a criterion's own text and no decomposition can remove it (two criteria that contradict \
          under every landing order, a criterion no plan can satisfy, a demanded mitigation no \
          criterion owns); \"cause\":\"decomposition-conflict\" for every defect a re-plan can \
-         fix (twin units, a missing exclusion between units, {}a unit owning no criterion, a \
-         split the planner chose). When unsure, \"cause\":\"decomposition-conflict\".",
-        when_capped(cap, DAG_SIZE_CAP_CAUSE)
-    )
-}
-
-/// The cause example the DAG critique's cause contract names only when a unit size cap is
-/// declared.
-pub const DAG_SIZE_CAP_CAUSE: &str = "a unit over the size cap, ";
-
-/// The first sentence of the unit size cap, stating `cap` lines: the one cap sentence the plan
-/// protocol and every round of the DAG critique prompt state when the workflow declares a cap.
-pub fn unit_size_cap_sentence(cap: u32) -> String {
-    format!("A unit is too large when it is expected to add more than {cap} lines.")
-}
-
-/// What a prompt's cap slot holds: the [`unit_size_cap_sentence`] and the `separator` after it
-/// (the plan protocol's space, the DAG critique prompt's blank line) when `cap` declares a unit
-/// size cap, else nothing.
-fn unit_size_cap_then(cap: u32, separator: &str) -> String {
-    when_capped(cap, &format!("{}{separator}", unit_size_cap_sentence(cap))).to_string()
-}
-
-/// `text` when `cap` declares a unit size cap - any number of lines above 0 - else the empty
-/// string: a workflow that declares no cap, or a cap of 0, states none.
-fn when_capped(cap: u32, text: &str) -> &str {
-    if cap > 0 {
-        text
-    } else {
-        ""
-    }
+         fix (twin units, a missing exclusion between units, a unit owning no criterion, a \
+         split the planner chose). When unsure, \"cause\":\"decomposition-conflict\"."
+        .to_string()
 }
 
 /// The overlap text of a DAG whose units share no file.
@@ -127,10 +94,10 @@ pub const DAG_DISJOINT_OVERLAP: &str = "\nBlast-radius overlap (informational): 
 /// The line a re-plan round's DAG critique prompt opens with, above the reject it quotes.
 pub const DAG_PRIOR_REJECT_HEADER: &str = "A prior plan-critique REJECTED this decomposition:\n";
 
-/// The whole DAG critique prompt of a round no reject precedes over a workflow declaring `cap`: its
-/// opener, `cap`'s [`unit_size_cap_then`] a blank line, one line per `[id, criterion, needs, blast
-/// radius]` of `units`, the `overlap` text and the [`dag_critique_verdict_paragraph`].
-pub fn dag_critique_prompt(units: &[[&str; 4]], overlap: &str, cap: u32) -> String {
+/// The whole DAG critique prompt of a round no reject precedes: its opener, one line per `[id,
+/// criterion, needs, blast radius]` of `units`, the `overlap` text and the
+/// [`dag_critique_verdict_paragraph`].
+pub fn dag_critique_prompt(units: &[[&str; 4]], overlap: &str) -> String {
     let list: String = units
         .iter()
         .map(|[id, criterion, needs, radius]| {
@@ -141,9 +108,8 @@ pub fn dag_critique_prompt(units: &[[&str; 4]], overlap: &str, cap: u32) -> Stri
         "You are the plan-critique gate. Review the PROPOSED unit DAG below - the decomposition \
          the planner produced - BEFORE any implementer runs, and judge it against the \
          decomposition rules in your persona: the CROSS-UNIT rules that per-unit review cannot \
-         see.\n\n{}Proposed units:\n{list}{overlap}\n{}\n",
-        unit_size_cap_then(cap, "\n\n"),
-        dag_critique_verdict_paragraph(cap)
+         see.\n\nProposed units:\n{list}{overlap}\n{}\n",
+        dag_critique_verdict_paragraph()
     )
 }
 

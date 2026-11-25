@@ -441,6 +441,17 @@ impl Config {
             "agent work is bounded by `max_retries` and the failure taxonomy's per-class retry \
              limits",
         )?;
+        // `defaults.max_unit_added_lines` is retired: unit size follows from one criterion per
+        // unit, so no line count caps it and any value is refused at the line to delete.
+        reject_retired_key(
+            &wf.defaults
+                .max_unit_added_lines
+                .map(|n| n.to_string())
+                .unwrap_or_default(),
+            "defaults.max_unit_added_lines",
+            "the `max_unit_added_lines:` line under `defaults:`",
+            "unit size follows from one criterion per unit",
+        )?;
         for id in self.agents.keys() {
             check_agent_id(id).map_err(|m| err(format!("agents {m}")))?;
         }
@@ -2411,24 +2422,22 @@ agent: worker\n";
         );
     }
 
-    /// `defaults.grep_guard` and `defaults.max_unit_added_lines` each read as written, and a
-    /// workflow that does not write one declares no guard or no unit size cap, the same 0 a
-    /// declared 0 cap reads as; a row writing one key leaves the other at its absent value.
+    /// `defaults.grep_guard` reads as written, and a workflow that does not write it declares no
+    /// guard.
     #[test]
-    fn the_guard_and_cap_defaults_parse_and_are_off_when_absent() {
+    fn the_guard_default_parses_and_is_off_when_absent() {
         let rows = [
-            ("defaults:\n  grep_guard: true\n", (true, 0)),
-            ("defaults:\n  grep_guard: false\n", (false, 0)),
-            ("defaults:\n  max_unit_added_lines: 3000\n", (false, 3000)),
-            ("defaults:\n  max_unit_added_lines: 1\n", (false, 1)),
-            ("defaults:\n  max_unit_added_lines: 0\n", (false, 0)),
-            ("defaults:\n  max_retries: 3\n", (false, 0)),
+            ("defaults:\n  grep_guard: true\n", true),
+            ("defaults:\n  grep_guard: false\n", false),
+            ("defaults:\n  max_retries: 3\n", false),
         ];
-        let parsed: Vec<(bool, u32)> = rows
+        let parsed: Vec<bool> = rows
             .iter()
             .map(|(yaml, _)| {
-                let defaults = serde_yaml::from_str::<Workflow>(yaml).unwrap().defaults;
-                (defaults.grep_guard, defaults.max_unit_added_lines)
+                serde_yaml::from_str::<Workflow>(yaml)
+                    .unwrap()
+                    .defaults
+                    .grep_guard
             })
             .collect();
         assert_eq!(parsed, rows.map(|(_, declared)| declared));
@@ -2690,9 +2699,14 @@ class: product\n";
         let budget = "the workflow key `defaults.budget` is retired (agent work is bounded by \
              `max_retries` and the failure taxonomy's per-class retry limits): delete the \
              `budget:` line under `defaults:` from your workflow.yml (config key: defaults.budget)";
+        let unit_cap = "the workflow key `defaults.max_unit_added_lines` is retired (unit size \
+             follows from one criterion per unit): delete the `max_unit_added_lines:` line under \
+             `defaults:` from your workflow.yml (config key: defaults.max_unit_added_lines)";
         for (block, refusal) in [
             ("defaults:\n  budget: 60\n", Some(budget)),
             ("defaults:\n  budget: 0\n", Some(budget)),
+            ("defaults:\n  max_unit_added_lines: 3000\n", Some(unit_cap)),
+            ("defaults:\n  max_unit_added_lines: 0\n", Some(unit_cap)),
             ("defaults:\n  max_retries: 3\n", None),
         ] {
             let workflow: Workflow = crate::config::parse_yaml_naming_unknown_keys(block)

@@ -17,11 +17,10 @@ pub const EMIT_PROTOCOL: &str = "Record each decision you make by calling the ri
 pub const EMIT_LIVE: &str =
     "This writes it to the shared event log live, so other agents see it immediately.";
 
-/// FRAMING: the planner's role and its refine-not-re-decompose rule, `{unit_size_cap}` holding
-/// [`UNIT_SIZE_CAP`] and a space when the workflow declares a cap, else nothing.
+/// FRAMING: the planner's role and its refine-not-re-decompose rule.
 pub const PLAN_ROLE: &str = "You are the planner. The conductor has ALREADY created one baseline \
      implement unit per acceptance criterion below - the spec is decomposed by construction. \
-     Your job is to REFINE that baseline, not to re-decompose it. {unit_size_cap}";
+     Your job is to REFINE that baseline, not to re-decompose it. ";
 
 /// CONTRACT: how a split part and a refinement name the criterion they serve, the id the
 /// conductor pairs a unit with its baseline by.
@@ -71,11 +70,6 @@ pub const PLAN_CRITERIA_LEAD: &str = "The acceptance criteria to refine against 
 /// FRAMING: what fills [`PLAN_CRITERIA_LEAD`]'s `{criteria}` when the spec enumerates no
 /// criterion.
 pub const PLAN_NO_CRITERIA: &str = "(no enumerated acceptance criteria)";
-
-/// FRAMING: the unit size cap of `{cap}` lines, printed by the planner's refine protocol and the
-/// DAG critique prompt only when the workflow declares `defaults.max_unit_added_lines`.
-pub const UNIT_SIZE_CAP: &str =
-    "A unit is too large when it is expected to add more than {cap} lines.";
 
 /// CONTRACT: the `upheld` list an adjudicator's verdict line carries and its shape.
 pub const UPHELD_PROTOCOL: &str = " Your verdict line lists as \"upheld\":[\"<finding id>\"] \
@@ -443,8 +437,7 @@ pub const DAG_OVERLAP_RECOVERY: &str = "\nEach file list above names at most {na
      looking up that criterion's terms or a named file through the knowledge graph's lookup verbs: ";
 
 /// CONTRACT: the verdict line and the cause contract a plan critique's reject follows,
-/// `{spec_ambiguity}` holding the spec-ambiguity cause and `{size_cap_cause}`
-/// [`DAG_SIZE_CAP_CAUSE`] when a unit size cap is declared, else nothing.
+/// `{spec_ambiguity}` holding the spec-ambiguity cause.
 pub const DAG_CRITIQUE_CONTRACT: &str = "\nRender your final verdict as a JSON line: \
      {\"verdict\":\"approve\"} to release the fan-out, or {\"verdict\":\"reject\"} to send the \
      decomposition back to the planner. A reject's cause follows this gate's contract, which \
@@ -453,12 +446,8 @@ pub const DAG_CRITIQUE_CONTRACT: &str = "\nRender your final verdict as a JSON l
      it (two criteria that contradict under every landing order, a criterion no plan can \
      satisfy, a demanded mitigation no criterion owns); \"cause\":\"decomposition-conflict\" for \
      every defect a re-plan can fix (twin units, a missing exclusion between units, \
-     {size_cap_cause}a unit owning no criterion, a split the planner chose). When unsure, \
+     a unit owning no criterion, a split the planner chose). When unsure, \
      \"cause\":\"decomposition-conflict\".\n";
-
-/// CONTRACT: the cause example [`DAG_CRITIQUE_CONTRACT`] names among the defects a re-plan can
-/// fix, only when the workflow declares a unit size cap.
-pub const DAG_SIZE_CAP_CAUSE: &str = "a unit over the size cap, ";
 
 /// FRAMING: the plan critique's rejection `{feedback}` a re-plan opens with, and the revise
 /// sentence.
@@ -502,7 +491,6 @@ pub fn prompt_groups() -> &'static [rigger_domain::prompt_surface::Group] {
         "conductor::emit_protocol" => [EMIT_PROTOCOL, EMIT_LIVE],
         "conductor::render_plan_protocol" => [
             PLAN_ROLE,
-            UNIT_SIZE_CAP,
             PLAN_SPLIT_ID_ECHO,
             PLAN_PAIRING,
             PLAN_COPY_TEXT,
@@ -569,7 +557,6 @@ pub fn prompt_groups() -> &'static [rigger_domain::prompt_surface::Group] {
             DAG_REVISED_SINCE_REJECT,
             DAG_UNCHANGED_SINCE_REJECT,
             DAG_CRITIQUE_OPENER,
-            UNIT_SIZE_CAP,
             DAG_UNITS_HEADER,
             DAG_UNIT_ROW,
             DAG_NO_CRITERION,
@@ -588,7 +575,6 @@ pub fn prompt_groups() -> &'static [rigger_domain::prompt_surface::Group] {
             DAG_OVERLAP_RECOVERY,
             LOOKUP_VERBS,
             DAG_CRITIQUE_CONTRACT,
-            DAG_SIZE_CAP_CAUSE,
         ],
         "conductor::re_plan_lead" => [REPLAN_LEAD, REPLAN_ID_CONTRACT],
         "conductor::write_code_neighborhood" => [
@@ -664,7 +650,6 @@ mod tests {
         ("DAG_OVERLAP_UNSERIALIZED_HEADER", "FRAMING"),
         ("DAG_PRIOR_REJECT", "FRAMING"),
         ("DAG_REVISED_SINCE_REJECT", "FRAMING"),
-        ("DAG_SIZE_CAP_CAUSE", "CONTRACT"),
         ("DAG_UNITS_HEADER", "FRAMING"),
         ("DAG_UNCHANGED_SINCE_REJECT", "FRAMING"),
         ("DAG_UNIT_ROW", "FRAMING"),
@@ -730,7 +715,6 @@ mod tests {
         ("RUN_NOTES_CLOSING", "FRAMING"),
         ("RUN_NOTES_HEADER", "FRAMING"),
         ("TASK_BLOCK", "FRAMING"),
-        ("UNIT_SIZE_CAP", "FRAMING"),
         ("UPHELD_NOTES", "FRAMING"),
         ("UPHELD_PROTOCOL", "CONTRACT"),
     ];

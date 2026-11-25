@@ -27,11 +27,6 @@ defaults:
   # first and a literal search is a deliberate, reported fallback.
   grep_guard: true
 
-  # The unit size cap: the planner's protocol and every DAG critique round state that a unit
-  # expected to add more than this many lines is too large, so each unit stays one reviewable
-  # change.
-  max_unit_added_lines: 3000
-
   # The agent that writes each unit's periphery tests at the build seam, after its implementer
   # is green and before the gates (.rigger/agents/sdet-author.md). Absent, no test author runs
   # and a unit's tests are only those its implementer wrote.

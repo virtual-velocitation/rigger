@@ -404,8 +404,7 @@ fn a_re_plannable_reject_after_a_spec_ambiguity_one_re_plans_again() {
 
 /// Given a run whose plan-critique adjudicator is launched at its first round and again at the
 /// re-plan round its first reject drove, then the task the run serves each carries the DAG
-/// critique verdict paragraph of a workflow declaring no unit size cap, as [`WORKFLOW`] does,
-/// exactly once: every round's adjudicator - the re-plan round's, whose reject is the one that
+/// critique verdict paragraph exactly once: every round's adjudicator - the re-plan round's, whose reject is the one that
 /// stops, included - is asked for `spec-ambiguity`, spelled as the stop reads it, only on a defect
 /// in a criterion's own text, and for `decomposition-conflict` on every defect a re-plan can fix
 /// and when unsure. The stop that round's `spec-ambiguity` reject then drives is pinned by
@@ -414,7 +413,7 @@ fn a_re_plannable_reject_after_a_spec_ambiguity_one_re_plans_again() {
 fn every_critique_round_asks_its_adjudicator_for_the_cause_the_stop_reads() {
     let (_dir, ran) = stopped_on_a_second_spec_ambiguity_reject();
     let served = [0, 1].map(|k| ran.served(&format!("plan-critique/adjudicator#{k}")));
-    let paragraph = dag_critique_verdict_paragraph(0);
+    let paragraph = dag_critique_verdict_paragraph();
     assert_eq!(
         served
             .each_ref()

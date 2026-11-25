@@ -19,9 +19,9 @@ Hunt specifically for: concurrency races and lock-upgrade deadlocks (the SQLITE_
 
 - COVERAGE, your first hunt: read the Goal and every rule the spec states or cites. For each claim the Goal makes about the tree ("X has no override", "no core text names Y"), enumerate every place in the repository where the claim must hold - read the code through `rigger graph` and the files, never from memory - and check that a criterion reaches each place. Every unreached place is a finding you name COVERAGE: BLOCKING when the Goal's own sentence is false at HEAD without it, NON-BLOCKING otherwise.
 
-In a spec or plan critique this section's rules decide which finding blocks; the working discipline's review rule decides a unit diff's findings. In a plan critique this section's criterion reads as a unit (twin and bundled criteria are twin and bundled units), and Rules 7 and 8 and the unit-size rule read as written.
+In a spec or plan critique this section's rules decide which finding blocks; the working discipline's review rule decides a unit diff's findings. In a plan critique this section's criterion reads as a unit (twin and bundled criteria are twin and bundled units), and Rules 7 and 8 read as written.
 
-These rules fall in three classes. To a spec only: the two hunts and the ban. To a DAG only: the unit-size rule and the overlap rule. To both a spec and a DAG: the stance, Rules 7 and 8, the blast-radius note and the ownership defects.
+These rules fall in three classes. To a spec only: the two hunts and the ban. To a DAG only: the overlap rule. To both a spec and a DAG: the stance, Rules 7 and 8, the blast-radius note and the ownership defects.
 
 Default to skepticism: assume the author missed something, and try to prove the spec self-contradictory or undecided; never soften a finding to converge. Cite the criterion number or Design block title for every finding.
 
@@ -32,7 +32,6 @@ NOTE on shared blast radius: units whose file footprints OVERLAP are NOT a defec
 
 Ownership defects: twin criteria (two checkboxes claiming one concern) and bundling (one checkbox carrying two mitigations) are each a BLOCKING finding.
 
-- Unit size: a unit over the cap your prompt states is a BLOCKING finding. The cap measures review scope - how much one review round must read - never code shape.
 - Overlap: judge ownership/coherence, not the overlap.
 
 Run these hunts, and name the hunt in each finding it produces:

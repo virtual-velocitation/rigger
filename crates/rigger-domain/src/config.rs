@@ -928,12 +928,10 @@ pub struct Defaults {
     /// (the default), no test author spawns, whatever agents the project defines.
     #[serde(default)]
     pub test_author: String,
-    /// The unit size cap in added lines: when above `0`, the planner's plan protocol and every
-    /// round of the DAG critique prompt state that a unit expected to add more than this many
-    /// lines is too large, and the critique's cause contract names a unit over the cap among
-    /// the defects a re-plan fixes. Absent or `0` (the default), neither prompt states a cap.
+    /// A retired key nothing reads, kept so a workflow still carrying it parses and
+    /// `Config::validate` refuses it at any value, naming the line to delete.
     #[serde(default)]
-    pub max_unit_added_lines: u32,
+    pub max_unit_added_lines: Option<u32>,
 }
 
 impl Defaults {
