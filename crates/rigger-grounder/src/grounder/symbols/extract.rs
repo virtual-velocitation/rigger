@@ -5704,7 +5704,8 @@ impl Store {
     /// fields qualified by `V`, in place of the type row of `E`. A call's head stays a call, a
     /// leaf holding no lowercase letter stays a const read, a lowercase qualifier stages no
     /// variant, a path in type position stages by the type rule alone, and a qualifier naming the
-    /// standard library stages nothing.
+    /// standard library stages nothing, while a leaf sharing a prelude name, a std import's leaf
+    /// or an enclosing generic parameter's name stages its variant all the same.
     #[test]
     fn rust_stages_variant_uses() {
         let cases = [
@@ -5856,6 +5857,45 @@ fn i(o: Ordering) {
 2 ref call vec j
 2 ref type InstallOutcome j
 2 ref variant AlreadyCurrent j q InstallOutcome::",
+            ),
+            (
+                "a struct variant's pattern whose leaf is a prelude name is a variant mention in \
+                 place of the type row",
+                "\
+fn l(s: u8) {
+    match s {
+        Shape::Box { w } => w,
+        _ => 0,
+    };
+}
+",
+                "\
+1 def Function l to 6
+3 ref variant Box l q Shape::",
+            ),
+            (
+                "a struct variant's literal whose leaf is a std import's leaf is a variant mention \
+                 in place of the type row",
+                "use std::fmt::Display;\nfn m() {\n    Format::Display { n: 1 };\n}\n",
+                "\
+2 def Function m to 4
+3 ref variant Display m q Format::",
+            ),
+            (
+                "a unit variant whose leaf is a prelude name is a variant mention",
+                "fn n() {\n    let _ = Located::None;\n}\n",
+                "\
+1 def Function n to 3
+2 ref type Located n
+2 ref variant None n q Located::",
+            ),
+            (
+                "a unit variant whose leaf names an enclosing generic parameter is a variant mention",
+                "fn o<Many>() {\n    let _ = Kind::Many;\n}\n",
+                "\
+1 def Function o to 3
+2 ref type Kind o
+2 ref variant Many o q Kind::",
             ),
         ];
         for (why, src, expected) in cases {
