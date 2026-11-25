@@ -13151,8 +13151,8 @@ mod tests {
         );
 
         // N concurrent callers sharing the SAME `&Worktree`, matching the lens fan-out's own
-        // sharing of one `wt: Option<&Worktree>` reference across threads (MAX_CONCURRENCY =
-        // 4 in production; over-subscribe here to widen the race window).
+        // sharing of one `wt: Option<&Worktree>` reference across threads (as many
+        // as the declared width; eight here to widen the race window).
         let results: Vec<Result<(), Error>> = std::thread::scope(|s| {
             let handles: Vec<_> = (0..8).map(|_| s.spawn(|| wt.ensure_present())).collect();
             handles.into_iter().map(|h| h.join().unwrap()).collect()

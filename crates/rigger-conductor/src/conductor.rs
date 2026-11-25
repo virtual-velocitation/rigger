@@ -74,11 +74,6 @@ use rigger_domain::wave::{ready_stages, unit_slug};
 /// Re-exported so this module's own ~150 call sites are unaffected.
 pub use crate::run::STREAM;
 
-/// The bounded fan-out pool size (§6): at most this many agents run concurrently
-/// in a wave or a fan-out stage. Items beyond the cap wait for a slot - all still
-/// complete, just never more than MAX_CONCURRENCY at once.
-pub const MAX_CONCURRENCY: usize = 4;
-
 /// Gate-autonomy ratchet events: a gate's trust moving up or down. The strings live in the
 /// ledger as the single source and these are re-exports.
 pub const TYPE_GATE_PROMOTED: &str = ledger::TYPE_GATE_PROMOTED;
@@ -5426,6 +5421,13 @@ impl RunCtx<'_> {
         Ok(())
     }
 
+    /// The declared width (spec 102): how many units are in flight at once across the run, and
+    /// how many review lenses of one step run side by side. `defaults.max_parallel_units`, `0`
+    /// being unbounded.
+    fn unit_width(&self) -> usize {
+        self.cfg.workflow.defaults.max_parallel_units as usize
+    }
+
     /// Run one wave of `ready` stages and answer whether the width bound admitted any of them.
     ///
     /// Admission is CONTINUOUS: the wave admits, in `ready` order, every stage [`admissible`]
@@ -5443,9 +5445,8 @@ impl RunCtx<'_> {
     /// frontier; the planning prelude passes `None`, because the proposed units a `plan`
     /// landing would make ready must first be harvested and pass the plan-critique gate.
     ///
-    /// The width bound (spec 102, criterion 1): `defaults.max_parallel_units` caps how many
-    /// units are in flight AT ONCE across the WHOLE run, `0` being unbounded, and never more
-    /// than [`MAX_CONCURRENCY`] run in this process at once. `in_flight` is seeded from the log
+    /// The width bound (spec 102, criterion 1): [`Self::unit_width`] caps how many units are in
+    /// flight AT ONCE across the WHOLE run, `0` being unbounded. `in_flight` is seeded from the log
     /// at run start (see `run`'s own seed), so a crash-resumed process counts a spawn still in
     /// flight, and a stage that PARKS keeps its slot. The co-scheduling rule (§3.2, §8): a stage
     /// is admitted only while its safe radius conflicts with no unit in flight that the partition
@@ -5460,7 +5461,7 @@ impl RunCtx<'_> {
         terminal: &mut HashSet<String>,
         in_flight: &mut HashSet<String>,
     ) -> Result<bool, Error> {
-        let width = self.cfg.workflow.defaults.max_parallel_units as usize;
+        let width = self.unit_width();
         let mut radii = self.wave_radii(stages, ready, in_flight)?;
         let mut offered: HashSet<String> = ready.iter().cloned().collect();
         let mut waiting: Vec<String> = ready.to_vec();
@@ -5471,7 +5472,7 @@ impl RunCtx<'_> {
         std::thread::scope(|s| loop {
             let mut i = 0;
             while i < waiting.len() {
-                if !admissible(&waiting[i], width, &running, in_flight, &radii, |a, b| {
+                if !admissible(&waiting[i], width, in_flight, &radii, |a, b| {
                     self.partition_holds_apart(stages, a, b)
                 }) {
                     i += 1;
@@ -9359,10 +9360,13 @@ impl RunCtx<'_> {
         // The roster every lens of this step carries ([`step_roster`]), the caller's value.
         roster: &[String],
     ) -> Result<(), Error> {
-        // Bounded fan-out pool (§6): run the lenses in chunks of at most
-        // MAX_CONCURRENCY, each chunk a scoped thread group. Every lens still runs;
-        // never more than MAX_CONCURRENCY at once.
-        for chunk in agent_ids.chunks(MAX_CONCURRENCY) {
+        // The lenses run in chunks of the declared width, each chunk a scoped thread group, and
+        // an unbounded width runs them all at once. Every lens still runs.
+        let width = match self.unit_width() {
+            0 => agent_ids.len().max(1),
+            w => w,
+        };
+        for chunk in agent_ids.chunks(width) {
             let mut chunk_results: Vec<Result<(), Error>> = std::thread::scope(|s| {
                 let handles: Vec<_> = chunk
                     .iter()
@@ -9788,8 +9792,8 @@ impl RunCtx<'_> {
     /// (the caller pairs this with `!has_verdict_line`), honoring addendum 2.2.
     ///
     /// CORRELATED to THIS spawn's OWN emit by its [`META_SPAWN`] STAMP - matched EXACTLY by
-    /// spawn id, NEVER a shared-stream position window a CONCURRENT sibling adjudicator (up to
-    /// `MAX_CONCURRENCY` units run in parallel in [`run_wave`](RunCtx::run_wave), all emitting
+    /// spawn id, NEVER a shared-stream position window a CONCURRENT sibling adjudicator (the
+    /// units [`run_wave`](RunCtx::run_wave) runs in parallel, all emitting
     /// to the ONE store) could fall inside. Every driver stamps the emit with the emitting
     /// spawn's id at RECORD time, so the same one identity check works on all three:
     /// - the headless host's spawn-bound MCP server (`rigger mcp --spawn <id>`) stamps it with
@@ -16955,9 +16959,8 @@ impl Frontier<'_> {
     }
 }
 
-/// Whether a wave may start `name` now (§3.2, §6, §8, spec 102 criterion 1): a thread is free
-/// (fewer than [`MAX_CONCURRENCY`] stages `running` here), and either `name` already holds a slot
-/// (it is in `in_flight` - started earlier, by this process or a crashed one) or a slot is free
+/// Whether a wave may start `name` now (§3.2, §8, spec 102 criterion 1): either `name` already
+/// holds a slot (it is in `in_flight` - started earlier, by this process or a crashed one) or a slot is free
 /// under `width` (`0` = unbounded) AND its radius conflicts with no unit in flight that
 /// `holds_apart` says the partition holds it apart from - every such one, including a unit
 /// parked in an earlier wave, and one with no radius in `radii` counts as conflicting. An
@@ -16966,14 +16969,10 @@ impl Frontier<'_> {
 fn admissible(
     name: &str,
     width: usize,
-    running: &HashSet<String>,
     in_flight: &HashSet<String>,
     radii: &WaveRadii,
     holds_apart: impl Fn(&str, &str) -> bool,
 ) -> bool {
-    if running.len() >= MAX_CONCURRENCY {
-        return false;
-    }
     if in_flight.contains(name) {
         return true;
     }
@@ -40415,8 +40414,7 @@ stage "implement" adjudicator "adj" failed
 
     #[test]
     fn bounded_pool_completes_every_stage_under_the_cap() {
-        // Six independent stages exceed MAX_CONCURRENCY (4); the bounded pool runs
-        // them in chunks, and all six must still integrate (§6).
+        // Six independent stages at an unbounded width all run, and all six integrate.
         let mut cfg = Config::default();
         cfg.agents.insert("a".into(), agent("a"));
         cfg.workflow.gates.insert("ok".into(), gate_def("true"));
@@ -40440,6 +40438,30 @@ stage "implement" adjudicator "adj" failed
                 "every stage must integrate even when the wave exceeds the pool cap"
             );
         }
+    }
+
+    /// The declared width is the width a wave runs at, with no compiled cap under it: six
+    /// units with disjoint radii at `max_parallel_units: 6` all run at once.
+    #[test]
+    fn run_wave_runs_as_many_units_at_once_as_the_declared_width() {
+        let probe = OverlapProbe::meeting(6);
+        let integrated = probe_one_wave(
+            6,
+            &["u0", "u1", "u2", "u3", "u4", "u5"],
+            &stub_radii(&[
+                ("u0", &["u0.rs"]),
+                ("u1", &["u1.rs"]),
+                ("u2", &["u2.rs"]),
+                ("u3", &["u3.rs"]),
+                ("u4", &["u4.rs"]),
+                ("u5", &["u5.rs"]),
+            ]),
+            &probe,
+            &[],
+            &[],
+        );
+        assert_eq!(integrated.len(), 6, "every unit integrates: {integrated:?}");
+        assert_eq!(probe.peak(), 6, "all six units run side by side");
     }
 
     #[test]
@@ -41146,7 +41168,7 @@ stage "implement" adjudicator "adj" failed
     fn standalone_review_run(
         lenses: &[&str],
         adversary: &str,
-        driver: &Stub,
+        driver: &dyn AgentDriver,
     ) -> (Result<RunState, Error>, tempfile::TempDir, Store) {
         let repo = temp_git_project_with_commit();
         let mut cfg = Config::default();
@@ -41339,6 +41361,15 @@ stage "implement" adjudicator "adj" failed
         );
     }
 
+    /// A review step runs its lenses at the run's width, with no compiled cap under it: six
+    /// lenses at an unbounded width all run at once.
+    #[test]
+    fn a_review_step_runs_every_lens_at_once_under_an_unbounded_width() {
+        let probe = OverlapProbe::meeting(6);
+        let _ = standalone_review_run(&["l0", "l1", "l2", "l3", "l4", "l5"], "", &probe);
+        assert_eq!(probe.peak(), 6, "all six lenses run side by side");
+    }
+
     #[test]
     fn the_swap_to_front_prioritizes_a_genuine_error_at_a_non_zero_chunk_index() {
         // sdet-u1c1-r3-swap-index-independence-never-exercised (upheld by mutation:
@@ -41351,7 +41382,7 @@ stage "implement" adjudicator "adj" failed
         // left the whole suite green, proving the position-independence claim itself was
         // never driven to a genuine non-zero `pos`.
         //
-        // Three lenses in ONE chunk (MAX_CONCURRENCY is 4, so all three fit together): "x"
+        // Three lenses in ONE chunk (the width is unbounded, so all three run together): "x"
         // (index 0) and "z" (index 2) PARK, "y" (index 1, neither first nor last) hits a
         // genuine terminal crash. The swap must move "y"'s error from position 1 to the
         // front, not just leave a position-0 error alone.

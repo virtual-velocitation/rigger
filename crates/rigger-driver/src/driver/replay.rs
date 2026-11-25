@@ -1468,7 +1468,7 @@ mod tests {
         // Reject-fix guard (spec 18, unit 3): the store-sourced backstop must correlate the
         // emitted approve to THIS spawn's OWN emit by its [`META_SPAWN`] stamp, NEVER to a
         // shared-stream position window a CONCURRENT sibling can fall inside. `run_wave` runs
-        // up to MAX_CONCURRENCY sibling units in parallel, all emitting to the ONE store, so a
+        // sibling units in parallel, all emitting to the ONE store, so a
         // sibling adjudicator's approve can be recorded BETWEEN this unit's own adjudicator park
         // and result. This promotes the differential repro the adversary proved
         // (adv-u18-3r-cross-unit-approve-pollutes-window): a unit `u` whose adjudicator returned
