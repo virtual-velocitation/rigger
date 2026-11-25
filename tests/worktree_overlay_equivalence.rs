@@ -11,11 +11,12 @@ use common::fixtures::{
 use rigger::code_facts::{FileFacts, ModuleDecl, Stamp};
 use rigger::code_store::CodeStore;
 use rigger::code_view::{
-    CodeView, Compared, DefRef, FileRef, Groupings, MentionRef, OpenCodeView, Settled, Tests,
-    ViewFilter,
+    CodeView, Compared, DefRef, FileRef, Groupings, MentionRef, OpenCodeView, Proofs, Settled,
+    Tests, ViewFilter,
 };
 use rigger::composed::{Composed, Indexed};
 use rigger::contextgraph::{ContextGraph, Graph};
+use rigger_domain::resolve::ProofCall;
 use rigger_store::code::Mode;
 use std::borrow::Cow;
 use std::path::Path;
@@ -176,8 +177,26 @@ static NO_GROUPINGS: Groupings = Groupings {
     concepts: Vec::new(),
 };
 
-/// A view answered without its groupings, every other read its own.
+/// A view answered without its groupings, and so without the code half its store settled with
+/// them joined on ([`Settled::half`]); every other read its own.
 struct Ungrouped<'v>(&'v dyn CodeView);
+
+impl Ungrouped<'_> {
+    /// The rows the view's store settled.
+    fn rows(&self) -> &dyn Settled {
+        self.0.settled().expect("the view offers settled rows")
+    }
+}
+
+/// The view's settled rows but for the code half, which is left to the default, none.
+impl Settled for Ungrouped<'_> {
+    fn test_files(&self) -> Vec<&str> {
+        self.rows().test_files()
+    }
+    fn proofs(&self, of: Proofs<'_>) -> Vec<ProofCall> {
+        self.rows().proofs(of)
+    }
+}
 
 impl CodeView for Ungrouped<'_> {
     fn stamp(&self) -> &Stamp {
@@ -208,6 +227,6 @@ impl CodeView for Ungrouped<'_> {
         self.0.def_leaves()
     }
     fn settled(&self) -> Option<&dyn Settled> {
-        self.0.settled()
+        self.0.settled().map(|_| self as &dyn Settled)
     }
 }

@@ -257,8 +257,9 @@ pub trait Settled: Sync {
     /// The proof calls `of` selects, in proof order ([`crate::resolve::Resolver::proof_calls`]).
     fn proofs(&self, of: Proofs<'_>) -> Vec<ProofCall>;
     /// The code half settled whole, when the store settled it: what
-    /// [`crate::composed::Indexed::resolved`] reads under the default filter. None by default,
-    /// so a reader resolves the half from the facts.
+    /// [`crate::composed::Indexed::resolved`] reads under the default filter, the view's groupings
+    /// joined on. None by default, so a reader resolves the half from the facts; a view answering
+    /// other facts or other groupings than the store settled offers none.
     fn half(&self) -> Option<&dyn SettledHalf> {
         None
     }
