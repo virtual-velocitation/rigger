@@ -843,30 +843,35 @@ impl<'v> Resolver<'v> {
     }
 
     /// The ids the mention `m` of `facts`, test code when `test`, lists its referrer under (spec
-    /// 117, READERS): those its own rule's candidates hold, or the one it settles. A call lists
-    /// under the definition its edge lands on ([`Self::call_edge`]), else under the candidates
-    /// the placeholder it lands on keeps in its pool ([`Self::down_hop`]), and under none when
-    /// the call rule makes it no link. A tagged reference lists under the one candidate its rule
-    /// takes, else under those it took none from ([`Self::tagged`]).
-    fn listed(&self, facts: &FileFacts, m: &Mention, test: bool) -> Vec<String> {
+    /// 117, READERS), and whether it gave them no single edge: those its own rule's candidates
+    /// hold, or the one it settles. A call lists under the definition its edge lands on
+    /// ([`Self::call_edge`]), else under the candidates the placeholder it lands on keeps in its
+    /// pool ([`Self::down_hop`]), no single edge when it keeps several, and under none when the
+    /// call rule makes it no link. A tagged reference lists under the one candidate its rule
+    /// takes, else, no single edge, under those it took none from ([`Self::tagged`]).
+    fn listed(&self, facts: &FileFacts, m: &Mention, test: bool) -> (Vec<String>, bool) {
         let pool = Pool::of(test);
         let MentionKind::Tagged(tag) = &m.kind else {
             let edge = self.call_edge(&facts.path, &facts.lang, &m.name, &m.leaf, test);
             return match edge.map(|(to, _)| (self.down_hop(&to, pool), to)) {
-                None => Vec::new(),
-                Some((None, to)) => vec![to],
-                Some((Some(hop), _)) => hop.into_vec().into_iter().map(|c| c.id).collect(),
+                None => (Vec::new(), false),
+                Some((None, to)) => (vec![to], false),
+                Some((Some(hop), _)) => {
+                    let several = matches!(hop, Hop::Frontier(_));
+                    (hop.into_vec().into_iter().map(|c| c.id).collect(), several)
+                }
             };
         };
         let candidates = self.candidates(&m.leaf);
         match self.tagged(facts, m, tag, pool, &candidates) {
-            Taken::One(c, _) => vec![c.id.clone()],
-            Taken::Among(cs) => cs.into_iter().map(|c| c.id.clone()).collect(),
+            Taken::One(c, _) => (vec![c.id.clone()], false),
+            Taken::Among(cs) => (cs.into_iter().map(|c| c.id.clone()).collect(), true),
         }
     }
 
     /// The referrers `mentions`, mentions of `facts` in the order `facts` lists them, make, each
-    /// with an id it is listed under ([`Self::listed`]): one per mention and id, in mention order.
+    /// with an id it is listed under and ambiguous when its mention gave those ids no single edge
+    /// ([`Self::listed`]): one per mention and id, in mention order.
     /// A mention of a tag [`crate::contextgraph::REFERRER_LABELS`] holds no row for makes none.
     pub fn file_referrers<'f>(
         &self,
@@ -883,7 +888,7 @@ impl<'v> Resolver<'v> {
                 continue;
             };
             let test = self.mention_is_test(facts, m);
-            let listed = self.listed(facts, m, test);
+            let (listed, ambiguous) = self.listed(facts, m, test);
             let (site, kind) = match m.enclosing.and_then(|i| facts.defs.get(i as usize)) {
                 Some(d) => (entity_id(&facts.path, &d.local), kinds[d.local.as_str()]),
                 None => (facts.path.clone(), KIND_FILE),
@@ -899,6 +904,7 @@ impl<'v> Resolver<'v> {
                         label,
                         line,
                         test,
+                        ambiguous,
                     },
                 ));
             }
@@ -2691,8 +2697,9 @@ pub(crate) mod tests {
     /// lists it under, in path then mention order, one item per mention, a repeated call
     /// included: a settled call or reference under its target, the one its qualifier keeps or
     /// its one field included, a call through a placeholder under each candidate the
-    /// placeholder keeps, a reference no one candidate takes under each it took none from, the
-    /// several its qualifier keeps or its several fields included, and a mention whose qualifier
+    /// placeholder keeps, marked ambiguous when it keeps several and not when it keeps one, a
+    /// reference no one candidate takes under each it took none from, the several its qualifier
+    /// keeps or its several fields included, marked ambiguous, and a mention whose qualifier
     /// makes no link, or an unqualified field reference naming only constants, under none. The
     /// item names the enclosing definition's id and the kind that id settles to (a type's, for a
     /// mention its impl encloses), or its file's when none encloses it, the label of its tag
@@ -2753,6 +2760,7 @@ pub(crate) mod tests {
                     23,
                     false,
                 ),
+                call("alone", Some(2), 24, false),
                 tagged("const", "LIMIT", None, 25),
                 mention(
                     MentionKind::Tagged("const".into()),
@@ -2777,6 +2785,13 @@ pub(crate) mod tests {
                 vec![],
             )
         };
+        let solo = code(
+            "src/solo.rs",
+            "rust",
+            Scope::Product,
+            vec![def("alone", "function", 1, None, false)],
+            vec![],
+        );
         let checks = code(
             "tests/t.rs",
             "rust",
@@ -2796,18 +2811,27 @@ pub(crate) mod tests {
         };
         let view = FactsView::new(
             stamp(),
-            vec![other("src/a.rs"), other("src/b.rs"), lib, checks, notes],
+            vec![
+                other("src/a.rs"),
+                other("src/b.rs"),
+                lib,
+                solo,
+                checks,
+                notes,
+            ],
         );
         let shown = |referrers: Vec<Referrer>| -> Vec<String> {
             (referrers.iter())
                 .map(|r| {
                     let mark = if r.test { " test" } else { "" };
-                    format!("{} {} ({}) :{}{mark}", r.label, r.site, r.kind, r.line)
+                    let ambiguous = if r.ambiguous { " ?" } else { "" };
+                    let at = format!("{} {} ({}) :{}", r.label, r.site, r.kind, r.line);
+                    format!("{at}{mark}{ambiguous}")
                 })
                 .collect()
         };
         // (the id, its referrers, the product ones `Composed` answers)
-        let rows: [(&str, &[&str], &[&str]); 18] = [
+        let rows: [(&str, &[&str], &[&str]); 19] = [
             (
                 "src/lib.rs::LIMIT",
                 &[
@@ -2842,23 +2866,28 @@ pub(crate) mod tests {
             ),
             (
                 "src/a.rs::shared",
-                &["called by src/lib.rs::spill (function) :13"],
-                &["called by src/lib.rs::spill (function) :13"],
+                &["called by src/lib.rs::spill (function) :13 ?"],
+                &["called by src/lib.rs::spill (function) :13 ?"],
             ),
             (
                 "src/b.rs::shared",
-                &["called by src/lib.rs::spill (function) :13"],
-                &["called by src/lib.rs::spill (function) :13"],
+                &["called by src/lib.rs::spill (function) :13 ?"],
+                &["called by src/lib.rs::spill (function) :13 ?"],
+            ),
+            (
+                "src/solo.rs::alone",
+                &["called by src/lib.rs::spill (function) :24"],
+                &["called by src/lib.rs::spill (function) :24"],
             ),
             (
                 "src/a.rs::Shape",
-                &["type use src/lib.rs::fits (function) :16"],
-                &["type use src/lib.rs::fits (function) :16"],
+                &["type use src/lib.rs::fits (function) :16 ?"],
+                &["type use src/lib.rs::fits (function) :16 ?"],
             ),
             (
                 "src/b.rs::Shape",
-                &["type use src/lib.rs::fits (function) :16"],
-                &["type use src/lib.rs::fits (function) :16"],
+                &["type use src/lib.rs::fits (function) :16 ?"],
+                &["type use src/lib.rs::fits (function) :16 ?"],
             ),
             (
                 "src/lib.rs::Bin::CAP",
@@ -2867,13 +2896,13 @@ pub(crate) mod tests {
             ),
             (
                 "src/a.rs::Shape::MAX",
-                &["reads src/lib.rs::fits (function) :23"],
-                &["reads src/lib.rs::fits (function) :23"],
+                &["reads src/lib.rs::fits (function) :23 ?"],
+                &["reads src/lib.rs::fits (function) :23 ?"],
             ),
             (
                 "src/b.rs::Shape::MAX",
-                &["reads src/lib.rs::fits (function) :23"],
-                &["reads src/lib.rs::fits (function) :23"],
+                &["reads src/lib.rs::fits (function) :23 ?"],
+                &["reads src/lib.rs::fits (function) :23 ?"],
             ),
             (
                 "src/lib.rs::Bin::len",
@@ -2882,13 +2911,13 @@ pub(crate) mod tests {
             ),
             (
                 "src/a.rs::Shape::w",
-                &["field use src/lib.rs::spill (function) :15"],
-                &["field use src/lib.rs::spill (function) :15"],
+                &["field use src/lib.rs::spill (function) :15 ?"],
+                &["field use src/lib.rs::spill (function) :15 ?"],
             ),
             (
                 "src/b.rs::Shape::w",
-                &["field use src/lib.rs::spill (function) :15"],
-                &["field use src/lib.rs::spill (function) :15"],
+                &["field use src/lib.rs::spill (function) :15 ?"],
+                &["field use src/lib.rs::spill (function) :15 ?"],
             ),
             ("src/lib.rs::spill", &[], &[]),
             ("src/lib.rs::Nope", &[], &[]),

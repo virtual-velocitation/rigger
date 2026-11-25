@@ -7,7 +7,7 @@ use std::fmt::Write as _;
 
 use rigger_domain::code_view::tests_hidden_line;
 
-use super::graph::{Answered, Entity, Site, TermGraph};
+use super::graph::{Answered, Entity, ReferrerSite, Site, TermGraph};
 use super::prose::Ranked;
 use super::text::TermText;
 
@@ -149,22 +149,28 @@ fn entity_block(entity: &Entity) -> String {
     {
         let _ = writeln!(block, "  {first}");
     }
-    for (label, sites) in &entity.referrers {
-        edge_line(&mut block, label, sites);
+    for (label, referrers) in &entity.referrers {
+        edge_line(&mut block, label, referrers, referrer_line);
     }
-    edge_line(&mut block, "calls", &entity.callees);
+    edge_line(&mut block, "calls", &entity.callees, site_line);
     block
 }
 
-/// `  <label>: <site>; <site> (+N more)` when `sites` holds any.
-fn edge_line(block: &mut String, label: &str, sites: &[Site]) {
-    if sites.is_empty() {
+/// `  <label>: <item>; <item> (+N more)` when `items` holds any, each item as `line` writes it.
+fn edge_line<T>(block: &mut String, label: &str, items: &[T], line: fn(&T) -> String) {
+    if items.is_empty() {
         return;
     }
-    let shown = sites.len().min(EDGES_SHOWN);
-    let listed: Vec<String> = sites[..shown].iter().map(site_line).collect();
+    let shown = items.len().min(EDGES_SHOWN);
+    let listed: Vec<String> = items[..shown].iter().map(line).collect();
     let _ = write!(block, "  {label}: {}", listed.join("; "));
-    more(block, sites.len() - shown);
+    more(block, items.len() - shown);
+}
+
+/// A referrer's site line, and ` ?` after it when its mention gave the entity no single edge.
+fn referrer_line(referrer: &ReferrerSite) -> String {
+    let mark = if referrer.ambiguous { " ?" } else { "" };
+    format!("{}{mark}", site_line(&referrer.site))
 }
 
 /// ` (+N more)` when `dropped` is non-zero, and the line's end.

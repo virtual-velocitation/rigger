@@ -1599,6 +1599,9 @@ pub struct Referrer {
     /// Whether the mention is test code, by its own mark, its file's scope or the test-module
     /// closure: what the view filter hides a code edge by.
     pub test: bool,
+    /// Whether the mention gave the entity no single edge: it lists under each of several
+    /// candidates, which the lookup marks `?`.
+    pub ambiguous: bool,
 }
 
 /// Whether a `rel` edge onto a node of kind `target_kind` declares a module (spec 117, MODULE

@@ -44,9 +44,17 @@ pub(crate) struct Entity {
     /// Its product referrers ([`ContextGraph::referrers`]) under each label, in label order: each
     /// a referrer's enclosing site at the mention's own line, in path then mention order (the
     /// order a file's extraction lists its mentions, which need not be line order).
-    pub referrers: Vec<(&'static str, Vec<Site>)>,
+    pub referrers: Vec<(&'static str, Vec<ReferrerSite>)>,
     /// Its direct callees' definition sites.
     pub callees: Vec<Site>,
+}
+
+/// One referrer an entity lists: its site, and whether its mention gave the entity no single edge
+/// ([`crate::contextgraph::Referrer::ambiguous`]), which the lookup marks `?`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ReferrerSite {
+    pub site: Site,
+    pub ambiguous: bool,
 }
 
 /// How a term resolved against the graph. A build without code extraction refuses the graph half
@@ -222,14 +230,18 @@ fn site_of(seeded: Option<&Node>, id: &str) -> Site {
     }
 }
 
-/// The site of `referrer`: its enclosing definition, or its file, at the mention's own line.
+/// The site of `referrer`: its enclosing definition, or its file, at the mention's own line, and
+/// whether it is ambiguous.
 #[cfg(feature = "symbols")]
-fn referrer_site(referrer: &Referrer) -> Site {
-    Site {
-        id: referrer.site.clone(),
-        kind: referrer.kind.clone(),
-        file: Some((split_id(&referrer.site).0.to_string(), referrer.line)),
-        test: referrer.test,
+fn referrer_site(referrer: &Referrer) -> ReferrerSite {
+    ReferrerSite {
+        site: Site {
+            id: referrer.site.clone(),
+            kind: referrer.kind.clone(),
+            file: Some((split_id(&referrer.site).0.to_string(), referrer.line)),
+            test: referrer.test,
+        },
+        ambiguous: referrer.ambiguous,
     }
 }
 
