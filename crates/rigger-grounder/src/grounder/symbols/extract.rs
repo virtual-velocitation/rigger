@@ -1701,7 +1701,7 @@ impl UseLeaf<'_> {
 }
 
 /// RUST'S TAGGED REFERENCES (spec 117, RUST REFERENCES), every one in the file the walk `structure`
-/// gathered ([`StructuralNodes`]), in source order. A
+/// gathered ([`StructuralNodes`]), in source order, save the impl headers' rows, which come last. A
 /// CONST READ is an `identifier` in expression position, or the final identifier of a whole
 /// expression path (never a prefix, a pattern or a call's head), spelled `^[A-Z][A-Z0-9_]*$`. A
 /// TYPE REFERENCE is a `type_identifier` that is no definition's own name, nor an impl header's
@@ -1716,8 +1716,9 @@ impl UseLeaf<'_> {
 /// leaf of a `use` ([`use_leaves`]). An IMPL HEADER stages an `impl` row of its trait, when it
 /// has one, then one of its self type, each by its base name ([`base_type_identifier`]: path,
 /// generics, a reference and a pointer stripped; a tuple, slice, array, `dyn` or function type
-/// none, the types inside it staging as type references), carrying the impl's range; a `Box<T>`
-/// self type is `Box`, which [`excluded`] holds. An attribute, a `macro_rules!`
+/// none, the types inside it staging as type references) with the root of that name's path
+/// ([`type_root`]), carrying the impl's range; a `Box<T>` self type is `Box`, which [`excluded`]
+/// holds. An attribute, a `macro_rules!`
 /// body and a visibility path stage nothing, a macro's token tree stages what its re-parse reads
 /// ([`reparse_invocations`]), and no name [`excluded`] under `scope` stages, save a variant,
 /// which its qualifier and root alone exclude.
@@ -1727,19 +1728,20 @@ fn rust_references(structure: &StructuralNodes, source: &[u8], scope: &Scope) ->
         .iter()
         .flat_map(|&decl| use_leaves(decl, source))
         .collect();
-    let impls = &structure.impls;
-    let headers: Vec<usize> = impls
+    // Each impl header's trait, when it has one, then its self type, by its base name, with the
+    // impl's range: the impl loop stages them and the type pass skips them.
+    let header_leaves: Vec<(tree_sitter::Node, std::ops::Range<usize>)> = structure
+        .impls
         .iter()
-        .flat_map(|i| {
-            [
-                i.child_by_field_name("type"),
-                i.child_by_field_name("trait"),
-            ]
+        .flat_map(|&block| {
+            ["trait", "type"]
+                .into_iter()
+                .filter_map(move |field| block.child_by_field_name(field))
+                .filter_map(base_type_identifier)
+                .map(move |leaf| (leaf, block.byte_range()))
         })
-        .flatten()
-        .filter_map(base_type_identifier)
-        .map(|n| n.id())
         .collect();
+    let headers: Vec<usize> = header_leaves.iter().map(|(leaf, _)| leaf.id()).collect();
     let mut out = Vec::new();
     let mut stage = |node: tree_sitter::Node,
                      kind: &'static str,
@@ -1785,7 +1787,7 @@ fn rust_references(structure: &StructuralNodes, source: &[u8], scope: &Scope) ->
                 match parent.filter(|p| p.kind() == "scoped_type_identifier") {
                     Some(scoped) => {
                         let path = scoped.child_by_field_name("path");
-                        let root_seg = path.and_then(|p| root_segment(p, source));
+                        let root_seg = type_root(node, source);
                         let literal = scoped.parent().is_some_and(|q| {
                             matches!(q.kind(), "struct_expression" | "struct_pattern")
                         });
@@ -1834,19 +1836,15 @@ fn rust_references(structure: &StructuralNodes, source: &[u8], scope: &Scope) ->
             _ => {}
         }
     }
-    for &block in impls {
-        let header = ["trait", "type"].map(|field| block.child_by_field_name(field));
-        for named in header.into_iter().flatten() {
-            if let Some(leaf) = base_type_identifier(named) {
-                stage(
-                    leaf,
-                    REF_KIND_IMPL,
-                    type_root(named, source).as_deref(),
-                    Some(block.byte_range()),
-                    None,
-                );
-            }
-        }
+    for (leaf, impl_range) in header_leaves {
+        let root_seg = type_root(leaf, source);
+        stage(
+            leaf,
+            REF_KIND_IMPL,
+            root_seg.as_deref(),
+            Some(impl_range),
+            None,
+        );
     }
     out
 }
@@ -2271,14 +2269,13 @@ fn root_segment(path: tree_sitter::Node, source: &[u8]) -> Option<String> {
     }
 }
 
-/// The root segment ([`root_segment`]) of the path a Rust type names, `None` for an unqualified
-/// type: the `path` of a `scoped_type_identifier`, through a `generic_type`'s type.
-fn type_root(node: tree_sitter::Node, source: &[u8]) -> Option<String> {
-    match node.kind() {
-        "scoped_type_identifier" => root_segment(node.child_by_field_name("path")?, source),
-        "generic_type" => type_root(node.child_by_field_name("type")?, source),
-        _ => None,
-    }
+/// The root segment ([`root_segment`]) of the path whose final segment is the Rust type name
+/// `leaf`, `None` for an unqualified one: the `path` of the `scoped_type_identifier` it names.
+fn type_root(leaf: tree_sitter::Node, source: &[u8]) -> Option<String> {
+    let scoped = leaf
+        .parent()
+        .filter(|p| p.kind() == "scoped_type_identifier")?;
+    root_segment(scoped.child_by_field_name("path")?, source)
 }
 
 /// THE USE RULE (spec 117): each imported leaf of the `use_declaration` `decl`, in source order -
@@ -6694,8 +6691,9 @@ pub fn f() -> u8 {
     }
 
     /// Spec 117, RUST REFERENCES: the tagged references follow the call references in `refs`, in
-    /// source order, and one inside a test region, an impl header's mentions included, is marked
-    /// test code like any reference there.
+    /// source order save an impl header's mentions, which follow the rest of their read's, and one
+    /// inside a test region, an impl header's mentions included, is marked test code like any
+    /// reference there.
     #[test]
     fn tagged_references_follow_the_calls_in_source_order() {
         let fs = crate::symbol_index::extracted(
