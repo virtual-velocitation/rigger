@@ -1974,6 +1974,16 @@ pub(crate) mod tests {
         // The first `len` bytes of the first row, `width` wide, written over the second row's.
         let repeat =
             |width: usize, len: usize| -> Damage { Box::new(move |s| s.copy_within(..len, width)) };
+        // The second node's attribute run ending one before it starts, and the third's starting
+        // there, so each run still starts where the one before it ends.
+        let backwards = || -> Damage {
+            Box::new(|s| {
+                let at = NODE_ROW + N_ATTRS;
+                let back = (le32(s, at) - 1).to_le_bytes();
+                s[at + 4..at + 8].copy_from_slice(&back);
+                s[NODE_ROW + at..NODE_ROW + at + 4].copy_from_slice(&back);
+            })
+        };
         let last_posting = || -> Damage {
             Box::new(|s| {
                 let at = s.len() - 4;
@@ -1994,6 +2004,12 @@ pub(crate) mod tests {
                 "an attribute run starting late",
                 ROW_NODES,
                 put(N_ATTRS, 1),
+                refused("node attributes are not one run a node"),
+            ),
+            (
+                "an attribute run ending before it starts",
+                ROW_NODES,
+                backwards(),
                 refused("node attributes are not one run a node"),
             ),
             (
