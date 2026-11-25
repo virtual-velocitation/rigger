@@ -197,6 +197,27 @@ fn every_script_under_the_gates_directory_is_named_by_the_workflow() {
     );
 }
 
+/// This repository's workflow points cargo's target directory at each site's own build cache, so
+/// two units' gates and agents never build into one directory. Cargo names a workspace member's
+/// artifacts by paths relative to the workspace root and judges them fresh by mtime, so in a
+/// target directory two worktrees share, one tree's test binary links the other tree's newer
+/// artifacts and its gate goes red on code outside its diff.
+#[test]
+fn this_repositorys_workflow_builds_each_site_over_its_own_cache() {
+    let build = loaded_config(&repo_root()).workflow.build;
+    let env = rigger::gate::BuildEnv::declared(&build).unwrap();
+    for cache in ["/scratch/cargo-target-a", "/scratch/cargo-target-b"] {
+        let site = env.at(cache);
+        assert!(
+            site.vars
+                .contains(&("CARGO_TARGET_DIR".to_string(), cache.to_string())),
+            "a build at the site whose cache is {cache} sets CARGO_TARGET_DIR to it; got {:?}",
+            site.vars
+        );
+        assert_eq!(site.cache, cache);
+    }
+}
+
 rigger::test_cases! {
     /// A test commit, then the source commit it drives.
     red_before_green_passes_a_test_commit_before_the_source_commit: red_before_green_passes(LIB, &[

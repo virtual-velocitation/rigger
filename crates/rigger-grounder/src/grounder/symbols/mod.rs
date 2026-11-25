@@ -51,15 +51,11 @@ use std::path::Path;
 /// NOT guarantee stable across builds) - so the value is a stable content key across processes,
 /// builds, and machines.
 pub fn content_hash(src: &str) -> String {
-    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
     let normalized = src.replace("\r\n", "\n");
-    let mut hash = FNV_OFFSET;
-    for byte in normalized.as_bytes() {
-        hash ^= *byte as u64;
-        hash = hash.wrapping_mul(FNV_PRIME);
-    }
-    format!("{hash:016x}")
+    format!(
+        "{:016x}",
+        rigger_domain::hash::fnv1a_64(normalized.as_bytes())
+    )
 }
 
 /// Build the whole-project index over `root`: walk the tree with the SHARED scoped walk
@@ -142,6 +138,9 @@ mod content_hash_tests {
         // algorithm change, which would move every key derived from it across builds.
         assert_eq!(content_hash(""), "cbf29ce484222325");
         assert_ne!(content_hash("a"), content_hash("b"));
+        // Known answers over bytes, so the prime and the CRLF normalization are pinned too.
+        assert_eq!(content_hash("fn main() {}\n"), "355463d2db8c9b7f");
+        assert_eq!(content_hash("a\r\nb\r\n"), "78ed6781f136a14e");
     }
 }
 

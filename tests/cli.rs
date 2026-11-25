@@ -18185,7 +18185,8 @@ fn an_interrupted_driver_is_stopped_on_purpose_and_never_relaunched() {
 /// carrying the relaunch it was started by, and clears its record once it is done, so the next
 /// invocation relaunches nothing. The dead driver's scratch and state roots, which the invocation
 /// does not share, are the relaunched driver's, and of the login token it ran its agents on its
-/// record keeps only that it had one.
+/// record keeps only that it had one; the relaunch hands the relaunched driver that token, which
+/// no child inherits.
 #[test]
 fn a_relaunched_driver_adopts_its_run_and_drives_it_to_its_end() {
     let dir = temp_git_project_with_commit();
@@ -18249,8 +18250,10 @@ fn a_relaunched_driver_adopts_its_run_and_drives_it_to_its_end() {
     assert!(
         live["run"] == run.as_str()
             && live["revived_at"].is_u64()
-            && live["relaunched_at"].is_null(),
-        "the relaunched driver keeps its own record of the run, carrying its relaunch; {live}"
+            && live["relaunched_at"].is_null()
+            && live["credentials"] == serde_json::json!([AGENT_TOKEN_VAR]),
+        "the relaunched driver keeps its own record of the run, carrying its relaunch, and runs \
+         on the login token the invocation handed it; {live}"
     );
     let done = common::fixtures::wait_until_for(POLLS_BESIDE_A_RUN, || {
         common::cli::driver_record(root).is_empty() && common::cli::step_lock_free(root)
@@ -28275,6 +28278,35 @@ fn the_content_script_checks_the_whole_spec_from_a_base_and_only_the_branch_with
             "`{check}` with no base must judge only the branch's own clean commit: {out}"
         );
     }
+}
+
+/// The content script's `check`, handed a base that shares no history with HEAD, refuses with
+/// its message rather than reading the failed three-dot diff as a clean one.
+fn the_content_script_refuses_an_unrelated_base(check: &str) {
+    let (dir, _) = common::git::unit_branch_repo(
+        "pub fn f() {}\n",
+        &[("src/lib.rs", "pub fn g() {}\n", "a unit commit")],
+    );
+    // A root commit of git's empty tree: in the repository, sharing no history with HEAD.
+    let empty_tree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+    let unrelated = common::git::git_out(dir.path(), &["commit-tree", empty_tree, "-m", "other"]);
+    assert_eq!(
+        common::repo::run_gate_script(dir.path(), "content.sh", &[check, &unrelated], &[]),
+        (
+            false,
+            format!(
+                "{check} gate: base '{unrelated}' shares no history with HEAD, so there is no \
+                 diff to check; refusing\n"
+            )
+        ),
+    );
+}
+
+rigger::test_cases! {
+    the_style_check_refuses_a_base_unrelated_to_head:
+        the_content_script_refuses_an_unrelated_base("style");
+    the_no_os_kill_check_refuses_a_base_unrelated_to_head:
+        the_content_script_refuses_an_unrelated_base("no-os-kill");
 }
 
 /// Round-9 escalation-remedy reject (adj-u69c1r9-verdict-reject upholding

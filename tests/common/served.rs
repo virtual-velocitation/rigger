@@ -8,7 +8,13 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use rigger::contextgraph::{CallGraph, Direction, Graph};
-use rigger::dash::{self, route, DashInputs, InstanceView, Response};
+use rigger::dash::{self, route, DashInputs, GraphRead, InstanceView, Response};
+use rigger::eventstore::Event;
+
+/// A state graph provider that draws no run-seeded graph.
+pub fn no_state_graph(_: Option<&str>, _: &[Event]) -> GraphRead {
+    GraphRead::default()
+}
 
 /// `GET target` through the in-process dash router over `graph` (no events, no liveness),
 /// asserting it is served 200.
@@ -43,6 +49,9 @@ pub fn get_raw(target: &str) -> Vec<u8> {
     let provider = |_instance: Option<&str>| -> Result<DashInputs, String> {
         panic!("the served route reads no run-scoped store input")
     };
+    let state_graph_provider = |_instance: Option<&str>, _events: &[Event]| -> GraphRead {
+        panic!("the served route draws no run-seeded graph")
+    };
     let graph_provider =
         |_instance: Option<&str>, _tests: rigger::code_view::Tests, _: f64| -> Graph {
             panic!("the served route opens no whole-graph projection")
@@ -65,6 +74,7 @@ pub fn get_raw(target: &str) -> Vec<u8> {
         let _ = dash::serve_on(
             listener,
             provider,
+            state_graph_provider,
             graph_provider,
             calls_provider,
             instances_provider,
@@ -95,7 +105,7 @@ pub fn get_raw(target: &str) -> Vec<u8> {
 }
 
 /// Start the dash on a FRESH ephemeral loopback port - `graph_provider` behind its lazy
-/// whole-graph provider (`/api/graph` reads it), `poll_graph` behind its state-poll provider -
+/// whole-graph provider (`/api/graph` reads it), `poll_graph` behind its state graph provider -
 /// and fetch `GET path` once, returning the raw HTTP response, or `None` on a genuine
 /// socket-level failure.
 ///
@@ -113,14 +123,11 @@ where
     let listener = TcpListener::bind(("127.0.0.1", 0)).ok()?;
     let addr = listener.local_addr().ok()?;
 
-    let provider = move |_instance: Option<&str>| -> Result<DashInputs, String> {
-        Ok((
-            Vec::new(),
-            poll_graph.clone().into(),
-            Vec::new(),
-            HashMap::new(),
-        ))
+    let provider = |_instance: Option<&str>| -> Result<DashInputs, String> {
+        Ok((Vec::new(), Vec::new(), HashMap::new()))
     };
+    let state_graph_provider =
+        move |_instance: Option<&str>, _events: &[Event]| GraphRead::from(poll_graph.clone());
     let calls_provider =
         |_: Option<&str>,
          _: &[String],
@@ -134,6 +141,7 @@ where
         let _ = dash::serve_on(
             listener,
             provider,
+            state_graph_provider,
             graph_provider,
             calls_provider,
             instances_provider,

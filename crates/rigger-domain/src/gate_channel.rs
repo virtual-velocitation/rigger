@@ -44,9 +44,11 @@ pub enum GateReply {
 
 /// The channel a driver serves gate requests on, scoped to its run.
 pub trait GateChannel: Sync {
-    /// Answer each request with `answer` until [`GateChannel::close`] is called.
+    /// Answer each request with `answer` until [`GateChannel::close`] is called. A serve consumes
+    /// the close that ends it, so the same channel serves again on the next call.
     fn serve(&self, answer: &(dyn Fn(GateRequest) -> GateReply + Sync)) -> std::io::Result<()>;
-    /// End [`GateChannel::serve`]; safe to call from another thread and more than once.
+    /// End the running [`GateChannel::serve`], or the next one when none runs yet; safe to call
+    /// from another thread.
     fn close(&self);
     /// The absolute address a request reaches this channel at, which the driver hands every
     /// spawn as [`GATE_SOCKET_ENV`]; `None` when it has none a child process can name.

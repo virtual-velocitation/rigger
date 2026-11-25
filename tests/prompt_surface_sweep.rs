@@ -112,6 +112,7 @@ const ALLOW_LIST: &[Allowed] = &[
             "{}: the session ended without handing over (no {AUTHOR_HANDO",
             "rigger: the run landed a definition change; re-pinned run {}",
             "rigger run: the run stopped, and its hold could not be recor",
+            "refusing to move the run branch: the checkout at {repo} hold",
         ],
     ),
     (
@@ -122,6 +123,8 @@ const ALLOW_LIST: &[Allowed] = &[
             "gate: no gate {gate_id:?} is declared in the workflow; the d",
             "gate: {dir} has uncommitted changes; commit them, then run `",
             "{WORKTREE_CHANGED}, so its result addresses no commit; chang",
+            "on tracked changes that are unreadable ({e})",
+            "the gate began {why}, so its result addresses no commit and ",
             "re-run: unverified recorded pass at log position {}",
             " (it gated commit {}, and the gate runs on {commit} now)",
             "gate: {} is not the worktree of a unit this run is driving;",

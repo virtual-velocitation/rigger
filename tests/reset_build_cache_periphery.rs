@@ -611,7 +611,7 @@ fn a_gate_whose_guard_parent_cannot_be_created_faults_runs_nothing_and_writes_no
 
     assert_eq!(
         got.map(|res| res.pass),
-        Err(ProbeFault {
+        Err(ProbeFault::Guard {
             guard: bad_guard.to_str().unwrap().to_string(),
             error: create_error,
         }),
@@ -672,7 +672,7 @@ fn a_run_whose_deferred_gate_guard_probe_fails_halts_naming_the_guard_and_the_ne
         .open(&guard)
         .unwrap_err()
         .to_string();
-    let fault = ProbeFault {
+    let fault = ProbeFault::Guard {
         guard: guard.to_str().unwrap().to_string(),
         error: open_error,
     };

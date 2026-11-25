@@ -57,7 +57,7 @@ use rigger_domain::test_cases;
 // The root-crate vocabulary the tests and the shared fixtures name (see the manifest's
 // `rigger-root` dev-dependency).
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
-use rigger_root::{conductor, config, contextgraph, gate};
+use rigger_root::{conductor, config, contextgraph, gate, worktree};
 
 /// The fixtures an inline `#[cfg(test)]` module shares with the root crate's tests, compiled
 /// here from the same files. They name the crate as `rigger::...`, which

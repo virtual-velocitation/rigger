@@ -162,6 +162,27 @@ pub fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
     run_rigger_envs(cwd, args, &[])
 }
 
+/// [`run_rigger`] with the run's stdout and stderr written to files, not piped: the run is over
+/// when the rigger process exits, never when the last child it left holding its output open does,
+/// so a test reads what each such child had done by the time rigger itself exited.
+pub fn run_rigger_to_files(cwd: &Path, args: &[&str]) -> (String, String, bool) {
+    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME for the rigger run");
+    let output = tempfile::tempdir().expect("create a dir for the rigger run's output");
+    let file = |name: &str| {
+        std::fs::File::create(output.path().join(name)).expect("create the run's output file")
+    };
+    let status = rigger_command(cwd, args, &[], state.path())
+        .stdin(Stdio::null())
+        .stdout(file("stdout"))
+        .stderr(file("stderr"))
+        .status()
+        .expect("failed to run the rigger binary");
+    let read = |name: &str| {
+        std::fs::read_to_string(output.path().join(name)).expect("read the run's output file")
+    };
+    (read("stdout"), read("stderr"), status.success())
+}
+
 /// Post one `UnitProposed` decision for the currently-parked spawn `spawn`, through the
 /// real `rigger emit --spawn` CLI courier (`cmd_emit`, `src/main.rs`) - the established
 /// native-courier idiom for a scripted (non-MCP) agent to record a decision, threading its

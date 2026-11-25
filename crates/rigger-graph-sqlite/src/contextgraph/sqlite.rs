@@ -990,13 +990,12 @@ impl Projector {
     /// the log past the cursor - the first [`FOLD_BATCH`] events of the project's own log as it is
     /// handed, or every one there is when fewer are ([`EventStore::read_all_page`]) - with no lock
     /// of the file held: a page without an event is [`CatchUp::AtHead`]. The page's events of the
-    /// project's run stream are its positions to decide; its first transaction cut
-    /// ([`fold_transactions`]) is decided and folded by THE DECIDE STEP ([`decide_step`]), the step a
-    /// rebuild's fold pass shares. The cut's transaction reads the cursor again under
-    /// the write lock and ends by moving it to the cut's last position, or to the page's last
-    /// position when the cut holds every run-stream event of the page - a page of other streams'
-    /// events alone moves it there folding nothing - and the call answers [`CatchUp::Advanced`],
-    /// counting the positions that transaction itself recorded in the `applied` ledger.
+    /// project's run stream are its positions to decide, and they are the one cut THE DECIDE STEP
+    /// ([`decide_step`]), the step a rebuild's fold pass shares, decides and folds. The cut's
+    /// transaction reads the cursor again under the write lock and ends by moving it to the page's
+    /// last position - a page of other streams' events alone moves it there folding nothing - and
+    /// the call answers [`CatchUp::Advanced`], counting the positions that transaction itself
+    /// recorded in the `applied` ledger.
     ///
     /// Under the write lock the cut answers a rebuild's state, an older fold rule, a dropped
     /// cursor or one recorded beside another log or none that another writer brought about after
@@ -1044,11 +1043,6 @@ impl Projector {
                 return Ok(CatchUp::AtHead);
             };
             let run: Vec<Event> = page.into_iter().filter(on_the_run_stream).collect();
-            let part = fold_transactions(&run).next().unwrap_or_default();
-            let through = match part.last() {
-                Some(cut_last) if part.len() < run.len() => cut_last.position,
-                _ => last,
-            };
             let mut cut = CatchUpCut {
                 store: &self.store,
                 from,
@@ -1056,14 +1050,7 @@ impl Projector {
                 before: 0,
                 recorded: 0,
             };
-            let decided = decide_step(
-                &mut &self.conn,
-                &self.project,
-                part,
-                through,
-                &mut cut,
-                false,
-            );
+            let decided = decide_step(&mut &self.conn, &self.project, &run, last, &mut cut, false);
             match decided {
                 Ok(()) => {
                     return Ok(CatchUp::Advanced {
@@ -2104,8 +2091,9 @@ fn fold_source(
     })
 }
 
-/// THE DECIDE STEP (spec 124): fold the one transaction cut `part` of a fold pass
-/// ([`fold_transactions`]), none for a catch-up page of other streams' events alone, into the
+/// THE DECIDE STEP (spec 124): fold the one transaction cut `part`, of a fold pass
+/// ([`fold_transactions`]) or a catch-up page's run-stream events, none for a catch-up page of
+/// other streams' events alone, into the
 /// connection `conn` lends, deciding each position in order, in a transaction that `cursor` opens
 /// before any position folds and, once they are folded, closes at `through` ([`FoldCursor`]): a
 /// rebuild's fold pass ([`fold_source`]) advancing its `rebuild_cursor` to the cut's last position

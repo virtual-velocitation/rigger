@@ -145,6 +145,7 @@ fn recorded_blast_radius(graph: Option<&Projector>) -> Option<Value> {
         store: &store,
         driver: &driver,
         gates: &ExecRunner,
+        run_branch: None,
         repo: String::new(),
         grounder: Some(&grounder),
         graph: graph.map(|g| g as _),

@@ -885,7 +885,7 @@ fn the_graph_half_read_near_its_terms_answers_as_the_whole_graph_does() {
         for tests in [Tests::Exclude, Tests::Include, Tests::Only] {
             let filter = ViewFilter { tests };
             let whole = Composed::new(&records, &view, filter, honesty(compared)).unwrap();
-            let near = Composed::near(&records, &view, filter, honesty(compared)).unwrap();
+            let near = Composed::near(&records, &view, filter, honesty(compared), None).unwrap();
             let want = super::graph::answer(&NAMED_TERMS, &Defaults(&whole)).unwrap();
             let got = super::graph::answer(&NAMED_TERMS, &near).unwrap();
             let at = format!("{tests:?} {compared:?}");
@@ -971,7 +971,7 @@ fn the_graph_half_reads_no_file_its_terms_do_not_reach() {
             compared: Compared::Overlaid(1),
             behind: None,
         };
-        let near = Composed::near(&records, &view, ViewFilter::default(), honesty).unwrap();
+        let near = Composed::near(&records, &view, ViewFilter::default(), honesty, None).unwrap();
         let graph: &dyn ContextGraph = if defaults { &Defaults(&near) } else { &near };
         super::graph::answer(&terms, graph).unwrap();
         let read = view.read.lock().unwrap();

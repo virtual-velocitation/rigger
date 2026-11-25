@@ -177,12 +177,7 @@ fn run_tree_spine_crosses_the_http_state_boundary() {
     // The provider `serve` re-reads per request. `Fn`, `Send`, `'static`: it owns and clones the
     // seeded inputs, exactly the shape `cmd_dash`'s store-reading provider yields.
     let provider = move |_instance: Option<&str>| -> Result<DashInputs, String> {
-        Ok((
-            events.clone(),
-            Graph::default().into(),
-            progress.clone(),
-            liveness.clone(),
-        ))
+        Ok((events.clone(), progress.clone(), liveness.clone()))
     };
 
     // A free loopback port this harness OWNS from `bind` through `serve_on`: the listener is handed
@@ -214,6 +209,7 @@ fn run_tree_spine_crosses_the_http_state_boundary() {
         let _ = dash::serve_on(
             listener,
             provider,
+            common::served::no_state_graph,
             graph_provider,
             calls_provider,
             instances_provider,

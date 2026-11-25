@@ -296,6 +296,7 @@ fn a_run_branch_move_that_changes_the_definition_re_pins_the_run_so_its_next_lau
             store: &store,
             driver: driver.as_ref(),
             gates: &ExecRunner,
+            run_branch: common::fixtures::branch_of(repo.to_str().unwrap()),
             repo: repo.to_str().unwrap().to_string(),
             grounder: None,
             graph: None,

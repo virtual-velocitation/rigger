@@ -3996,7 +3996,7 @@ pub(crate) mod tests {
             let filter = ViewFilter { tests };
             let whole = Composed::new(&records, &view, filter, honesty.clone()).unwrap();
             assert_eq!(walk(&whole, seed, direction), want, "whole: {shows}");
-            let near = Composed::near(&records, &view, filter, honesty.clone()).unwrap();
+            let near = Composed::near(&records, &view, filter, honesty.clone(), None).unwrap();
             assert_eq!(walk(&near, seed, direction), want, "near: {shows}");
         }
         // (the tests shown, a node, the candidates its down-hop keeps and its `candidates`

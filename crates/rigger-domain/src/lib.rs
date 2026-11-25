@@ -34,6 +34,8 @@ pub mod gate_channel;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod grounder;
 pub mod groupings;
+/// The one stable hash, FNV-1a/64: always compiled, so every lane derives its ids through it.
+pub mod hash;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod hold_probe;
 /// The ingest fold rules (spec 45): the replay-key vocabulary and the project-scoped suppression

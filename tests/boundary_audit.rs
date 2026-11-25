@@ -15,7 +15,9 @@
 //!    site that vanished fails it until it is deleted. An appender that holds the stream by
 //!    reference is reached through its graph open instead: the MCP server's emit
 //!    (`crates/rigger-dash/src/mcpserver.rs:449`), handed `conductor::STREAM` at
-//!    `src/cli/dashboard.rs:852`, is reached through `cmd_mcp`'s graph open.
+//!    `src/cli/dashboard.rs:852`, is reached through `cmd_mcp`'s graph open. THE SPAWN AUDIT
+//!    lists, the same way, every production `Command::new`, which only the base constructor
+//!    calls.
 //! 3. THE PRINCIPLE LINTS CARRY NO EXEMPTION. No item opts out of a lint the root manifest
 //!    denies.
 //! 4. THE CORE NAMES NO GATE. A gate is a command a project's workflow wires into a stage, so no
@@ -23,8 +25,8 @@
 //!
 //! Rules 1 and 2 each carry an allowlist of today's offenders that may only shrink: an entry that no
 //! longer matches an offender fails the suite until it is deleted, so the list is the follow-up
-//! work queue and never outlives the work. The appender audit's two lists are no offender queue:
-//! each is the whole set of its family's sites, compared both ways.
+//! work queue and never outlives the work. The appender audit's two lists and the spawn audit's
+//! list are no offender queue: each is the whole set of its family's sites, compared both ways.
 
 mod common;
 use common::repo::{
@@ -643,6 +645,16 @@ impl<'t> ProductionFile<'t> {
         in_ranges(at, &self.tests)
     }
 
+    /// The production part's tokens ([`tokenize`]), so a name spelled in a comment or a string
+    /// literal is none, with each token on a `#[cfg(test)]` item's line dropped.
+    fn tokens(&self) -> Vec<RawTok> {
+        let chars: Vec<char> = self.part.chars().collect();
+        tokenize(&chars)
+            .into_iter()
+            .filter(|tok| !self.in_test(tok.line - 1))
+            .collect()
+    }
+
     /// The site of 0-based line `at` in the file at `rel`: `rel:item`, `item` the function
     /// enclosing the line, or `<top level>` when none does.
     fn site(&self, rel: &str, at: usize) -> String {
@@ -908,11 +920,7 @@ fn stream_sites(root: &Path) -> StreamSites {
     let mut sites = StreamSites::default();
     for (rel, text) in production_sources(root) {
         let file = ProductionFile::read(&text);
-        let chars: Vec<char> = file.part.chars().collect();
-        let toks: Vec<RawTok> = tokenize(&chars)
-            .into_iter()
-            .filter(|tok| !file.in_test(tok.line - 1))
-            .collect();
+        let toks = file.tokens();
         let bare_is_project_stream = imports_project_stream(&toks);
         for at in 0..toks.len() {
             if names_projector_open(&toks, at) {
@@ -1190,6 +1198,141 @@ fn each_append_and_open_token_is_reported_by_file_and_item() {
             "{case}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Rule 2, beside it: the spawn audit
+// ---------------------------------------------------------------------------------------------
+
+/// Every production site that constructs a child process, as `file:item`, each with why it may:
+/// a `Command::new` called or named as a value, under `Command`'s own name or one a `use` renames
+/// it to. Every other site reaches past the base constructor and the rules it owns, the agents'
+/// login token no child inherits among them, so it fails the suite until it is built through
+/// `rigger_process::subprocess::command`; a listed site that vanished fails it until it is deleted.
+const SPAWN_SITES: &[(&str, &str)] = &[(
+    "crates/rigger-process/src/subprocess.rs:command",
+    "the base constructor every child is built through, which removes the agents' login token",
+)];
+
+/// The type whose `new` constructs a child process.
+const COMMAND: &str = "Command";
+
+/// [`COMMAND`] and each name a `use` among `toks` renames it to (`Command as Spawn`).
+fn command_names(toks: &[RawTok]) -> Vec<String> {
+    let renames = toks.windows(3).filter(|w| {
+        ref_token(Some(&w[0]), RawKind::Ident, COMMAND)
+            && ref_token(Some(&w[1]), RawKind::Keyword, "as")
+    });
+    let mut names = vec![COMMAND.to_string()];
+    names.extend(renames.map(|w| w[2].text.clone()));
+    names
+}
+
+/// The production sites under `root` that construct a child process, as [`SPAWN_SITES`] reads
+/// them: each `new` qualified by one of [`command_names`], called or named as a value.
+fn spawn_sites(root: &Path) -> BTreeSet<String> {
+    let mut sites = BTreeSet::new();
+    for (rel, text) in production_sources(root) {
+        let file = ProductionFile::read(&text);
+        let toks = file.tokens();
+        let names = command_names(&toks);
+        for at in 0..toks.len() {
+            if ref_token(toks.get(at), RawKind::Ident, "new")
+                && qualifier_before(&toks, at).is_some_and(|q| names.contains(&q))
+            {
+                sites.insert(file.site(&rel, toks[at].line - 1));
+            }
+        }
+    }
+    sites
+}
+
+#[test]
+fn every_production_child_is_built_by_the_base_constructor() {
+    let listed: Vec<&str> = SPAWN_SITES.iter().map(|(site, _)| *site).collect();
+    assert_eq!(
+        list_drift(&listed, &spawn_sites(&repo_root())),
+        (vec![], vec![]),
+        "SPAWN_SITES differs from the tree: build each new site (the first set) through \
+         rigger_process::subprocess::command, and delete each vanished site (the second set)"
+    );
+}
+
+#[test]
+fn each_command_construction_is_reported_by_file_and_item() {
+    /// (case, file, its source, the sites it holds)
+    type Case = (
+        &'static str,
+        &'static str,
+        &'static str,
+        &'static [&'static str],
+    );
+    let cases: &[Case] = &[
+        (
+            "a call under Command's own name",
+            "src/lib.rs",
+            "fn git() {\n    let out = Command::new(\"git\").output();\n}\n",
+            &["src/lib.rs:git"],
+        ),
+        (
+            "a call through the full path",
+            "src/lib.rs",
+            "fn full() {\n    std::process::Command::new(\"sh\").status();\n}\n",
+            &["src/lib.rs:full"],
+        ),
+        (
+            "the constructor named as a value, for a callee to call",
+            "src/lib.rs",
+            "fn mapped() {\n    let cmds: Vec<_> = names.iter().map(Command::new).collect();\n}\n",
+            &["src/lib.rs:mapped"],
+        ),
+        (
+            "a call under a name a use renames Command to",
+            "src/lib.rs",
+            "use std::process::Command as Spawn;\n\nfn renamed() {\n    Spawn::new(\"git\");\n}\n",
+            &["src/lib.rs:renamed"],
+        ),
+        (
+            "one spelled in a comment, a string literal or a test item",
+            "src/lib.rs",
+            "fn quiet() {\n    // Command::new(\"git\")\n    let s = \"Command::new\";\n}\n\
+             #[cfg(test)]\nfn probe() {\n    Command::new(\"git\");\n}\n",
+            &[],
+        ),
+        (
+            "another type's new and the base constructor's own call",
+            "src/lib.rs",
+            "fn other() {\n    let c = Child::new();\n    let g = command(\"git\");\n}\n",
+            &[],
+        ),
+    ];
+    for (case, file, source, sites) in cases {
+        let dir = tempfile::tempdir().unwrap();
+        write_file(dir.path(), file, source);
+        assert_eq!(spawn_sites(dir.path()), site_set(sites), "{case}");
+    }
+}
+
+/// Given a tree holding a construction the list lacks and a list naming a site the tree no
+/// longer holds, the verdict names the first new and the second vanished.
+#[test]
+fn an_unlisted_command_construction_is_new_and_a_vanished_one_is_named() {
+    let dir = tempfile::tempdir().unwrap();
+    write_file(
+        dir.path(),
+        "src/lib.rs",
+        "fn kept() {\n    Command::new(\"git\");\n}\nfn added() {\n    Command::new(\"sh\");\n}\n",
+    );
+    assert_eq!(
+        list_drift(
+            &["src/lib.rs:kept", "src/lib.rs:removed"],
+            &spawn_sites(dir.path())
+        ),
+        (
+            vec!["src/lib.rs:added".to_string()],
+            vec!["src/lib.rs:removed".to_string()],
+        )
+    );
 }
 
 // ---------------------------------------------------------------------------------------------
