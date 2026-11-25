@@ -7004,7 +7004,8 @@ pub fn f() -> u8 {
     /// `for`, a closure parameter, a tuple struct pattern's head and a binder's own name read
     /// none. A format string's inline capture is a const read at its own line - a placeholder's
     /// argument and each width or precision `NAME$` - read from the format argument of each format
-    /// macro when that argument is one string literal, with `{{`, `}}` and escapes skipped, and a
+    /// macro, its arguments split where a call's are, when that argument is one string literal,
+    /// with `{{`, `}}` and escapes skipped, and a
     /// named argument's name read neither in the string nor where it is bound; a lowercase capture,
     /// a literal at another argument, a non-format macro's literal and an excluded name read none.
     #[test]
@@ -7275,6 +7276,46 @@ fn o() {
 3 ref call format o
 3 ref const X o
 3 ref const X o",
+            ),
+            (
+                "a width or precision name runs over the digits and underscores it holds",
+                "\
+fn p() {
+    format!(\"{:COL_W$} {:.PREC2$}\", 1, 2);
+}
+",
+                "\
+1 def Function p to 3
+2 ref call format p
+2 ref const COL_W p
+2 ref const PREC2 p",
+            ),
+            (
+                "a format macro's arguments split where a call's do: a turbofish's or a cast's \
+                 generic comma ends no argument, a comparison's `<` opens none, and a literal \
+                 opening a longer argument is no format string",
+                "\
+fn q<A, B, W>(a: u8, b: u8, x: u8, y: u8) {
+    assert_eq!(h::<A, B>(), \"{X}\");
+    assert_eq!(f::<A, B>(), x, \"{Y}\");
+    assert_eq!(x as W<A, B>, y, \"{Z}\");
+    assert!(a < b, \"{X}\");
+    panic!(\"{X}\".to_owned());
+}
+",
+                "\
+1 def Function q to 7
+2 ref call assert_eq q
+2 ref call h q
+3 ref call assert_eq q
+3 ref call f q
+3 ref const Y q
+4 ref call assert_eq q
+4 ref const Z q
+5 ref call assert q
+5 ref const X q
+6 ref call panic q
+6 ref call to_owned q",
             ),
             (
                 "a named argument's name is read neither in the format string nor where it is \
