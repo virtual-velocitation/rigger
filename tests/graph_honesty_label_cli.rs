@@ -746,7 +746,11 @@ fn the_lookup_names_referrers_by_kind() {
 
 /// GIVEN a built project whose constant `LIMIT` is defined in two files and read by one function
 /// in a third, WHEN `rigger graph --lookup` reads the constant, THEN each constant's `reads:` line
-/// names the reading function marked `?`: its mention gave neither constant a single edge.
+/// names the reading function marked `?`: its mention gave neither constant a single edge. Read the
+/// same way, a function `shared` defined in two files and called by `spill` in another lists `spill`
+/// marked `?` under each one's `called by:` line, its call kept by a placeholder holding both, and
+/// `alone`, defined once in a file of its own and called by `spill` too, lists it unmarked: that
+/// call reaches its one definition alone.
 #[test]
 fn an_ambiguous_referrer_is_marked() {
     let dir = temp_project();
@@ -758,11 +762,19 @@ fn an_ambiguous_referrer_is_marked() {
         "src/c.rs",
         "pub fn fits(n: usize) -> bool {\n    n <= LIMIT\n}\n",
     );
+    write_text(root, "src/d.rs", "pub fn shared() {}\n");
+    write_text(root, "src/e.rs", "pub fn shared() {}\n");
+    write_text(
+        root,
+        "src/f.rs",
+        "pub fn spill() {\n    shared();\n    alone();\n}\n",
+    );
+    write_text(root, "src/g.rs", "pub fn alone() {}\n");
     git_commit_all(root, "source");
     run_rigger_ok(root, &["graph", "build"]);
-    lookup_prints_blocks(
-        root,
-        &[(
+    // (the term, its block's lines from its heading to the next section's)
+    let cases: [(&str, &[&str]); 3] = [
+        (
             "LIMIT",
             &[
                 "### LIMIT",
@@ -774,8 +786,33 @@ fn an_ambiguous_referrer_is_marked() {
                 "",
                 "## text",
             ],
-        )],
-    );
+        ),
+        (
+            "shared",
+            &[
+                "### shared",
+                "exact match: 2 entities",
+                "- src/d.rs:1 src/d.rs::shared (function)",
+                "  called by: src/f.rs:2 src/f.rs::spill (function) ?",
+                "- src/e.rs:1 src/e.rs::shared (function)",
+                "  called by: src/f.rs:2 src/f.rs::spill (function) ?",
+                "",
+                "## text",
+            ],
+        ),
+        (
+            "alone",
+            &[
+                "### alone",
+                "exact match: 1 entity",
+                "- src/g.rs:1 src/g.rs::alone (function)",
+                "  called by: src/f.rs:3 src/f.rs::spill (function)",
+                "",
+                "## text",
+            ],
+        ),
+    ];
+    lookup_prints_blocks(root, &cases);
 }
 
 /// Each case's term looked up through the binary in the built project at `root`: the printed
