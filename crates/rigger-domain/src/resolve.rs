@@ -908,15 +908,9 @@ impl<'v> Resolver<'v> {
 
     /// Every referrer of the code entity `id` ([`Self::file_referrers`]), in path then source
     /// order, read from the code files holding a mention of a name its definitions carry
-    /// ([`def_leaves`]); none for an id no definition of a code file holds.
+    /// ([`Self::leaves_of`]); none for an id no definition of a code file holds.
     pub fn referrers(&self, id: &str) -> Vec<Referrer> {
-        let (file, Some(local)) = split_id(id) else {
-            return Vec::new();
-        };
-        let facts = (self.is_code_file(file))
-            .then(|| self.view.file(file))
-            .flatten();
-        let leaves = facts.map_or_else(Vec::new, |facts| def_leaves(&facts, local));
+        let leaves = self.leaves_of(id);
         let files: BTreeSet<&str> = (leaves.iter())
             .flat_map(|leaf| self.view.mentions_named(leaf))
             .filter(|m| m.file.half == Half::Code)
@@ -929,6 +923,18 @@ impl<'v> Resolver<'v> {
             referrers.extend(listed.filter_map(|(to, r)| (to == id).then_some(r)));
         }
         referrers
+    }
+
+    /// The leaves of the definitions settling the code entity `id` ([`def_leaves`]); none for any
+    /// other id, whose file is not read: only a code file's definitions are code entities.
+    fn leaves_of(&self, id: &str) -> Vec<String> {
+        let (file, Some(local)) = split_id(id) else {
+            return Vec::new();
+        };
+        let facts = (self.is_code_file(file))
+            .then(|| self.view.file(file))
+            .flatten();
+        facts.map_or_else(Vec::new, |facts| def_leaves(&facts, local))
     }
 
     /// Whether `m`, a mention in `facts`, is test code.
@@ -1239,19 +1245,13 @@ impl<'v> Resolver<'v> {
     }
 
     /// The proof calls landing on the definition `id`, in proof order: the view's settled rows,
-    /// else each test call of one of its definitions' leaves (`def_leaves`) in a code file that
-    /// the proof rule resolves onto `id`, read from the mentions of those leaves alone.
+    /// else each test call of one of its definitions' leaves ([`Self::leaves_of`]) in a code file
+    /// that the proof rule resolves onto `id`, read from the mentions of those leaves alone.
     pub fn proofs_of(&self, id: &str) -> Vec<ProofCall> {
         if let Some(settled) = self.settled {
             return settled.proofs(Proofs::Of(id));
         }
-        let (file, Some(local)) = split_id(id) else {
-            return Vec::new();
-        };
-        let facts = (self.is_code_file(file))
-            .then(|| self.view.file(file))
-            .flatten();
-        let leaves = facts.map_or_else(Vec::new, |facts| def_leaves(&facts, local));
+        let leaves = self.leaves_of(id);
         let mut proving = Vec::new();
         let mut enclosing: BTreeMap<&str, BTreeSet<Option<u32>>> = BTreeMap::new();
         for leaf in leaves.iter().map(String::as_str) {
