@@ -338,10 +338,13 @@ naming the standard library (`Ordering::Less` under `use std::cmp::Ordering`) st
 a leaf sharing a standard-library or enclosing generic parameter's name stages its variant all the
 same (`Located::None`, `Shape::Box { w } =>`).
 A Rust impl header is an `impl` reference of its self type, and of its trait for `impl Tr for T`,
-each by its base name with path and generics stripped (`impl<T> CodeView for FactsView<T>` gives
-`CodeView` and `FactsView`), enclosed by the impl definition itself even inside a function; a
-name the exclusions hold (a prelude trait such as `Default`, a standard-library path, a generic
-self type) and a tuple self type stage none, and the header makes no call.
+each by its base name with path, generics, a reference and a pointer stripped
+(`impl<T> CodeView for FactsView<T>` gives `CodeView` and `FactsView`, `impl Draw for &Local`
+gives `Draw` and `Local`), enclosed by the impl definition itself even inside a function; a
+name the exclusions hold (a prelude name such as `Default` or `Box`, a standard-library path, a
+generic self type) stages none, a tuple, slice, array, `dyn` or function self type names no
+single type and stages none while the types inside it stage as type references, and the header
+makes no call.
 A module's two lists depend only on the declaring file, so they
 are computed at extraction, an enclosing inline module's components and an explicit path attribute
 placed by the same two rules; for a file named `mod.rs`, `lib.rs` or `main.rs` the two are equal.

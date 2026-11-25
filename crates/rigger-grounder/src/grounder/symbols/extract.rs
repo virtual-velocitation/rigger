@@ -1714,8 +1714,10 @@ impl UseLeaf<'_> {
 /// [`variant_qualifier`] gives a qualifier, staged with that qualifier: a path's beside its path's
 /// type row, a struct literal's or pattern's in place of it. A USE is each imported
 /// leaf of a `use` ([`use_leaves`]). An IMPL HEADER stages an `impl` row of its trait, when it
-/// has one, then one of its self type, each by its base name ([`base_type_identifier`]: path and
-/// generics stripped, a tuple none), carrying the impl's range. An attribute, a `macro_rules!`
+/// has one, then one of its self type, each by its base name ([`base_type_identifier`]: path,
+/// generics, a reference and a pointer stripped; a tuple, slice, array, `dyn` or function type
+/// none, the types inside it staging as type references), carrying the impl's range; a `Box<T>`
+/// self type is `Box`, which [`excluded`] holds. An attribute, a `macro_rules!`
 /// body and a visibility path stage nothing, a macro's token tree stages what its re-parse reads
 /// ([`reparse_invocations`]), and no name [`excluded`] under `scope` stages, save a variant,
 /// which its qualifier and root alone exclude.
@@ -6286,9 +6288,9 @@ class K
     }
 
     /// Spec 117, RUST REFERENCES: `extract` tags a Rust const read, a type reference, a field use,
-    /// a variant use and each imported leaf of a `use` with its `ref_kind`, after the call
-    /// references it already records, and every name the spec excludes stages nothing. Each case
-    /// is a source and the tagged references it extracts, whole
+    /// a variant use, an impl header's mention and each imported leaf of a `use` with its
+    /// `ref_kind`, after the call references it already records, and every name the spec excludes
+    /// stages nothing. Each case is a source and the tagged references it extracts, whole
     /// ([`crate::symbol_index::assert_tagged_refs`]).
     #[test]
     fn rust_references_are_tagged_by_kind_and_every_excluded_name_stages_nothing() {
@@ -6375,6 +6377,39 @@ impl Draw for Gizmo {}
 7 impl Twin impl Draw for Twin
 11 impl Draw impl Draw for Gizmo
 11 impl Gizmo impl Draw for Gizmo",
+            ),
+            // An impl header's self type is read through a reference or a pointer to its base
+            // name; a slice, array, `dyn` or function self type names no single type and a `Box`
+            // a prelude one, so each stages no `impl` row, the types inside it staging by the
+            // type rule.
+            (
+                "an impl header's referenced self type stages its impl row, a wrapped one none",
+                "\
+impl Draw for &Kestrel {}
+impl Draw for &mut Kestrel {}
+impl Draw for *const Kestrel {}
+impl Draw for [Kestrel] {}
+impl Draw for [Kestrel; 2] {}
+impl Draw for Box<Kestrel> {}
+impl Draw for dyn Plover {}
+impl Draw for fn() {}
+",
+                "\
+1 impl Draw impl Draw for &Kestrel
+1 impl Kestrel impl Draw for &Kestrel
+2 impl Draw impl Draw for &mut Kestrel
+2 impl Kestrel impl Draw for &mut Kestrel
+3 impl Draw impl Draw for *const Kestrel
+3 impl Kestrel impl Draw for *const Kestrel
+4 impl Draw impl Draw for [Kestrel]
+4 type Kestrel impl Draw for [Kestrel]
+5 impl Draw impl Draw for [Kestrel; 2]
+5 type Kestrel impl Draw for [Kestrel; 2]
+6 impl Draw impl Draw for Box<Kestrel>
+6 type Kestrel impl Draw for Box<Kestrel>
+7 impl Draw impl Draw for dyn Plover
+7 type Plover impl Draw for dyn Plover
+8 impl Draw impl Draw for fn()",
             ),
             // A struct literal and a struct pattern stage one row of their name: a `variant` row
             // of a variant written under an uppercase path (`Enum::Variant { .. }`,
