@@ -152,19 +152,29 @@ const CSHARP_DEFINITION_TAGS: [&str; 18] = [
 ///   splits there into comparisons, `A` of `x is Gen<A> & ok ? 1 : 0`, read `x is Gen < A > &ok`,
 ///   whose last operand is a prefix `&` or `^`, `&&` read as two, directly or first in the node
 ///   there, as in `& s switch { _ => ok }`;
-/// - a generic name of two type arguments the grammar splits at its comma into two adjacent
+/// - a generic name of two type arguments the grammar splits at its comma into adjacent
 ///   elements of a list ([`CSHARP_SPLIT_LISTS`]), an argument list, an index, parentheses it
 ///   reads as a tuple, an initializer, a collection expression, an interpolation, whose comma it
 ///   reads as an alignment, or a `for` clause, as it reads `F(x is Gen<A, B> & s is null)` as
-///   `x is Gen < A` and `B > &s is null`: the generic's own name and its first type argument, a
-///   generic one's type arguments included, from the `<` comparison the grammar keeps as the
-///   constant pattern after `is`, under a `not` or as the right of an `and` or an `or`, so
-///   `x is Foo < ok` stages both too; and its second type argument, the left operand of the `>`
-///   comparison opening the next element, when the first element ends in the `is` expression
-///   through at most [`CSHARP_SPLIT_BOUND`], 2, nodes, its last named children, as a lambda's
-///   body, an assigned value and a right operand are, and the second reaches that left operand
-///   through at most [`CSHARP_SPINE_BOUND`], 16, nodes, its first named children, each operator
-///   one, so `& s is null` and fourteen `&& ok` after it are staged and fifteen none.
+///   `x is Gen < A` and `B > &s is null`: the generic's own name and each name of its type
+///   arguments, nested ones included, a type argument that is a generic, a generic's array or a
+///   tuple, as `F(x is Gen<Fa<Fb>[], B> & s is null)` stages `Gen`, `Fa`, `Fb` and `B` and
+///   `F(x is Gen<A, (C, D)> & s is null)` stages `Gen`, `A`, `C` and `D`, while a qualified type
+///   argument is the field it names, `Ns.A` of `x is Gen<Ns.A, B>`, and a qualified generic's own
+///   name none; the grammar reads the angle brackets as comparisons
+///   ([`CSHARP_RELATIONAL_OPERATORS`]) and an array's `[]` as an empty collection, the element
+///   before the comma the constant pattern after `is`, under a `not` or as the right of an `and`
+///   or an `or`, opening more comparisons by `<` than it closes by `>`, so `x is Foo < ok` stages
+///   both too and a whole `x is Pt<A>[]` none; each element after it stages when the first ends
+///   in the `is` expression through at most [`CSHARP_SPLIT_BOUND`], 2, nodes, its last named
+///   children, as a lambda's body, an assigned value and a right operand are, and reaches the
+///   comparisons closing the generic through at most [`CSHARP_SPINE_BOUND`], 16, nodes, its first
+///   named children, each operator one, so `& s is null` and fourteen `&& ok` after it are staged
+///   and fifteen none, an element between two of the commas, `Us < C` of
+///   `x is Gen<A, Us<C, D>[]>`, only when the element after it closes what it opens; and each
+///   name sits under at most [`CSHARP_SPLIT_CHAIN_BOUND`], 8, comparisons in its element, as each
+///   of `x is Gen<Fa<Fb<Fc<Fd<Fe>[]>[]>[], Ff>[], B>` does, and under at most
+///   [`CSHARP_SPLIT_TUPLE_CHAIN_BOUND`], 2, in an element of a tuple among the type arguments.
 ///
 /// None is a type in:
 ///
@@ -194,17 +204,24 @@ const CSHARP_DEFINITION_TAGS: [&str; 18] = [
 ///   `var` pattern and a discard; a property subpattern's name, an extended one the field it
 ///   names; a tuple pattern's elements; and a list after `is` whose slice holds a pattern or
 ///   precedes one, which the grammar fails to parse;
-/// - a left operand past the bound above, and a split generic's second type argument past either
-///   bound above, `B` of `F(b = b = b = x is Gen<A, B> & s is null)`, its own name and first type
-///   argument staged still;
+/// - a left operand past the bound above; and a split generic's names past its bounds above: an
+///   element's after the comma past the `is` or the spine bound, `B` of
+///   `F(b = b = b = x is Gen<A, B> & s is null)`, the element before it staged still; every name,
+///   the second type argument's included, past the chain bound before the comma, as the nine
+///   comparisons of `x is Gen<Fa<Fb<Fc<Fd<C>[]>[]>[]>[], B>` put them; a name past it after the
+///   comma, `Sa` and `Sb` of `x is Gen<A, Sa<Sb<Sc<Sd<Se<Sf<Sg<Sh<Si<C>[]>[]>[]>[]>[]>[]>[]>[]>[]>`,
+///   the names under eight staged still; and a tuple element's names past its bound, `Fa`, `Fb`
+///   and `Fc` of `x is Gen<(Fa<Fb<Fc>[]>[], Fd), B>`, the tuple's other elements staged still;
 /// - a call in a case's body or `when` or in an expression's collection; a positional pattern
 ///   directly in a second pair of parentheses, which the grammar nests as a further expression,
 ///   and a list directly in a second pair or nested in a collection-expression list's element; a
 ///   positional pattern's untyped argument subpattern, `Inner` of `Pt(Inner(0, 0), 1)`, where the
 ///   grammar reads the pattern as an invocation, whose arguments are no patterns, while under a
 ///   recursive pattern's parse, as with a designation, it is a pattern like any other; a generic
-///   positional pattern, `Pt<A>(0, 0)`, comparisons to the grammar; and a qualified one,
-///   `Ns.Pt(0, 0)`, which stays the call `Ns.Pt`.
+///   positional pattern, `Pt<A>(0, 0)`, and a generic's array, `x is Pt<A>[]`, outside a split
+///   above, comparisons to the grammar, while as a left operand above, `x is Pt<A>(0, 0) && ok`,
+///   the grammar reads an invocation of the generic, its type argument the type it names; and a
+///   qualified positional pattern, `Ns.Pt(0, 0)`, which stays the call `Ns.Pt`.
 fn csharp_reference_tags() -> String {
     let guard = CSHARP_KEYWORD_GUARD;
     let names = format!("(identifier) @name (generic_name) @name {CSHARP_CALLED}");
@@ -222,34 +239,145 @@ fn csharp_reference_tags() -> String {
     let closing = format!("[{prefix} {}]", first_child(prefix));
     let after_is = |kept: &str| {
         format!(
-            "(is_pattern_expression pattern: [{kept} (negated_pattern {kept}) \
-             (and_pattern right: {kept}) (or_pattern right: {kept})])"
+            "(is_pattern_expression pattern: [{kept} (negated_pattern {kept}) (_ right: {kept})])"
         )
     };
-    let kept = |own: &str, first: &str| {
-        format!(r#"(constant_pattern (_ left: {own} operator: "<" right: {first}))"#)
-    };
-    let generic = "[(identifier) (generic_name)]";
-    let own = after_is(&kept("(identifier) @name", generic));
-    let first = after_is(&kept("(identifier)", &format!("{generic} @name")));
-    let split = after_is(&kept("(identifier)", generic));
-    let opening = r#"(_ left: (identifier) @name operator: ">")"#.to_string();
-    let within = |inner: String, wrap: fn(&str) -> String, spines: usize| {
-        format!(
-            "[{}]",
-            nested(inner, wrap)
-                .take(spines)
-                .collect::<Vec<_>>()
-                .join(" ")
-        )
-    };
-    let before = within(split, last_child, CSHARP_SPLIT_BOUND + 1);
-    let after = within(opening, first_child, CSHARP_SPINE_BOUND);
-    let lists = CSHARP_SPLIT_LISTS
-        .map(|list| {
-            let list = list.replace("{before}", &before).replace("{after}", &after);
-            format!("{list} @reference.type")
+    let kept = |chain: &str| after_is(&format!("(constant_pattern [{chain}])"));
+    // The alternatives, then `wrap` of an alternation of them all, nested through `depth`
+    // levels, left unbracketed: the matcher drops all but the first alternative of an
+    // alternation directly inside another.
+    let within = |alternatives: &[String], wrap: fn(&str) -> String, depth: usize| {
+        let level = alternatives.join(" ");
+        (1..depth).fold(level.clone(), |deeper, _| {
+            format!("{level} {}", wrap(&format!("[{deeper}]")))
         })
+    };
+    let relational = CSHARP_RELATIONAL_OPERATORS;
+    let named = "(identifier) @name (generic_name) @name";
+    let shifted = format!(r#"(_ left: [{named}] operator: ">>>")"#);
+    let chained =
+        |alternatives: &[String]| within(alternatives, compared, CSHARP_SPLIT_CHAIN_BOUND);
+    let chain = chained(&[
+        compared(&format!("[{named}]")),
+        format!("(_ operator: {relational} right: [{named} {shifted}])"),
+    ]);
+    let element = within(
+        &[
+            compared(&format!("[{named}]")),
+            format!("(_ operator: {relational} right: [{named}])"),
+        ],
+        compared,
+        CSHARP_SPLIT_TUPLE_CHAIN_BOUND,
+    );
+    let tuple = format!(
+        "(tuple_expression (argument [{named} {element} (tuple_expression (argument [{named}]))]))"
+    );
+    let tupled = format!("{named} {tuple}");
+    // A split generic's part before its comma, `Gen<A` of `x is Gen<A, B>`, as the grammar
+    // reads it: `<` comparisons, under as many `>` comparisons with an empty collection, as
+    // `x is Gen<Fa<Fb>[], B>` puts one, as fewer than the `<` ones, `bottom(m)` the
+    // alternatives under `m` of them, so a whole generic it reads so, `x is Px<A>[]`, is none.
+    let opened = |bottom: &dyn Fn(usize) -> String| {
+        (0..=(CSHARP_SPLIT_CHAIN_BOUND - 1) / 2)
+            .map(|closed| {
+                (0..closed).fold(bottom(closed), |inner, _| {
+                    format!(r#"(_ left: [{inner}] operator: ">" right: (collection_expression))"#)
+                })
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let opening = |inner: String| format!(r#"(_ left: {inner} operator: "<")"#);
+    let under = |inner: String, times: usize| {
+        (0..times).fold(inner, |inner, _| opening(format!("[{inner}]")))
+    };
+    let deeper = |inner: String, closed: usize| {
+        within(
+            &[under(inner, closed)],
+            |inner| format!(r#"(_ left: {inner} operator: "<")"#),
+            CSHARP_SPLIT_CHAIN_BOUND - 2 * closed,
+        )
+    };
+    let own = kept(&opened(&|closed| {
+        deeper(opening("(identifier) @name".to_string()), closed)
+    }));
+    let compared_first = format!(r#"operator: "<" right: [{tupled} {shifted}])"#);
+    let first = kept(&opened(&|closed| {
+        std::iter::once(deeper(format!("(_ {compared_first}"), closed))
+            .chain((0..closed).map(|above| {
+                let below = under(r#"(_ operator: "<")"#.to_string(), closed - above - 1);
+                under(format!("(_ left: {below} {compared_first}"), above)
+            }))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }));
+    let split = kept(&opened(&|closed| {
+        under(r#"(_ operator: "<")"#.to_string(), closed)
+    }));
+    let lhs = format!("[{tupled} {chain}]");
+    let closed = r#"(_ operator: [">" ">>" ">>>"])"#;
+    let openings = [
+        format!(r#"(_ left: {lhs} [">" ">>" ("<" right: {closed})])"#),
+        format!(r#"(_ operator: "<" right: {shifted})"#),
+        format!(
+            r#"(_ left: (_ operator: "<" right: {tuple}) operator: ">" right: (collection_expression))"#
+        ),
+    ];
+    let before = format!("[{}]", within(&[split], last_child, CSHARP_SPLIT_BOUND + 1));
+    let after = within(&openings, first_child, CSHARP_SPINE_BOUND);
+    let name = "[(identifier) (generic_name)]";
+    let middle = format!(
+        "[{}]",
+        within(
+            &[compared_with_piece(CSHARP_SPLIT_PIECE)],
+            compared_with_piece,
+            CSHARP_SPLIT_CHAIN_BOUND,
+        )
+    );
+    let opener = format!(
+        r#"[(_ left: {lhs} operator: "<") (_ left: {name} operator: "<" right: [{named} {tuple}])]"#
+    );
+    let closer = format!(
+        "[{}]",
+        within(
+            &[
+                closed.to_string(),
+                format!(r#"(_ operator: "<" right: {closed})"#)
+            ],
+            first_child,
+            CSHARP_SPINE_BOUND,
+        )
+    );
+    let last = format!("[{after}]");
+    // In each list, the element before the comma, then at most one between two of the
+    // generic's commas, uncaptured, then the element closing the generic; and the element
+    // before, then one between that opens a generic, staged only when the element after it
+    // closes what it opens, so the `z < u` of `F(x is Gen < A, z < u)` is none.
+    let lists = CSHARP_SPLIT_LISTS
+        .iter()
+        .flat_map(|(list, element)| {
+            let element = |inner: &str| element.replace("{}", inner);
+            [
+                format!(
+                    "{} . {}? . {}",
+                    element(&before),
+                    element(&middle),
+                    element(&last)
+                ),
+                format!(
+                    "{} . {} . {}",
+                    element(&before),
+                    element(&opener),
+                    element(&closer)
+                ),
+            ]
+            .map(|elements| list.replace("{}", &elements))
+        })
+        .chain([CSHARP_SPLIT_INTERPOLATION
+            .replace("{before}", &before)
+            .replace("{after}", &last)])
+        .map(|list| format!("{list} @reference.type"))
+        .collect::<Vec<_>>()
         .join("\n");
     format!(
         r#"
@@ -315,8 +443,8 @@ const CSHARP_CALLED: &str = "(_ function: (identifier) @name)";
 /// one, and compiles far faster than the typed node.
 const CSHARP_LOOSER_OPERATORS: &str = r#"["==" "!=" "&" "^" "|" "&&" "||" "??"]"#;
 
-/// The most nodes between a constant pattern, or the place of the element after a generic's split
-/// comma, and the left operand it stages.
+/// The most nodes between a constant pattern and the left operand it stages, or between the place
+/// of an element after a generic's split comma and the comparison closing the generic there.
 const CSHARP_SPINE_BOUND: usize = 16;
 
 /// Any node whose first named child is `inner`.
@@ -338,17 +466,51 @@ fn nested(inner: String, wrap: fn(&str) -> String) -> impl Iterator<Item = Strin
 /// expression that element ends in.
 const CSHARP_SPLIT_BOUND: usize = 2;
 
-/// The C# lists whose elements a generic's comma can split, read as the list's own: the element
-/// before it, `{before}`, directly followed by the element after it, `{after}`.
-const CSHARP_SPLIT_LISTS: [&str; 7] = [
-    "(argument_list (argument {before}) . (argument {after}))",
-    "(bracketed_argument_list (argument {before}) . (argument {after}))",
-    "(tuple_expression (argument {before}) . (argument {after}))",
-    "(initializer_expression {before} . {after})",
-    "(collection_expression (collection_element (expression_element {before})) . (collection_element (expression_element {after})))",
-    "(interpolation {before} . (interpolation_alignment_clause {after}))",
-    "(for_statement {before} . {after})",
+/// The C# relational comparisons the grammar reads a split generic's angle brackets as.
+const CSHARP_RELATIONAL_OPERATORS: &str = r#"["<" ">"]"#;
+
+/// Any node comparing `left` with a relational operator.
+fn compared(left: &str) -> String {
+    format!("(_ left: {left} operator: {CSHARP_RELATIONAL_OPERATORS})")
+}
+
+/// The most comparisons a split generic's names sit under, in the chain the grammar reads either
+/// side of its comma as.
+const CSHARP_SPLIT_CHAIN_BOUND: usize = 8;
+
+/// The most comparisons a split generic's names sit under in an element of a tuple among its type
+/// arguments that the grammar reads as comparisons: two, of a generic's array, `Fa<Fb>[]` of
+/// `x is Gen<(Fa<Fb>[], Fc), B>`; a nested generic's array, `Fa<Fb<Fc>[]>[]`, is four.
+const CSHARP_SPLIT_TUPLE_CHAIN_BOUND: usize = 2;
+
+/// A part of a split generic's element between two of its commas, as the grammar reads it: a
+/// name, a generic name, a tuple or an empty collection, `Fc` and `[]` of `Fb, Fc>[]` in
+/// `x is Gen<Fa<Fb, Fc>[], B>`.
+const CSHARP_SPLIT_PIECE: &str =
+    "[(identifier) (generic_name) (tuple_expression) (collection_expression)]";
+
+/// Any node comparing `left` with a [`CSHARP_SPLIT_PIECE`] by a relational operator.
+fn compared_with_piece(left: &str) -> String {
+    format!("(_ left: {left} operator: {CSHARP_RELATIONAL_OPERATORS} right: {CSHARP_SPLIT_PIECE})")
+}
+
+/// The C# lists whose elements a generic's comma can split, each as the list, its adjacent
+/// elements in place of its `{}`, and as one of its elements, the element's own node in place of
+/// that `{}`.
+const CSHARP_SPLIT_LISTS: [(&str, &str); 4] = [
+    ("(_ {})", "(argument {})"),
+    ("(initializer_expression {})", "{}"),
+    (
+        "(collection_expression {})",
+        "(collection_element (expression_element {}))",
+    ),
+    ("(for_statement {})", "{}"),
 ];
+
+/// An interpolation whose comma a generic splits, the element after it, `{after}`, read as the
+/// alignment of the element before it, `{before}`.
+const CSHARP_SPLIT_INTERPOLATION: &str =
+    "(interpolation {before} . (interpolation_alignment_clause {after}))";
 
 /// The comment runs a C# definition's doc patterns capture, in order ([`csharp_tags`]): the whole
 /// run of comments directly above the definition, then that run less its first comment, then
