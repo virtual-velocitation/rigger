@@ -1554,7 +1554,7 @@ impl CodeEntityExtracted {
 }
 
 /// The [`EdgeInferred::ref_kind`] of a TYPE reference (spec 117): a Rust type name, an uppercase
-/// path segment, a struct literal's or pattern's name, or an impl header's trait.
+/// path segment, or a struct literal's or pattern's name.
 pub const REF_KIND_TYPE: &str = "type";
 /// The [`EdgeInferred::ref_kind`] of a CONST read (spec 117): an all-caps Rust identifier read in
 /// expression position, or the final identifier of a whole expression path.
@@ -1718,10 +1718,10 @@ pub struct EdgeInferred {
     /// index persisted before criterion 8 lowers none, loading as absent since criterion 9 bumped
     /// the index version to `ts-tags-v4`), same-file, the innermost
     /// enclosing function before any other definition (spec 116). `None` for a top-level
-    /// reference outside every definition (an import or a module-level call; a file-level impl
-    /// header's trait and type attribute to the impl block, a definition of its own, and its
-    /// trait's tagged `type` row to the self type's definition when the file defines that once,
-    /// spec 117). The emit pass carries what extraction attributed onto the `SymRef`; the fold,
+    /// reference outside every definition (an import or a module-level call; an impl header's
+    /// `impl` mentions of its trait and self type attribute to the impl block, a definition of its
+    /// own, even inside a function, spec 117 RUST TAGS IMPL HEADERS). The emit pass carries what
+    /// extraction attributed onto the `SymRef`; the fold,
     /// when it is present on a call reference (no `ref_kind`), adds a `<file>::<caller> --CALLS-->
     /// <callee>` edge ALONGSIDE the existing file-level `REFERENCES` edge (a later criterion owns
     /// that fold). Serde-defaulted and omitted when `None`, so a pre-37 log folds as caller-less
