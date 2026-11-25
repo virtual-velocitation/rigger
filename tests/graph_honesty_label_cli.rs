@@ -2,7 +2,7 @@
 //! describes, or the caller's worktree over it when the two differ, and what it withheld when the
 //! worktree cannot be compared. Under it the lookup names each entity's referrers by kind, its test
 //! referrers only under `--tests include` or `only`, and marks `?` a referrer whose mention gave the entity
-//! no single edge.
+//! no single edge. `--show` prints a node's doc and its referrers by kind as entries of its site.
 
 use crate::common;
 use common::cli::{run_rigger, run_rigger_ok, temp_project};
@@ -858,6 +858,66 @@ fn a_test_referrer_is_hidden_by_default() {
     ];
     for (options, block) in rows {
         lookup_prints_blocks(root, options, &[("LIMIT", block)]);
+    }
+}
+
+/// GIVEN a built project holding [`READERS`] and a file opening with `//!` lines, WHEN `rigger
+/// graph --show` shows the documented constant with no `--tests` option and under `--tests
+/// include`, and shows the file, THEN the constant's entries after its attrs are its doc, stripped
+/// of its markers and printed on one line, then a `referenced by reads` entry naming the two product
+/// readers as the lookup's `reads:` line names them, joined by `, `. Under include, the test readers
+/// follow them marked `[test]`, and a `referenced by imported by` entry names the test module. The
+/// file's entries end with the file's doc.
+#[test]
+fn show_prints_the_doc_and_the_referrers() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_text(root, "src/lib.rs", READERS);
+    write_text(
+        root,
+        "src/notes.rs",
+        "//! Notes on bins.\n//! Kept apart from the readers.\n\npub fn noted() {}\n",
+    );
+    git_commit_all(root, "source");
+    run_rigger_ok(root, &["graph", "build"]);
+    let doc = "  doc_comment The most widgets one bin holds. It bounds every bin.";
+    let product =
+        "src/lib.rs:11 src/lib.rs::spill (function), src/lib.rs:16 src/lib.rs::fits (function)";
+    let reads = format!("  referenced by reads {product}");
+    let every = format!(
+        "{reads}, src/lib.rs:21 src/lib.rs::helper (function) [test], \
+         src/lib.rs:34 src/lib.rs::tests::the_bound_holds (method) [test]"
+    );
+    // (the show's arguments, its entry lines between the site line and the body or the note)
+    let rows: [(&[&str], Vec<&str>); 3] = [
+        (
+            &["graph", "--show", "src/lib.rs::LIMIT"],
+            vec!["  name LIMIT", "  lang rust", doc, reads.as_str()],
+        ),
+        (
+            &["graph", "--show", "src/lib.rs::LIMIT", "--tests", "include"],
+            vec![
+                "  name LIMIT",
+                "  lang rust",
+                doc,
+                every.as_str(),
+                "  referenced by imported by src/lib.rs:30 src/lib.rs::tests (module) [test]",
+            ],
+        ),
+        (
+            &["graph", "--show", "src/notes.rs"],
+            vec![
+                "  lang rust",
+                "  doc_comment Notes on bins. Kept apart from the readers.",
+            ],
+        ),
+    ];
+    for (args, entries) in rows {
+        let out = common::cli::past_label(&run_rigger_ok(root, args));
+        let printed: Vec<&str> = (out.lines().skip(2))
+            .take_while(|l| !common::cli::is_body_line(l) && !l.starts_with("  ("))
+            .collect();
+        assert_eq!(printed, entries, "{args:?}:\n{out}");
     }
 }
 

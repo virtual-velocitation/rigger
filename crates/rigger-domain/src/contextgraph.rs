@@ -2006,6 +2006,15 @@ mod referrer_label_rule {
             "a tag the table holds no row for reads no label"
         );
     }
+
+    /// Each label names its show entry `referenced by <label>`, in the table's order.
+    #[test]
+    fn each_label_names_its_referenced_by_entry() {
+        assert_eq!(
+            REFERRED_BY.map(String::from),
+            REFERRER_LABELS.map(|(_, label)| format!("referenced by {label}"))
+        );
+    }
 }
 
 #[cfg(test)]
@@ -2480,6 +2489,8 @@ mod site_renderer {
                 degree: 3,
                 attrs: all.attrs.clone(),
                 unresolved: vec![],
+                doc_comment: None,
+                referrers: vec![],
             },
             "an extensionless file's definition names its file and keeps every attr"
         );
@@ -2574,6 +2585,154 @@ mod site_renderer {
                 ("unresolved", json!("Quill, Rook")),
             ]
         );
+    }
+
+    /// Spec 117, READERS: a site's doc gives the entry `doc_comment` after `partial` and before
+    /// `unresolved`, verbatim. After `unresolved`, its referrers give one `referenced by <label>`
+    /// entry per label holding any, in the label table's order whatever order they come in. Each
+    /// entry lists its sites in their order, joined by [`LIST_SEP`], each as `<file>:<line> <id>
+    /// (<kind>)`, the `:<line>` left out at line 0, and marked ` [test]` for a test referrer and
+    /// ` ?` for an ambiguous one. It holds at most 50 sites, then `(+N more)` for the rest. An
+    /// absent or empty doc, and a label with no referrer, give no entry.
+    #[test]
+    fn site_fields_gives_the_doc_before_unresolved_and_each_labels_referrers_after_it() {
+        let referrer = |label: &'static str, line: u32, test: bool, ambiguous: bool| Referrer {
+            site: format!("src/r.rs::f{line}"),
+            kind: CODE_KIND_FUNCTION.to_string(),
+            label,
+            line,
+            test,
+            ambiguous,
+        };
+        let reading = |count: u32| -> Vec<Referrer> {
+            (1..=count)
+                .map(|line| referrer("reads", line, false, false))
+                .collect()
+        };
+        let listed = |count: u32| -> String {
+            (1..=count)
+                .map(|line| format!("src/r.rs:{line} src/r.rs::f{line} (function)"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let partial = ("partial", json!("true"));
+        let unresolved = ("unresolved", json!("Quill"));
+        let reads = |text: String| ("referenced by reads", json!(text));
+        // (case, the doc, the referrers, the entries from `partial` on)
+        let cases = vec![
+            (
+                "no doc and no referrer",
+                None,
+                vec![],
+                vec![partial.clone(), unresolved.clone()],
+            ),
+            (
+                "an empty doc",
+                Some(""),
+                vec![],
+                vec![partial.clone(), unresolved.clone()],
+            ),
+            (
+                "a doc",
+                Some("first\nsecond"),
+                vec![],
+                vec![
+                    partial.clone(),
+                    ("doc_comment", json!("first\nsecond")),
+                    unresolved.clone(),
+                ],
+            ),
+            (
+                "labels in the table's order, sites in theirs",
+                None,
+                vec![
+                    referrer("reads", 4, false, false),
+                    referrer("called by", 9, false, false),
+                    referrer("reads", 2, false, false),
+                ],
+                vec![
+                    partial.clone(),
+                    unresolved.clone(),
+                    (
+                        "referenced by called by",
+                        json!("src/r.rs:9 src/r.rs::f9 (function)"),
+                    ),
+                    reads(
+                        "src/r.rs:4 src/r.rs::f4 (function), src/r.rs:2 src/r.rs::f2 (function)"
+                            .to_string(),
+                    ),
+                ],
+            ),
+            (
+                "a test, an ambiguous, and a test ambiguous referrer",
+                None,
+                vec![
+                    referrer("reads", 1, true, false),
+                    referrer("reads", 2, false, true),
+                    referrer("reads", 3, true, true),
+                ],
+                vec![
+                    partial.clone(),
+                    unresolved.clone(),
+                    reads(
+                        "src/r.rs:1 src/r.rs::f1 (function) [test], \
+                         src/r.rs:2 src/r.rs::f2 (function) ?, \
+                         src/r.rs:3 src/r.rs::f3 (function) [test] ?"
+                            .to_string(),
+                    ),
+                ],
+            ),
+            (
+                "a referrer at line 0",
+                None,
+                vec![referrer("reads", 0, false, false)],
+                vec![
+                    partial.clone(),
+                    unresolved.clone(),
+                    reads("src/r.rs src/r.rs::f0 (function)".to_string()),
+                ],
+            ),
+            (
+                "49 sites",
+                None,
+                reading(49),
+                vec![partial.clone(), unresolved.clone(), reads(listed(49))],
+            ),
+            (
+                "50 sites",
+                None,
+                reading(50),
+                vec![partial.clone(), unresolved.clone(), reads(listed(50))],
+            ),
+            (
+                "51 sites",
+                None,
+                reading(51),
+                vec![
+                    partial.clone(),
+                    unresolved.clone(),
+                    reads(format!("{} (+1 more)", listed(50))),
+                ],
+            ),
+            (
+                "53 sites",
+                None,
+                reading(53),
+                vec![
+                    partial.clone(),
+                    unresolved.clone(),
+                    reads(format!("{} (+3 more)", listed(50))),
+                ],
+            ),
+        ];
+        let file = node_with_attrs("src/lister.rs", KIND_FILE, &[("partial", "true")]);
+        for (case, doc, referrers, from_partial) in cases {
+            let mut site = entity_site(&file, 2);
+            site.unresolved = vec!["Quill".to_string()];
+            site.doc_comment = doc.map(str::to_string);
+            site.referrers = referrers;
+            assert_eq!(&site_fields(&site)[4..], from_partial.as_slice(), "{case}");
+        }
     }
 
     /// A node with no file gives neither a `file` nor a `line` entry whatever its `line` attr, an

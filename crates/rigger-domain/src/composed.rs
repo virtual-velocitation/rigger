@@ -3109,6 +3109,8 @@ mod tests {
                 degree: 0,
                 attrs: BTreeMap::from([("name".to_string(), "run".to_string())]),
                 unresolved: Vec::new(),
+                doc_comment: None,
+                referrers: Vec::new(),
             };
             let got = near.unwrap().definition_end(&site).unwrap();
             assert_eq!(got, want, "{case}");
