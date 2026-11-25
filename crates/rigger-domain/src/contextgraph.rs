@@ -1093,6 +1093,14 @@ pub trait ContextGraph: Send + Sync {
         None
     }
 
+    /// The product referrers of the code entity `id` (spec 117, READERS): one per product mention
+    /// whose own rule lists it under `id`, in path then source order, under every `tests`
+    /// setting. None when the graph withholds its code facts, and by default (a graph that holds
+    /// no code, a test double).
+    fn referrers(&self, _id: &str) -> Vec<Referrer> {
+        Vec::new()
+    }
+
     /// Every node of `kind` this graph holds, ordered by id: the names the combined lookup
     /// resolves a term against (`code-entity`) and the records it ranks as prose (`decision`,
     /// `lesson`, `finding`). A projection that holds no node of `kind` answers an empty set.
@@ -1573,6 +1581,23 @@ pub fn referrer_label(kind: &MentionKind) -> Option<&'static str> {
         .iter()
         .find(|(row, _)| *row == tag)
         .map(|(_, label)| *label)
+}
+
+/// One referrer of a code entity (spec 117, READERS): a mention whose own rule lists it under the
+/// entity ([`crate::resolve::Resolver::referrers`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Referrer {
+    /// The id of the definition the mention sits in, or of its file when none encloses it.
+    pub site: String,
+    /// The kind of the definition that settles `site`, or [`KIND_FILE`] for a file.
+    pub kind: String,
+    /// The label it is listed under, by its mention's tag ([`referrer_label`]).
+    pub label: &'static str,
+    /// The mention's own line.
+    pub line: u32,
+    /// Whether the mention is test code, by its own mark, its file's scope or the test-module
+    /// closure: what the view filter hides a code edge by.
+    pub test: bool,
 }
 
 /// Whether a `rel` edge onto a node of kind `target_kind` declares a module (spec 117, MODULE

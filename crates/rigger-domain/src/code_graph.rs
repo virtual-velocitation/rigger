@@ -17,7 +17,7 @@ use crate::code_facts::{FileFacts, Half, Mention};
 use crate::code_view::{CodeView, Tests, ViewFilter};
 use crate::contextgraph::query::{leaf_of, split_path, CANDIDATES_ATTR};
 use crate::contextgraph::{
-    Edge, Graph, Node, KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_FILE, TIER_EXTRACTED,
+    Edge, Graph, Node, Referrer, KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_FILE, TIER_EXTRACTED,
 };
 use crate::resolve::{Entity, Hop, IntentLink, IntentNode, Pool, ProofCall, Resolver};
 
@@ -300,6 +300,22 @@ impl<'v> CodeGraph<'v> {
             }
         }
         calls
+    }
+
+    /// Every referrer the view's code files make ([`Resolver::file_referrers`]), test ones too,
+    /// by the id each is listed under, each id's in path then source order: what
+    /// [`Resolver::referrers`] reads for one id. Read apart from [`Self::resolved`], so a read
+    /// that is never walked lists none.
+    pub fn referrers(&self) -> BTreeMap<String, Vec<Referrer>> {
+        let mut by_id: BTreeMap<String, Vec<Referrer>> = BTreeMap::new();
+        for f in self.view.files().filter(|f| f.half == Half::Code) {
+            if let Some(facts) = self.view.file(f.path) {
+                for (id, r) in self.resolver.file_referrers(&facts, facts.mentions.iter()) {
+                    by_id.entry(id).or_default().push(r);
+                }
+            }
+        }
+        by_id
     }
 
     /// The candidate ids a walk's down-hop from `id` reaches when `id` is a placeholder keyed by a

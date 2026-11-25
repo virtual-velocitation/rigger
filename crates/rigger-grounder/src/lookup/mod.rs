@@ -2,9 +2,9 @@
 //! of terms from three sources at once, each in its own labelled section of one bounded reply.
 //!
 //! - `graph`: each term resolved against the code graph's entity names ([`names`]) and answered
-//!   with its definition site and its callers and callees under the graph's label, which says
-//!   the graph describes the caller's tree, or withholds and counts every code hit when that tree
-//!   cannot be compared ([`graph`]).
+//!   with its definition site, its doc, its product referrers under each label and its callees,
+//!   under the graph's label, which says the graph describes the caller's tree, or withholds and
+//!   counts every code hit when that tree cannot be compared ([`graph`]).
 //! - `text`: a live literal scan of the caller's tree, no index ([`text`]).
 //! - `prose`: the tree's prose and the graph's records ranked by relevance ([`prose`]).
 //!

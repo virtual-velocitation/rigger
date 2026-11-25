@@ -34,11 +34,11 @@ use crate::contextgraph::query::{
     entity_id, file_of, is_path_qualified, leaf_of, placeholder_id, split_id, split_path,
 };
 use crate::contextgraph::{
-    definition_precedence, is_call_target, reference_candidate_kinds, CODE_KIND_IMPL,
-    CODE_KIND_TRAIT, KIND_AGENT, KIND_ARCH_DECISION, KIND_DESIGN_DOC, KIND_GATE,
-    KIND_HANDBOOK_RULE, KIND_RATIONALE, KIND_STAGE, REF_KIND_CONST, REF_KIND_FIELD, REF_KIND_IMPL,
-    REF_KIND_TYPE, REL_CALLS, REL_CONSTRAINS, REL_CONTAINS, REL_DOC_REFERENCES, REL_EXPLAINS,
-    REL_GOVERNS, REL_NEEDS, REL_REFERENCES, REL_REVIEWS, REL_REVIEWS_LIGHT, REL_RUNS,
+    definition_precedence, is_call_target, reference_candidate_kinds, referrer_label, Referrer,
+    CODE_KIND_IMPL, CODE_KIND_TRAIT, KIND_AGENT, KIND_ARCH_DECISION, KIND_DESIGN_DOC, KIND_FILE,
+    KIND_GATE, KIND_HANDBOOK_RULE, KIND_RATIONALE, KIND_STAGE, REF_KIND_CONST, REF_KIND_FIELD,
+    REF_KIND_IMPL, REF_KIND_TYPE, REL_CALLS, REL_CONSTRAINS, REL_CONTAINS, REL_DOC_REFERENCES,
+    REL_EXPLAINS, REL_GOVERNS, REL_NEEDS, REL_REFERENCES, REL_REVIEWS, REL_REVIEWS_LIGHT, REL_RUNS,
     REL_SPECIFIES, TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED,
 };
 
@@ -115,6 +115,13 @@ pub fn hop<T>(mut candidates: Vec<T>) -> Hop<T> {
         1 => Hop::One(candidates.remove(0)),
         _ => Hop::Frontier(candidates),
     }
+}
+
+/// What the tagged rule takes for a reference ([`Resolver::tagged`]): the one candidate it lands
+/// on, with the edge's tier, or the candidates it took none from.
+enum Taken<'c, 'v> {
+    One(&'c Candidate<'v>, &'static str),
+    Among(Vec<&'c Candidate<'v>>),
 }
 
 /// Which candidates a mention resolves against: a product mention the product ones, a test
@@ -738,47 +745,47 @@ impl<'v> Resolver<'v> {
         Some((placeholder_id(file, leaf), tier))
     }
 
-    /// The tagged-reference rule: the target and tier of a reference written `name` to `leaf`,
-    /// tagged `tag`, from `file`, written in `lang`, over the candidates of the tag's kinds in
-    /// `lang` ([`Pool::references`]): the one its qualifier narrows them to
-    /// ([`Self::narrowed`]), EXTRACTED wherever it is, and none when it narrows them to several
-    /// or its qualifier makes it no link; else, for a `field` reference, the one field or
-    /// property candidate in the view, INFERRED even in `file`, so it never prefers its file and
-    /// reaches a constant, a static or a variant only through a qualifier that keeps it; else
-    /// the one same-file candidate, EXTRACTED, else the one in the view, INFERRED; none when no
-    /// one candidate takes it.
-    fn tagged(
+    /// The tagged-reference rule: what the reference `m` of `facts`, tagged `tag`, takes from
+    /// `pool` over `candidates`, those of its leaf, kept to the tag's kinds in its file's language
+    /// ([`Pool::references`]). It takes the one its qualifier narrows them to ([`Self::narrowed`]),
+    /// EXTRACTED wherever it is, and none, among those it keeps, when it narrows them to several,
+    /// or among none when its qualifier makes it no link; else, for a `field` reference, the one
+    /// field or property candidate in the view, INFERRED even in its file, so it never prefers
+    /// its file and reaches a constant, a static or a variant only through a qualifier that keeps
+    /// it, and none among those when there are several; else the one same-file candidate,
+    /// EXTRACTED, else the one in the view, INFERRED; none among them all when no one takes it.
+    fn tagged<'c>(
         &self,
-        file: &str,
-        lang: &str,
+        facts: &FileFacts,
+        m: &Mention,
         tag: &str,
-        name: &str,
-        leaf: &str,
         pool: Pool,
-    ) -> Option<(String, &'static str)> {
-        let kinds = reference_candidate_kinds(tag);
-        let candidates = self.candidates(leaf);
+        candidates: &'c [Candidate<'v>],
+    ) -> Taken<'c, 'v> {
+        let (lang, kinds) = (facts.lang.as_str(), reference_candidate_kinds(tag));
         let targets: Vec<&Candidate> = candidates
             .iter()
             .filter(|c| pool.references(c, lang, &kinds))
             .collect();
-        match self.narrowed(lang, name, leaf, pool, targets.iter().copied())? {
-            Hop::One(one) => return Some((one.id.clone(), TIER_EXTRACTED)),
-            Hop::Frontier(_) => return None,
-            Hop::Terminal => {}
+        match self.narrowed(lang, &m.name, &m.leaf, pool, targets.iter().copied()) {
+            None => return Taken::Among(Vec::new()),
+            Some(Hop::One(one)) => return Taken::One(one, TIER_EXTRACTED),
+            Some(Hop::Frontier(kept)) => return Taken::Among(kept),
+            Some(Hop::Terminal) => {}
         }
         if tag == REF_KIND_FIELD {
             let consts = reference_candidate_kinds(REF_KIND_CONST);
             let members = targets.into_iter().filter(|c| !consts.contains(&c.kind));
             return match hop(members.collect()) {
-                Hop::One(one) => Some((one.id.clone(), TIER_INFERRED)),
-                Hop::Terminal | Hop::Frontier(_) => None,
+                Hop::One(one) => Taken::One(one, TIER_INFERRED),
+                several => Taken::Among(several.into_vec()),
             };
         }
-        one_here_else_one_anywhere(&targets, file).map(|(c, here)| {
-            let tier = if here { TIER_EXTRACTED } else { TIER_INFERRED };
-            (c.id.clone(), tier)
-        })
+        match one_here_else_one_anywhere(&targets, &facts.path) {
+            Some((c, true)) => Taken::One(c, TIER_EXTRACTED),
+            Some((c, false)) => Taken::One(c, TIER_INFERRED),
+            None => Taken::Among(targets),
+        }
     }
 
     /// The proof rule: the product definition a test call written `name` to `leaf` from `file`,
@@ -833,6 +840,95 @@ impl<'v> Resolver<'v> {
             self.proof(file, lang, name, leaf)
                 .map_or((to, tier), |id| (id, TIER_INFERRED)),
         )
+    }
+
+    /// The ids the mention `m` of `facts`, test code when `test`, lists its referrer under (spec
+    /// 117, READERS): those its own rule's candidates hold, or the one it settles. A call lists
+    /// under the definition its edge lands on ([`Self::call_edge`]), else under the candidates
+    /// the placeholder it lands on keeps in its pool ([`Self::down_hop`]), and under none when
+    /// the call rule makes it no link. A tagged reference lists under the one candidate its rule
+    /// takes, else under those it took none from ([`Self::tagged`]).
+    fn listed(&self, facts: &FileFacts, m: &Mention, test: bool) -> Vec<String> {
+        let pool = Pool::of(test);
+        let MentionKind::Tagged(tag) = &m.kind else {
+            let edge = self.call_edge(&facts.path, &facts.lang, &m.name, &m.leaf, test);
+            return match edge.map(|(to, _)| (self.down_hop(&to, pool), to)) {
+                None => Vec::new(),
+                Some((None, to)) => vec![to],
+                Some((Some(hop), _)) => hop.into_vec().into_iter().map(|c| c.id).collect(),
+            };
+        };
+        let candidates = self.candidates(&m.leaf);
+        match self.tagged(facts, m, tag, pool, &candidates) {
+            Taken::One(c, _) => vec![c.id.clone()],
+            Taken::Among(cs) => cs.into_iter().map(|c| c.id.clone()).collect(),
+        }
+    }
+
+    /// The referrers `mentions`, mentions of `facts` in file order, make, each with an id it is
+    /// listed under ([`Self::listed`]): one per mention and id, in mention order. A mention of a
+    /// tag [`crate::contextgraph::REFERRER_LABELS`] holds no row for makes none.
+    pub fn file_referrers<'f>(
+        &self,
+        facts: &'f FileFacts,
+        mentions: impl Iterator<Item = &'f Mention>,
+    ) -> Vec<(String, Referrer)> {
+        // Every local of `facts` has one settling definition, test or product.
+        let kinds: FxHashMap<&str, &str> = (self.winners(facts, true).into_iter())
+            .map(|(local, d, _)| (local, d.kind.as_str()))
+            .collect();
+        let mut referrers = Vec::new();
+        for m in mentions {
+            let Some(label) = referrer_label(&m.kind) else {
+                continue;
+            };
+            let test = self.mention_is_test(facts, m);
+            let listed = self.listed(facts, m, test);
+            let (site, kind) = match m.enclosing.and_then(|i| facts.defs.get(i as usize)) {
+                Some(d) => (entity_id(&facts.path, &d.local), kinds[d.local.as_str()]),
+                None => (facts.path.clone(), KIND_FILE),
+            };
+            for to in listed {
+                let (site, kind) = (site.clone(), kind.to_string());
+                let line = m.line;
+                referrers.push((
+                    to,
+                    Referrer {
+                        site,
+                        kind,
+                        label,
+                        line,
+                        test,
+                    },
+                ));
+            }
+        }
+        referrers
+    }
+
+    /// Every referrer of the code entity `id` ([`Self::file_referrers`]), in path then source
+    /// order, read from the code files holding a mention of a name its definitions carry
+    /// ([`def_leaves`]); none for an id no definition of a code file holds.
+    pub fn referrers(&self, id: &str) -> Vec<Referrer> {
+        let (file, Some(local)) = split_id(id) else {
+            return Vec::new();
+        };
+        let facts = (self.is_code_file(file))
+            .then(|| self.view.file(file))
+            .flatten();
+        let leaves = facts.map_or_else(Vec::new, |facts| def_leaves(&facts, local));
+        let files: BTreeSet<&str> = (leaves.iter())
+            .flat_map(|leaf| self.view.mentions_named(leaf))
+            .filter(|m| m.file.half == Half::Code)
+            .map(|m| m.file.path)
+            .collect();
+        let mut referrers = Vec::new();
+        for facts in files.into_iter().filter_map(|path| self.view.file(path)) {
+            let named = facts.mentions.iter().filter(|m| leaves.contains(&m.leaf));
+            let listed = self.file_referrers(&facts, named).into_iter();
+            referrers.extend(listed.filter_map(|(to, r)| (to == id).then_some(r)));
+        }
+        referrers
     }
 
     /// Whether `m`, a mention in `facts`, is test code.
@@ -977,16 +1073,16 @@ impl<'v> Resolver<'v> {
             if test && !tests {
                 continue;
             }
-            let pool = Pool::of(test);
-            let Some((to, tier)) = self.tagged(file, &facts.lang, tag, &m.name, &m.leaf, pool)
+            let candidates = self.candidates(&m.leaf);
+            let Taken::One(to, tier) = self.tagged(facts, m, tag, Pool::of(test), &candidates)
             else {
                 continue;
             };
-            let from = from_of(m.enclosing);
-            if held(from, &to, test) || held(from, &placeholder_id(from, &m.leaf), test) {
+            let (from, to) = (from_of(m.enclosing), to.id.as_str());
+            if held(from, to, test) || held(from, &placeholder_id(from, &m.leaf), test) {
                 continue;
             }
-            sink(from, REL_REFERENCES, &to, tier, test);
+            sink(from, REL_REFERENCES, to, tier, test);
         }
     }
 
@@ -2588,6 +2684,168 @@ pub(crate) mod tests {
             "each tagged mention one REFERENCES link onto its trait, type or variant, no CALLS, \
              then the file's CONTAINS"
         );
+    }
+
+    /// READERS (spec 117): `Resolver::referrers` lists each mention under every id its own rule
+    /// lists it under, in path then source order, one item per mention, a repeated call
+    /// included: a settled call or reference under its target, a call through a placeholder
+    /// under each candidate the placeholder keeps, a reference no one candidate takes under each
+    /// it took none from, and a mention whose qualifier makes no link under none. The item names
+    /// the enclosing definition's id and kind, or its file's when none encloses it, the label
+    /// of its tag (none for a tag no label row holds), the mention's line, and whether the
+    /// mention is test code, by its own mark or its file's scope, a test twin's sharing its
+    /// product's id. An id naming no definition of a code file has none. `Composed` answers the
+    /// product items alone under every tests setting, near or whole, and none when the worktree
+    /// cannot be compared.
+    #[test]
+    fn a_referrer_is_listed_under_each_id_its_mention_lists() {
+        let lib = code(
+            "src/lib.rs",
+            "rust",
+            Scope::Product,
+            vec![
+                def("LIMIT", "constant", 3, None, false),
+                def("Bin", "type", 5, None, false),
+                def("spill", "function", 9, None, false),
+                def("fits", "function", 16, None, false),
+                def("helper", "function", 20, None, false),
+                def("helper", "function", 30, None, true),
+            ],
+            vec![
+                tagged("type", "Bin", Some(2), 9),
+                tagged("const", "LIMIT", Some(2), 11),
+                tagged("bogus", "LIMIT", Some(2), 12),
+                call("shared", Some(2), 13, false),
+                tagged("type", "Shape", Some(3), 16),
+                call("helper", Some(3), 17, false),
+                call("helper", Some(3), 18, false),
+                call("helper", Some(3), 19, true),
+                qualified(MentionKind::Call, "Nowhere::helper", Some(3), 20, false),
+                qualified(
+                    MentionKind::Tagged("const".into()),
+                    "Nowhere::LIMIT",
+                    Some(3),
+                    21,
+                    false,
+                ),
+                tagged("const", "LIMIT", None, 25),
+                mention(
+                    MentionKind::Tagged("const".into()),
+                    "LIMIT",
+                    Some(5),
+                    31,
+                    true,
+                ),
+            ],
+        );
+        let other = |path: &str| {
+            code(
+                path,
+                "rust",
+                Scope::Product,
+                vec![
+                    def("shared", "function", 1, None, false),
+                    def("Shape", "type", 3, None, false),
+                ],
+                vec![],
+            )
+        };
+        let checks = code(
+            "tests/t.rs",
+            "rust",
+            Scope::Test,
+            vec![def("checks", "function", 1, None, true)],
+            vec![call("helper", Some(0), 2, true)],
+        );
+        let view = FactsView::new(
+            stamp(),
+            vec![other("src/a.rs"), other("src/b.rs"), lib, checks],
+        );
+        let shown = |referrers: Vec<Referrer>| -> Vec<String> {
+            (referrers.iter())
+                .map(|r| {
+                    let mark = if r.test { " test" } else { "" };
+                    format!("{} {} ({}) :{}{mark}", r.label, r.site, r.kind, r.line)
+                })
+                .collect()
+        };
+        // (the id, its referrers, the product ones `Composed` answers)
+        let rows: [(&str, &[&str], &[&str]); 9] = [
+            (
+                "src/lib.rs::LIMIT",
+                &[
+                    "reads src/lib.rs::spill (function) :11",
+                    "reads src/lib.rs (file) :25",
+                    "reads src/lib.rs::helper (function) :31 test",
+                ],
+                &[
+                    "reads src/lib.rs::spill (function) :11",
+                    "reads src/lib.rs (file) :25",
+                ],
+            ),
+            (
+                "src/lib.rs::Bin",
+                &["type use src/lib.rs::spill (function) :9"],
+                &["type use src/lib.rs::spill (function) :9"],
+            ),
+            (
+                "src/lib.rs::helper",
+                &[
+                    "called by src/lib.rs::fits (function) :17",
+                    "called by src/lib.rs::fits (function) :18",
+                    "called by src/lib.rs::fits (function) :19 test",
+                    "called by tests/t.rs::checks (function) :2 test",
+                ],
+                &[
+                    "called by src/lib.rs::fits (function) :17",
+                    "called by src/lib.rs::fits (function) :18",
+                ],
+            ),
+            (
+                "src/a.rs::shared",
+                &["called by src/lib.rs::spill (function) :13"],
+                &["called by src/lib.rs::spill (function) :13"],
+            ),
+            (
+                "src/b.rs::shared",
+                &["called by src/lib.rs::spill (function) :13"],
+                &["called by src/lib.rs::spill (function) :13"],
+            ),
+            (
+                "src/b.rs::Shape",
+                &["type use src/lib.rs::fits (function) :16"],
+                &["type use src/lib.rs::fits (function) :16"],
+            ),
+            ("src/lib.rs::spill", &[], &[]),
+            ("src/lib.rs", &[], &[]),
+            ("src/gone.rs::LIMIT", &[], &[]),
+        ];
+        let resolver = Resolver::new(&view);
+        let records = Indexed::default();
+        let honesty = |compared| Honesty {
+            worktree: "wt".into(),
+            compared,
+            behind: None,
+        };
+        for (id, every, product) in rows {
+            assert_eq!(shown(resolver.referrers(id)), every, "{id}");
+            for compared in [Compared::Overlaid(0), Compared::Uncomparable] {
+                let want: &[&str] = if compared == Compared::Uncomparable {
+                    &[]
+                } else {
+                    product
+                };
+                for tests in [Tests::Exclude, Tests::Include, Tests::Only] {
+                    let filter = ViewFilter { tests };
+                    let at = format!("{id} {compared:?} {tests:?}");
+                    let whole = Composed::new(&records, &view, filter, honesty(compared)).unwrap();
+                    assert_eq!(shown(whole.referrers(id)), want, "whole: {at}");
+                    let near =
+                        Composed::near(&records, &view, filter, honesty(compared), None).unwrap();
+                    assert_eq!(shown(near.referrers(id)), want, "near: {at}");
+                }
+            }
+        }
     }
 
     /// A tree of qualified mentions narrowing their candidates: `FactsView`'s inherent `new` and

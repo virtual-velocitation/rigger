@@ -24,10 +24,10 @@ use crate::contextgraph::query::{
 };
 use crate::contextgraph::{
     entity_site, holds_attachment, is_call_target, CallEdge, CallGraph, CallNode, Candidate,
-    ContextGraph, Direction, Edge, EntitySite, Error, Graph, Located, Neighbors, Node, Rows,
-    KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, KIND_FILE, PLACEHOLDER_SIGIL,
-    REL_CALLS, REL_GOVERNS, REL_IN_COMMUNITY, REL_REALIZES, REL_REFERENCES, TIER_AMBIGUOUS,
-    TIER_EXTRACTED, TIER_INFERRED,
+    ContextGraph, Direction, Edge, EntitySite, Error, Graph, Located, Neighbors, Node, Referrer,
+    Rows, KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, KIND_FILE,
+    PLACEHOLDER_SIGIL, REL_CALLS, REL_GOVERNS, REL_IN_COMMUNITY, REL_REALIZES, REL_REFERENCES,
+    TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED,
 };
 use crate::groupings::computed_at;
 use crate::resolve::{ProofCall, INTENT_KINDS};
@@ -427,6 +427,9 @@ pub trait CodeHalf: Neighbors {
     /// The candidate ids the down-hop of the placeholder `id` keeps, when it is keyed by a
     /// qualified name ([`CodeGraph::down_hop`]); none for any other id.
     fn down_hop(&self, id: &str) -> Option<Vec<String>>;
+    /// Every referrer of the code entity `id`, test ones too, in path then source order
+    /// ([`crate::resolve::Resolver::referrers`]).
+    fn referrers(&self, id: &str) -> Vec<Referrer>;
     /// The files the attributes of the grouping `id` summarise, by [`fact_file`]: its members'
     /// (its label and hash) and its attached tests' (its test count); none when `id` names no
     /// grouping.
@@ -530,6 +533,9 @@ pub struct Whole {
     /// The candidates each placeholder keyed by a qualified name keeps ([`CodeGraph::down_hop`]),
     /// read when the half is walked.
     down_hops: BTreeMap<String, Vec<String>>,
+    /// Every code entity's referrers, test ones too, by id ([`CodeGraph::referrers`]), read when
+    /// the half is walked.
+    referrers: BTreeMap<String, Vec<Referrer>>,
 }
 
 impl Whole {
@@ -547,9 +553,9 @@ impl Whole {
     }
 
     /// [`Self::at`], reading the test calls landing on a placeholder that a callers walk reaches
-    /// ([`CodeGraph::placeholder_calls`]) and the down-hops of its placeholders keyed by a
-    /// qualified name ([`CodeGraph::down_hop`]) only when `walked`: a read that is never walked
-    /// leaves them unresolved.
+    /// ([`CodeGraph::placeholder_calls`]), the down-hops of its placeholders keyed by a qualified
+    /// name ([`CodeGraph::down_hop`]) and its entities' referrers ([`CodeGraph::referrers`]) only
+    /// when `walked`: a read that is never walked leaves them unresolved.
     fn read(view: &dyn CodeView, filter: ViewFilter, resolution: f64, walked: bool) -> Self {
         let computed = computed_at(view, resolution);
         let grains: Vec<&Groupings> = std::iter::once(view.groupings())
@@ -566,13 +572,14 @@ impl Whole {
         }
         let code = Indexed::new(graph, Vec::new());
         let mut placeholder_callers: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        let (placeholder_calls, down_hops) = if walked {
+        let (placeholder_calls, down_hops, referrers) = if walked {
             let down_hops = (code.nodes.iter())
                 .filter_map(|n| Some((n.id.clone(), code_graph.down_hop(&n.id)?)))
                 .collect();
-            (code_graph.placeholder_calls(), down_hops)
+            let referrers = code_graph.referrers();
+            (code_graph.placeholder_calls(), down_hops, referrers)
         } else {
-            (Vec::new(), BTreeMap::new())
+            (Vec::new(), BTreeMap::new(), BTreeMap::new())
         };
         for (key, caller) in placeholder_calls {
             placeholder_callers.entry(key).or_default().push(caller);
@@ -613,6 +620,7 @@ impl Whole {
             proofs,
             placeholder_callers,
             down_hops,
+            referrers,
         }
     }
 }
@@ -709,6 +717,9 @@ impl CodeHalf for Whole {
     fn down_hop(&self, id: &str) -> Option<Vec<String>> {
         self.down_hops.get(id).cloned()
     }
+    fn referrers(&self, id: &str) -> Vec<Referrer> {
+        self.referrers.get(id).cloned().unwrap_or_default()
+    }
     fn summarised_files(&self, id: &str) -> Vec<String> {
         let arms = [&self.groupings.communities, &self.groupings.concepts];
         let members = arms
@@ -790,6 +801,9 @@ impl CodeHalf for Arc<Whole> {
     }
     fn down_hop(&self, id: &str) -> Option<Vec<String>> {
         (**self).down_hop(id)
+    }
+    fn referrers(&self, id: &str) -> Vec<Referrer> {
+        (**self).referrers(id)
     }
     fn summarised_files(&self, id: &str) -> Vec<String> {
         (**self).summarised_files(id)
@@ -1484,6 +1498,14 @@ impl<C: CodeHalf> ContextGraph for Composed<'_, C> {
         };
         let (lang, span) = self.code.doc_span(file, recorded)?;
         Some(docs.extract.doc_text(&lang, &docs.lines.lines(file, span)?))
+    }
+    fn referrers(&self, id: &str) -> Vec<Referrer> {
+        if self.stale {
+            return Vec::new();
+        }
+        let mut referrers = self.code.referrers(id);
+        referrers.retain(|r| !r.test);
+        referrers
     }
     fn nodes_of_kind(&self, kind: &str) -> Result<Vec<Node>, Error> {
         self.of_kind(kind)

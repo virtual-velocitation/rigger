@@ -27,9 +27,9 @@ use crate::contextgraph::query::{
     entity_id, leaf_of, member_file, path_leaf, placeholder_id, split_id,
 };
 use crate::contextgraph::{
-    holds_attachment, Edge, Error, Graph, Neighbors, Node, KIND_ARTIFACT, KIND_CODE_ENTITY,
-    KIND_COMMUNITY, KIND_CONCEPT, KIND_FILE, PLACEHOLDER_SIGIL, REL_IN_COMMUNITY, REL_REALIZES,
-    REL_TESTS, TIER_INFERRED,
+    holds_attachment, Edge, Error, Graph, Neighbors, Node, Referrer, KIND_ARTIFACT,
+    KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, KIND_FILE, PLACEHOLDER_SIGIL, REL_IN_COMMUNITY,
+    REL_REALIZES, REL_TESTS, TIER_INFERRED,
 };
 use crate::resolve::{def_leaves, local_leaves, qualifier, IntentLink, IntentNode, INTENT_KINDS};
 use crate::test_view::TESTS_ATTR;
@@ -1178,6 +1178,10 @@ impl CodeHalf for Near<'_> {
     fn down_hop(&self, id: &str) -> Option<Vec<String>> {
         self.state().graph.down_hop(id)
     }
+    /// Read from the mentions of the id's leaves alone.
+    fn referrers(&self, id: &str) -> Vec<Referrer> {
+        self.state().graph.resolver().referrers(id)
+    }
     fn summarised_files(&self, id: &str) -> Vec<String> {
         let (members, tests) = {
             let mut state = self.state();
@@ -1468,8 +1472,8 @@ mod tests {
     }
 
     /// Composed over a neighbourhood answers every search as composed over the whole graph: the
-    /// subgraph, the walks both ways, the lookup of a definition, the hidden tests and the hidden
-    /// tests proving what a subgraph shows.
+    /// subgraph, the walks both ways, the referrers, the lookup of a definition, the hidden tests
+    /// and the hidden tests proving what a subgraph shows.
     #[test]
     fn composed_near_answers_every_search_as_composed_whole() {
         let view = view();
@@ -1499,6 +1503,12 @@ mod tests {
             let whole = Composed::new(&records, &view, filter, honesty()).unwrap();
             let near = Composed::near(&records, read, filter, honesty(), None).unwrap();
             for seed in seeds {
+                let at = format!("{tests:?} {held} {seed}");
+                same!(
+                    near.referrers(seed),
+                    whole.referrers(seed),
+                    "referrers {at}"
+                );
                 let seed = [seed.to_string()];
                 for depth in [1, 2, 3] {
                     let at = format!("{tests:?} {held} {seed:?} {depth}");
