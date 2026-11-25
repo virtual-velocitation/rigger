@@ -1556,8 +1556,9 @@ impl CodeEntityExtracted {
 /// The [`EdgeInferred::ref_kind`] of a TYPE reference (spec 117): a Rust type name, an uppercase
 /// path segment, or a struct literal's or pattern's name.
 pub const REF_KIND_TYPE: &str = "type";
-/// The [`EdgeInferred::ref_kind`] of a CONST read (spec 117): an all-caps Rust identifier read in
-/// expression position, or the final identifier of a whole expression path.
+/// The [`EdgeInferred::ref_kind`] of a CONST read (spec 117): an all-caps Rust identifier, or the
+/// final identifier of a whole path, read in expression position or matched in a refutable
+/// pattern, or a format string's inline capture so spelled.
 pub const REF_KIND_CONST: &str = "const";
 /// The [`EdgeInferred::ref_kind`] of a USE (spec 117): one imported leaf of a Rust `use`.
 pub const REF_KIND_USE: &str = "use";

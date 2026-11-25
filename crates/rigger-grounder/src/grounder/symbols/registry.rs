@@ -1676,6 +1676,7 @@ fn route(v: Vec<Kestrel>) -> Vec<u32> { v.iter().map(Kestrel::grow).map(helper).
 fn hatch(k: Kestrel) -> Kestrel { let Kestrel { size } = k; Kestrel { size: k.size + size } }
 enum Molt { Shed, Grown { size: u32 } }
 fn shed(m: Molt) -> u32 { match m { Molt::Shed => 0, Molt::Grown { size } => size } }
+fn gauge(n: u32) -> String { match n { QUOTA_CAP => format!(\"{QUOTA_CAP}\"), _ => String::new() } }
 ",
         ),
         ("rs", "fn whole() { helper(); }\nfn broken( {\n"),
@@ -1946,7 +1947,7 @@ def raw():
         // languages' rows merge clean.
         const PINNED: [(&str, &str, &str); 7] = [
             // Rust
-            ("rs", "rust-tags-v9", "16fd5c41feb05cf1"),
+            ("rs", "rust-tags-v10", "e6d1f87af95ac729"),
             // C#
             ("cs", "csharp-tags-v5", "ff1a724ddef62a08"),
             // TypeScript

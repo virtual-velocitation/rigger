@@ -337,6 +337,21 @@ variant, a path in type position (`-> Self::Target`) is a type reference alone, 
 naming the standard library (`Ordering::Less` under `use std::cmp::Ordering`) stages none, while
 a leaf sharing a standard-library or enclosing generic parameter's name stages its variant all the
 same (`Located::None`, `Shape::Box { w } =>`).
+A Rust const read is a `const` reference of a name spelled `^[A-Z][A-Z0-9_]*$`, a bare identifier
+or the leaf of a whole path (`Self::MAX`, `Mode::RO`; a primitive's, `u8::MAX`, stages none), read
+in an expression or matched in a refutable pattern: a match arm's pattern but its guard, an
+`if let`'s, a `while let`'s or a let-else's, through any patterns nesting it (`REF_KIND_TYPE =>`,
+`Some(ONE)`, `0..=TOP`). The name an irrefutable pattern binds (a parameter, a plain `let`, a `for`,
+a closure parameter), a tuple struct pattern's head, a `ref` or `mut` binding and the name a
+`name @` binds stage none. A const read is also a format string's inline capture, read when the
+format-string argument is one string literal, raw or not: the first argument of `format!`,
+`print!`, `println!`, `eprint!`, `eprintln!`, `panic!`, `format_args!`, `unreachable!`, `todo!`
+and `unimplemented!`, the second of `write!`, `writeln!`, `assert!` and `debug_assert!`, the third
+of `assert_eq!`, `assert_ne!`, `debug_assert_eq!` and `debug_assert_ne!`. A placeholder's argument
+and a width or precision `NAME$` count (`{TEMP}`, `{:W$}`), each at its own line; a `{{` or `}}`
+escape, a name not so spelled (`{temp}`) and a name a named argument binds stage none, and neither
+does that argument's own name (`TEMP` of `format!("{TEMP}", TEMP = 1)`). A name the exclusions hold
+(a standard-library import, an enclosing const generic parameter) stages none in either position.
 A Rust impl header is an `impl` reference of its self type, and of its trait for `impl Tr for T`,
 each by its base name with path, generics, a reference and a pointer stripped
 (`impl<T> CodeView for FactsView<T>` gives `CodeView` and `FactsView`, `impl Draw for &Local`
