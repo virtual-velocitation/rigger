@@ -234,6 +234,11 @@ impl<'v> CodeGraph<'v> {
         }
     }
 
+    /// The tests the graph's filter shows.
+    pub(crate) fn tests(&self) -> Tests {
+        self.filter.tests
+    }
+
     /// The resolver the graph is built by.
     pub fn resolver(&self) -> &Resolver<'v> {
         &self.resolver

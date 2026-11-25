@@ -1,6 +1,6 @@
 //! The snapshot format: one immutable file holding a stamp, every file's facts, the leaf indexes,
-//! the groupings and what the store settles from the tree alone (the test files and the proof
-//! calls), and [`Snapshot`], the [`CodeView`] that reads one.
+//! the groupings and what the store settles from the tree alone (the test files, the proof calls
+//! and the code half resolved whole), and [`Snapshot`], the [`CodeView`] that reads one.
 //!
 //! The file is a [`crate::format`] container. Its header payload is the stamp: the extractor
 //! fingerprint, the tip's head, commit and tree as strings, and the sequence number. A string is
@@ -28,10 +28,19 @@
 //!              members); communities then concepts
 //! PROOFS       target, caller, file, line: each proof call, in proof order
 //! IDX_PROOF_FILE  u32 PROOFS rows, by file then proof order
+//! ROW_NODES    id, kind, then [start, end) into ROW_ATTRS      (rows sorted by id; one a node)
+//! ROW_ATTRS    key, value                                       (one run a node, in key order)
+//! ROW_EDGES    from, to, rel, tier, valid_from as i64 bits, source u64
+//!                                                    (sorted by from, to, rel; one each)
+//! IDX_ROW_IN   the IDX_LEAF format: ROW_EDGES rows by the id they lead to, in edge order
+//! IDX_ROW_FILE the same: ROW_NODES rows by the file they are members of, in given order
+//! IDX_ROW_LEAF the same: ROW_NODES rows by each leaf that binds them, in id order
 //! ```
 //!
-//! A FILES row's test flag and the PROOFS rows are what [`Resolver`] computes over the view, so a
-//! read takes them rather than computing them ([`Settled`]).
+//! A FILES row's test flag and the PROOFS rows are what
+//! [`Resolver`](rigger_domain::resolve::Resolver) computes over the view, and
+//! the ROW_* sections the code half [`Indexed::resolved`] resolves under the default filter, so a
+//! read takes them rather than computing them ([`Settled`], [`SettledHalf`]).
 //!
 //! Encoding is a pure function of the view and its groupings: rows follow path then source
 //! order, the pool interns in that order and the indexes are built sorted, so the same facts
@@ -43,17 +52,21 @@ use rigger_domain::code_facts::{
     Def, DocConcept, DocLink, FileFacts, Half, Mention, MentionKind, ModuleDecl, Scope, Stamp, Tip,
     WfNode, WfRelation,
 };
+use rigger_domain::code_graph::CodeGraph;
 use rigger_domain::code_view::{
-    Cluster, CodeView, DefRef, FileRef, Groupings, MentionRef, Proofs, Settled,
+    Cluster, CodeView, DefRef, FileRef, Groupings, MentionRef, Proofs, Settled, SettledHalf,
+    ViewFilter,
 };
-use rigger_domain::resolve::{ProofCall, Resolver};
+use rigger_domain::composed::{HalfRows, Indexed};
+use rigger_domain::contextgraph::{Edge, Node};
+use rigger_domain::resolve::ProofCall;
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
 use std::sync::OnceLock;
 
 pub(crate) const MAGIC: &[u8; 4] = b"RGCS";
-pub(crate) const VERSION: u16 = 5;
+pub(crate) const VERSION: u16 = 6;
 /// An absent index (parent, enclosing definition) or an absent string (commit).
 const NONE: u32 = u32::MAX;
 
@@ -72,6 +85,15 @@ const IDX_NAME: u16 = 12;
 const GROUPINGS: u16 = 13;
 const PROOFS: u16 = 14;
 const IDX_PROOF_FILE: u16 = 15;
+const ROW_NODES: u16 = 16;
+const ROW_ATTRS: u16 = 17;
+const ROW_EDGES: u16 = 18;
+const IDX_ROW_IN: u16 = 19;
+const IDX_ROW_FILE: u16 = 20;
+const IDX_ROW_LEAF: u16 = 21;
+/// The last section kind: every kind from [`STRINGS`] to it is written.
+#[cfg(test)]
+pub(crate) const LAST: u16 = IDX_ROW_LEAF;
 
 /// The width of a string reference.
 const STR: usize = 8;
@@ -131,6 +153,16 @@ const KEY_ROW: usize = STR + 8;
 const P_FILE: usize = 2 * STR;
 const P_LINE: usize = P_FILE + STR;
 const PROOF_ROW: usize = P_LINE + 4;
+
+/// ROW_NODES row: id, kind, then [start, end) into ROW_ATTRS.
+const N_ATTRS: usize = 2 * STR;
+const NODE_ROW: usize = N_ATTRS + 8;
+/// ROW_ATTRS row: key, value.
+const ATTR_ROW: usize = 2 * STR;
+/// ROW_EDGES row: from, to, rel, tier, then valid_from as i64 bits and source.
+const E_VALID: usize = 4 * STR;
+const E_SOURCE: usize = E_VALID + 8;
+const EDGE_ROW: usize = E_SOURCE + 8;
 
 const KIND_CALL: u8 = 0;
 const KIND_TAGGED: u8 = 1;
@@ -208,8 +240,8 @@ struct Encoder {
     pool: Pool,
     sections: BTreeMap<u16, Vec<u8>>,
     /// Leaf to global DEFS rows, and to global MENTIONS rows.
-    leaf_defs: BTreeMap<String, Vec<u32>>,
-    leaf_mentions: BTreeMap<String, Vec<u32>>,
+    leaf_defs: BTreeMap<String, Vec<usize>>,
+    leaf_mentions: BTreeMap<String, Vec<usize>>,
 }
 
 impl Encoder {
@@ -240,11 +272,7 @@ impl Encoder {
             .iter()
             .map(|&kind| self.rows(kind, width_of(kind)))
             .collect::<Result<Vec<u32>, String>>()?;
-        let row = |start: u32, i: usize| -> Result<u32, String> {
-            start
-                .checked_add(narrow(i, "row")?)
-                .ok_or_else(|| format!("row {start} + {i} does not fit its 4-byte field"))
-        };
+        let row = |start: u32, i: usize| start as usize + i;
         let mut defs = self.sections.remove(&DEFS).unwrap_or_default();
         for (i, def) in facts.defs.iter().enumerate() {
             for s in [&def.local, &def.leaf, &def.kind] {
@@ -258,7 +286,7 @@ impl Encoder {
             self.leaf_defs
                 .entry(def.leaf.clone())
                 .or_default()
-                .push(row(starts[L_DEFS], i)?);
+                .push(row(starts[L_DEFS], i));
         }
         self.sections.insert(DEFS, defs);
         let mut mentions = self.sections.remove(&MENTIONS).unwrap_or_default();
@@ -277,7 +305,7 @@ impl Encoder {
             self.leaf_mentions
                 .entry(mention.leaf.clone())
                 .or_default()
-                .push(row(starts[L_MENTIONS], i)?);
+                .push(row(starts[L_MENTIONS], i));
         }
         self.sections.insert(MENTIONS, mentions);
         let mut modules = self.sections.remove(&MODULES).unwrap_or_default();
@@ -349,21 +377,54 @@ impl Encoder {
         Ok(())
     }
 
-    fn index(&mut self, kind: u16, leaves: &BTreeMap<String, Vec<u32>>) -> Result<(), String> {
+    /// The index `kind` of `keys`: each key's rows, in key order.
+    fn index<K: AsRef<str>>(
+        &mut self,
+        kind: u16,
+        keys: &BTreeMap<K, Vec<usize>>,
+    ) -> Result<(), String> {
         let mut out = Vec::new();
-        put_u32(&mut out, narrow(leaves.len(), "leaf count")?);
+        put_u32(&mut out, narrow(keys.len(), "key count")?);
         let mut at = 0usize;
-        for (leaf, rows) in leaves {
-            self.pool.put(&mut out, leaf)?;
+        for (key, rows) in keys {
+            self.pool.put(&mut out, key.as_ref())?;
             put_u32(&mut out, narrow(at, "index row")?);
             at += rows.len();
             put_u32(&mut out, narrow(at, "index row")?);
         }
-        for row in leaves.values().flatten() {
-            put_u32(&mut out, *row);
+        for &row in keys.values().flatten() {
+            put_u32(&mut out, narrow(row, "posting")?);
         }
         self.sections.insert(kind, out);
         Ok(())
+    }
+
+    /// The code half `half` settles as: its nodes, their attributes, its edges, and its indexes
+    /// of incoming edges, file members and leaves, each naming its rows by place.
+    fn half(&mut self, half: &HalfRows<'_>) -> Result<(), String> {
+        let (mut nodes, mut attrs, mut edges) = (Vec::new(), Vec::new(), Vec::new());
+        for node in half.nodes {
+            self.pool.put(&mut nodes, &node.id)?;
+            self.pool.put(&mut nodes, &node.kind)?;
+            put_u32(&mut nodes, narrow(attrs.len() / ATTR_ROW, "attribute row")?);
+            for (key, value) in &node.attrs {
+                self.pool.put(&mut attrs, key)?;
+                self.pool.put(&mut attrs, value)?;
+            }
+            put_u32(&mut nodes, narrow(attrs.len() / ATTR_ROW, "attribute row")?);
+        }
+        for edge in half.edges {
+            for s in [&edge.from, &edge.to, edge.rel.as_str(), edge.tier.as_str()] {
+                self.pool.put(&mut edges, s)?;
+            }
+            put_u64(&mut edges, edge.valid_from.cast_unsigned());
+            put_u64(&mut edges, edge.source);
+        }
+        self.sections
+            .extend([(ROW_NODES, nodes), (ROW_ATTRS, attrs), (ROW_EDGES, edges)]);
+        self.index(IDX_ROW_IN, &half.incoming)?;
+        self.index(IDX_ROW_FILE, half.members)?;
+        self.index(IDX_ROW_LEAF, half.leaves)
     }
 
     fn groupings(&mut self, groupings: &Groupings) -> Result<(), String> {
@@ -419,6 +480,9 @@ fn width_of(kind: u16) -> usize {
         CANDIDATES => STR,
         PROOFS => PROOF_ROW,
         IDX_PROOF_FILE => 4,
+        ROW_NODES => NODE_ROW,
+        ROW_ATTRS => ATTR_ROW,
+        ROW_EDGES => EDGE_ROW,
         _ => TRIPLE_ROW,
     }
 }
@@ -426,7 +490,9 @@ fn width_of(kind: u16) -> usize {
 /// The bytes of `view`'s snapshot with `groupings`: a pure function of the two.
 pub fn encode(view: &dyn CodeView, groupings: &Groupings) -> Result<Vec<u8>, String> {
     let mut enc = Encoder::default();
-    let resolver = Resolver::new(view);
+    let graph = CodeGraph::new(view, ViewFilter::default());
+    let half = Indexed::resolved(&graph, groupings);
+    let resolver = graph.resolver();
     let stamp = view.stamp();
     let mut header = Vec::new();
     put_u64(&mut header, stamp.fingerprint);
@@ -443,6 +509,7 @@ pub fn encode(view: &dyn CodeView, groupings: &Groupings) -> Result<Vec<u8>, Str
         }
     }
     enc.proofs(resolver.proof_calls())?;
+    enc.half(&half.half_rows())?;
     let (leaf_defs, leaf_mentions) = (
         std::mem::take(&mut enc.leaf_defs),
         std::mem::take(&mut enc.leaf_mentions),
@@ -474,6 +541,12 @@ fn le32(row: &[u8], at: usize) -> u32 {
     row.get(at..at + 4)
         .and_then(|b| b.try_into().ok())
         .map_or(0, u32::from_le_bytes)
+}
+
+fn le64(row: &[u8], at: usize) -> u64 {
+    row.get(at..at + 8)
+        .and_then(|b| b.try_into().ok())
+        .map_or(0, u64::from_le_bytes)
 }
 
 fn byte(row: &[u8], at: usize) -> u8 {
@@ -518,6 +591,11 @@ pub struct Snapshot {
     tables: BTreeMap<u16, Table>,
     leaf: Index,
     name: Index,
+    /// The settled code half's ROW_EDGES rows by the id they lead into, and its ROW_NODES rows
+    /// by member file and by leaf.
+    into_id: Index,
+    of_file: Index,
+    by_leaf: Index,
     /// Each file row's facts, decoded the first time this open reads them.
     decoded: Vec<OnceLock<FileFacts>>,
 }
@@ -531,10 +609,16 @@ impl Snapshot {
         let pool = String::from_utf8(container.section(STRINGS)?.to_vec())
             .map_err(|_| "the string pool is not UTF-8".to_string())?;
         let mut tables = BTreeMap::new();
-        for kind in [FILES, CANDIDATES, PROOFS, IDX_PROOF_FILE]
-            .into_iter()
-            .chain(LISTS)
-        {
+        let rows = [
+            FILES,
+            CANDIDATES,
+            PROOFS,
+            IDX_PROOF_FILE,
+            ROW_NODES,
+            ROW_ATTRS,
+            ROW_EDGES,
+        ];
+        for kind in rows.into_iter().chain(LISTS) {
             let range = container.section_range(kind)?;
             let width = width_of(kind);
             if range.len() % width != 0 {
@@ -572,6 +656,11 @@ impl Snapshot {
             })
         };
         let (leaf, name) = (index(IDX_LEAF)?, index(IDX_NAME)?);
+        let (into_id, of_file, by_leaf) = (
+            index(IDX_ROW_IN)?,
+            index(IDX_ROW_FILE)?,
+            index(IDX_ROW_LEAF)?,
+        );
         let in_pool = |off, len| pool_text(&pool, off, len);
         let pooled = |cur: &mut Cursor<'_>| required(cur, &in_pool);
         let stamp = read_stamp(container.payload, &in_pool)?;
@@ -614,6 +703,9 @@ impl Snapshot {
             tables,
             leaf,
             name,
+            into_id,
+            of_file,
+            by_leaf,
             decoded: (0..files).map(|_| OnceLock::new()).collect(),
         };
         snapshot.validate()?;
@@ -640,7 +732,7 @@ impl Snapshot {
 
     /// Checks every string, range and index the rows hold, so the accessors never meet a bad one.
     fn validate(&self) -> Result<(), String> {
-        let strings: [(u16, &[usize]); 10] = [
+        let strings: [(u16, &[usize]); 13] = [
             (FILES, &[0, STR, 2 * STR]),
             (DEFS, &[0, STR, 2 * STR]),
             (MENTIONS, &[M_NAME, M_LEAF, M_TAG]),
@@ -651,6 +743,9 @@ impl Snapshot {
             (WF_NODES, &[0, STR, 2 * STR]),
             (WF_RELATIONS, &[0, STR, 2 * STR]),
             (PROOFS, &[0, STR, P_FILE]),
+            (ROW_NODES, &[0, STR]),
+            (ROW_ATTRS, &[0, STR]),
+            (ROW_EDGES, &[0, STR, 2 * STR, 3 * STR]),
         ];
         // The strings a row may leave absent: a proof's caller, when test code inside a product
         // entity makes the call.
@@ -746,7 +841,34 @@ impl Snapshot {
         if by_file.rows != proofs.rows || !in_order(&|i| self.proof_file(i), by_file.rows) {
             return Err("the proof file index does not cover its proofs in file order".into());
         }
-        for (index, kind) in [(self.leaf, DEFS), (self.name, MENTIONS)] {
+        let nodes = self.table(ROW_NODES);
+        let id = |i| self.text(self.row(nodes, i), 0);
+        if !(1..nodes.rows).all(|i| id(i - 1) < id(i)) {
+            return Err("settled nodes out of id order".into());
+        }
+        let mut next_attr = 0;
+        for i in 0..nodes.rows {
+            let run = self.attrs_of(self.row(nodes, i));
+            if run.start != next_attr {
+                return Err("node attributes are not one run a node".into());
+            }
+            next_attr = run.end;
+        }
+        if next_attr != self.table(ROW_ATTRS).rows {
+            return Err("node attributes no node owns".into());
+        }
+        let edges = self.table(ROW_EDGES);
+        let ends = |i| [0, STR, 2 * STR].map(|at| self.text(self.row(edges, i), at));
+        if !(1..edges.rows).all(|i| ends(i - 1) < ends(i)) {
+            return Err("settled edges out of order".into());
+        }
+        for (index, kind) in [
+            (self.leaf, DEFS),
+            (self.name, MENTIONS),
+            (self.into_id, ROW_EDGES),
+            (self.of_file, ROW_NODES),
+            (self.by_leaf, ROW_NODES),
+        ] {
             let rows = self.table(kind).rows;
             let mut previous: Option<&str> = None;
             for k in 0..index.keys.rows {
@@ -980,6 +1102,38 @@ impl Snapshot {
         }
     }
 
+    /// The [start, end) a ROW_NODES `row` ranges into ROW_ATTRS.
+    fn attrs_of(&self, row: &[u8]) -> Range<usize> {
+        le32(row, N_ATTRS) as usize..le32(row, N_ATTRS + 4) as usize
+    }
+
+    /// The settled node at ROW_NODES row `i`.
+    fn settled_node(&self, i: usize) -> Node {
+        let (row, attrs) = (self.row(self.table(ROW_NODES), i), self.table(ROW_ATTRS));
+        Node {
+            id: self.text(row, 0).to_owned(),
+            kind: self.text(row, STR).to_owned(),
+            attrs: (self.attrs_of(row))
+                .map(|a| self.row(attrs, a))
+                .map(|r| (self.text(r, 0).to_owned(), self.text(r, STR).to_owned()))
+                .collect(),
+        }
+    }
+
+    /// The settled edge at ROW_EDGES row `i`: a live one, as the half holds no other.
+    fn settled_edge(&self, i: usize) -> Edge {
+        let row = self.row(self.table(ROW_EDGES), i);
+        Edge {
+            from: self.text(row, 0).to_owned(),
+            to: self.text(row, STR).to_owned(),
+            rel: self.text(row, 2 * STR).to_owned().into(),
+            valid_from: le64(row, E_VALID).cast_signed(),
+            valid_to: None,
+            source: le64(row, E_SOURCE),
+            tier: self.text(row, 3 * STR).to_owned().into(),
+        }
+    }
+
     /// The first of `rows` rows whose `key` is not less than `want`, the keys ascending.
     fn lower_bound<'s>(rows: usize, want: &str, key: impl Fn(usize) -> &'s str) -> usize {
         let (mut lo, mut hi) = (0, rows);
@@ -1029,6 +1183,45 @@ impl Settled for Snapshot {
                     .collect()
             }
         }
+    }
+
+    fn half(&self) -> Option<&dyn SettledHalf> {
+        Some(self)
+    }
+}
+
+/// The code half read from the rows it was settled as, each read binary-searching its rows or
+/// its index.
+impl SettledHalf for Snapshot {
+    fn node(&self, id: &str) -> Option<Node> {
+        let nodes = self.table(ROW_NODES);
+        let key = |i| self.text(self.row(nodes, i), 0);
+        let at = Self::lower_bound(nodes.rows, id, key);
+        (at < nodes.rows && key(at) == id).then(|| self.settled_node(at))
+    }
+
+    fn out(&self, id: &str) -> Vec<Edge> {
+        let edges = self.table(ROW_EDGES);
+        let from = |i| self.text(self.row(edges, i), 0);
+        (Self::lower_bound(edges.rows, id, from)..edges.rows)
+            .take_while(|&i| from(i) == id)
+            .map(|i| self.settled_edge(i))
+            .collect()
+    }
+
+    fn incoming(&self, id: &str) -> Vec<Edge> {
+        let into = self.postings(self.into_id, id);
+        into.map(|i| self.settled_edge(i)).collect()
+    }
+
+    fn members(&self, file: &str) -> Vec<Node> {
+        let of = self.postings(self.of_file, file);
+        of.map(|i| self.settled_node(i)).collect()
+    }
+
+    fn leaf_nodes(&self, leaf: &str) -> Vec<Node> {
+        let by = self.postings(self.by_leaf, leaf);
+        by.map(|i| self.settled_node(i)).collect()
     }
 }
 
@@ -1190,6 +1383,7 @@ pub(crate) mod tests {
     use rigger_domain::composed::Indexed;
     use rigger_domain::contextgraph::query::node_name;
     use rigger_domain::contextgraph::{Neighbors, PLACEHOLDER_SIGIL};
+    use rigger_domain::resolve::Resolver;
     use std::collections::BTreeSet;
     use std::fmt::Debug;
 

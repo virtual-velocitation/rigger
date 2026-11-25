@@ -43,12 +43,13 @@ use crate::contextgraph::{
 };
 
 /// The generation of what a store settles from the tree alone when it advances ([`Settled`]):
-/// the test-module closure and the proof rule. Bump it whenever either can settle other rows for
-/// a view than before; the store's fingerprint folds it in, so a snapshot settled under an older
-/// one is computed anew. A golden test pins it beside a digest of the rows three fixtures
+/// the test-module closure, the proof rule, and the code half resolved whole under the default
+/// filter ([`crate::composed::Indexed::resolved`]). Bump it whenever any can settle other rows
+/// for a view than before; the store's fingerprint folds it in, so a snapshot settled under an
+/// older one is computed anew. A golden test pins it beside a digest of the rows three fixtures
 /// settle, so a change that moves those rows fails there until the generation is bumped and the
 /// pair re-pinned.
-pub const SETTLED_GENERATION: u64 = 5;
+pub const SETTLED_GENERATION: u64 = 6;
 
 /// The node kinds a design concept or a workflow node may name.
 pub(crate) const INTENT_KINDS: [&str; 7] = [
@@ -2528,12 +2529,13 @@ pub(crate) mod tests {
     /// [`fixture`], of [`qualified_proof_fixture`], whose qualified test calls take each outcome
     /// of the narrowed match in [`Resolver::proof`], and of [`module_root_fixture`], whose
     /// test-only declaration reaches a file through the list its declaring file's place picks,
-    /// are pinned by digest beside the generation the store's fingerprint folds in, so a change
-    /// that moves the rows these three fixtures settle fails here until `SETTLED_GENERATION` is
-    /// bumped and the pair re-pinned.
+    /// and the code half each settles whole ([`Indexed::resolved`]), are pinned by digest beside
+    /// the generation the store's fingerprint folds in, so a change that moves the rows these
+    /// three fixtures settle fails here until `SETTLED_GENERATION` is bumped and the pair
+    /// re-pinned.
     #[test]
     fn a_change_to_the_settled_rows_ships_with_a_generation_bump() {
-        const PINNED: (u64, &str) = (5, "a9202848617a9138");
+        const PINNED: (u64, &str) = (6, "72794276be57982d");
         let (test_files, proofs) = settled_rows(&fixture());
         assert!(
             !proofs.is_empty() && test_files.iter().any(|p| !p.starts_with("tests/")),
@@ -2541,7 +2543,12 @@ pub(crate) mod tests {
         );
         let qualified = settled_rows(&qualified_proof_fixture());
         let rooted = settled_rows(&module_root_fixture());
-        let rows = format!("{test_files:#?}{proofs:#?}{qualified:#?}{rooted:#?}");
+        let halves = [fixture(), qualified_proof_fixture(), module_root_fixture()].map(|view| {
+            let graph = CodeGraph::new(&view, ViewFilter::default());
+            let half = Indexed::resolved(&graph, view.groupings());
+            format!("{:#?}", half.half_rows())
+        });
+        let rows = format!("{test_files:#?}{proofs:#?}{qualified:#?}{rooted:#?}{halves:#?}");
         let digest = crate::community::fnv1a_hex(&rows);
         assert_eq!(
             (SETTLED_GENERATION, digest.as_str()),

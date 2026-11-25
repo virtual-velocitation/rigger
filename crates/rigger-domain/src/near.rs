@@ -18,10 +18,9 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use crate::code_facts::{Bound, FileFacts, Half, MentionKind, Recorded};
 use crate::code_graph::{Asserts, Builder, CodeGraph};
-use crate::code_view::{Cluster, CodeView, FileRef, Groupings, Tests, ViewFilter};
+use crate::code_view::{Cluster, CodeView, FileRef, Groupings, SettledHalf, Tests, ViewFilter};
 use crate::composed::{
-    attachments, binds_leaf, cluster_files, id_binds_leaf, joined, ordered, provers_of, CodeHalf,
-    Indexed,
+    binds_leaf, cluster_files, id_binds_leaf, ordered, provers_of, CodeHalf, Indexed,
 };
 use crate::contextgraph::query::{
     entity_id, leaf_of, member_file, path_leaf, placeholder_id, split_id,
@@ -31,7 +30,9 @@ use crate::contextgraph::{
     KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, KIND_FILE, PLACEHOLDER_SIGIL, REL_IN_COMMUNITY,
     REL_REALIZES, REL_TESTS, TIER_INFERRED,
 };
-use crate::resolve::{def_leaves, local_leaves, qualifier, IntentLink, IntentNode, INTENT_KINDS};
+use crate::resolve::{
+    def_leaves, local_leaves, qualifier, IntentLink, IntentNode, ProofCall, INTENT_KINDS,
+};
 use crate::test_view::TESTS_ATTR;
 
 /// The groupings' two arms, in the order they are joined: each cluster's node kind and the
@@ -320,6 +321,9 @@ struct State<'v> {
     view: &'v dyn CodeView,
     graph: CodeGraph<'v>,
     tests: Tests,
+    /// The code half the view settles whole, read in place of resolving near an id: offered
+    /// under the default filter alone, the one it is settled under.
+    half: Option<&'v dyn SettledHalf>,
     files: Vec<FileRef<'v>>,
     places: FxHashMap<&'v str, u32>,
     intent: Option<Intent>,
@@ -350,9 +354,10 @@ struct State<'v> {
     proof_passes: Vec<u32>,
 }
 
-/// The code half of a view under one filter, resolved only near the ids it is asked about. Its
-/// answers are the whole graph's ([`crate::composed::Indexed`] over [`joined`]): the reads that
-/// need every node (`of_kind`, `whole`) resolve the view whole once.
+/// The code half of a view under one filter, resolved only near the ids it is asked about, or
+/// read from the half the view settles whole when the filter is the default. Its answers are the
+/// whole graph's ([`Indexed::resolved`]): the reads that need every node (`of_kind`, `whole`)
+/// resolve the view whole once.
 pub(crate) struct Near<'v> {
     state: Mutex<State<'v>>,
     whole: OnceLock<Indexed>,
@@ -369,6 +374,9 @@ impl<'v> Near<'v> {
                 view,
                 graph: CodeGraph::new(view, filter),
                 tests: filter.tests,
+                half: (filter == ViewFilter::default())
+                    .then(|| view.settled()?.half())
+                    .flatten(),
                 files,
                 places,
                 intent: None,
@@ -399,18 +407,7 @@ impl<'v> Near<'v> {
     fn resolved_whole(&self) -> &Indexed {
         self.whole.get_or_init(|| {
             let state = self.state();
-            let resolved = state.graph.resolved();
-            let groupings = state.view.groupings();
-            let proofs = state.graph.resolver().proof_calls();
-            Indexed::new(
-                joined(
-                    resolved.graph,
-                    groupings,
-                    &attachments(proofs, groupings),
-                    state.tests,
-                ),
-                Vec::new(),
-            )
+            Indexed::resolved(&state.graph, state.view.groupings())
         })
     }
 }
@@ -827,6 +824,9 @@ impl<'v> State<'v> {
     /// The node `id`: the last cluster with that id, carrying its attached test count, else the
     /// code node.
     fn node(&mut self, id: &str) -> Option<Node> {
+        if let Some(half) = self.half {
+            return half.node(id);
+        }
         let clusters = self.clusters();
         let Some(&(arm, at)) = clusters.with_id(id).last() else {
             return self.code_node(id);
@@ -852,11 +852,17 @@ impl<'v> State<'v> {
 
     /// Whether the half holds a node `id`.
     fn holds(&mut self, id: &str) -> bool {
+        if let Some(half) = self.half {
+            return half.node(id).is_some();
+        }
         !self.clusters().with_id(id).is_empty() || self.code_node(id).is_some()
     }
 
     /// The edges from `id`: its code edges, its memberships and its tests' attachments.
     fn out(&mut self, id: &str) -> Vec<Edge> {
+        if let Some(half) = self.half {
+            return half.out(id);
+        }
         let mut edges = self.code_out(id).out.clone();
         if let Some(node) = self.code_node(id) {
             let clusters = self.clusters();
@@ -879,6 +885,9 @@ impl<'v> State<'v> {
 
     /// The edges into `id`: its code edges, and into a cluster its members' and its tests'.
     fn incoming(&mut self, id: &str) -> Vec<Edge> {
+        if let Some(half) = self.half {
+            return half.incoming(id);
+        }
         let mut edges = self.code_incoming(id).incoming.clone();
         let clusters = self.clusters();
         for (arm, (_, rel)) in ARMS.into_iter().enumerate() {
@@ -912,6 +921,9 @@ impl<'v> State<'v> {
 
     /// The named code entities of the file `file`, in id order.
     fn members(&mut self, file: &str) -> Vec<Node> {
+        if let Some(half) = self.half {
+            return half.members(file);
+        }
         let Some(place) = self.code_place(file) else {
             return Vec::new();
         };
@@ -935,6 +947,9 @@ impl<'v> State<'v> {
     /// the placeholders of calls to it, keyed by it or by the qualified name a call writes, the
     /// entities whose id ends in it, and the design and workflow ids and cluster ids it binds.
     fn leaf_nodes(&mut self, leaf: &str) -> Vec<Node> {
+        if let Some(half) = self.half {
+            return half.leaf_nodes(leaf);
+        }
         let mut ids: BTreeSet<String> = BTreeSet::new();
         for d in self.view.defs_named(leaf) {
             if d.file.half == Half::Code {
@@ -1143,28 +1158,32 @@ impl CodeHalf for Near<'_> {
         }?;
         Some((facts.lang.clone(), span))
     }
-    /// Read from the proofs read resolving `ids`, or, once the view is resolved whole, from the
-    /// proof calls that read.
+    /// Read from the proofs read resolving `ids`; once the view is resolved whole, from the proof
+    /// calls that read; and over a settled half, which resolves no id, from each id's proofs.
     fn hidden_provers(&self, ids: &[String]) -> Vec<String> {
         let state = self.state();
         if state.tests != Tests::Exclude {
             return Vec::new();
         }
-        match self.whole.get() {
-            Some(_) => {
-                let proofs = state.graph.resolver().proof_calls().iter();
-                provers_of(
-                    proofs.filter_map(|c| Some((c.target.as_str(), c.caller.as_deref()?))),
-                    ids,
-                )
+        let resolver = state.graph.resolver();
+        let proofs: Cow<[ProofCall]> = match (self.whole.get(), state.half) {
+            (Some(_), _) => Cow::Borrowed(resolver.proof_calls()),
+            (None, Some(_)) => {
+                Cow::Owned(ids.iter().flat_map(|id| resolver.proofs_of(id)).collect())
             }
-            None => {
+            (None, None) => {
                 let proofs = (state.provers.iter()).flat_map(|(id, provers)| {
                     provers.iter().map(move |p| (id.as_str(), p.as_str()))
                 });
-                provers_of(proofs, ids)
+                return provers_of(proofs, ids);
             }
-        }
+        };
+        provers_of(
+            proofs
+                .iter()
+                .filter_map(|c| Some((c.target.as_str(), c.caller.as_deref()?))),
+            ids,
+        )
     }
     /// Read from the mentions of `leaf` alone.
     fn placeholder_callers(&self, id: &str, leaf: &str) -> Vec<String> {

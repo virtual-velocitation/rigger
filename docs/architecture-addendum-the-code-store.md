@@ -448,6 +448,15 @@ a (u32 offset, u32 length) pair into one pool, and each distinct string is store
  | PROOFS     target, caller or none, file, line    (proof order: by target;     |
  |            binary search)                                                     |
  | IDX_PROOF_FILE  [proof row]                 (by file, then proof order)       |
+ | ROW_NODES  the code half resolved whole under the default filter, its         |
+ |            groupings joined on: id, kind, [start, end) into ROW_ATTRS         |
+ |                                               (sorted by id; binary search)   |
+ | ROW_ATTRS  key, value                         (one run a node, in key order)  |
+ | ROW_EDGES  from, to, rel, tier, valid_from, source                            |
+ |                                    (sorted by from, to, rel; binary search)   |
+ | IDX_ROW_IN    id -> [edge row]   (the edges into it, in edge order)           |
+ | IDX_ROW_FILE  file -> [node row] (its members, in id order)                   |
+ | IDX_ROW_LEAF  leaf -> [node row] (the nodes the leaf binds, in id order)      |
  +-------------------------------------------------------------------------------+
 ```
 
@@ -455,15 +464,25 @@ a (u32 offset, u32 length) pair into one pool, and each distinct string is store
   the access path. A memory mapping is a different owner of the same slice, so the format needs
   no change for one.
 - A doc span is two u32 lines; lines count from 1, so 0, 0 is no doc comment.
-- **Size.** The tree holds 18,202 definitions and 164,734 mentions.
+- The ROW_* sections are the code half `Indexed::resolved` answers: the view resolved whole
+  under the default filter, the filter a read takes unless it asks for tests, with its groupings
+  joined on. A neighbourhood read under that filter takes a node, its edges either way, a
+  file's members and a leaf's nodes from them by binary search, and resolves nothing (section
+  6.3). A read under another filter, and a worktree overlay that differs from its snapshot,
+  resolve near the ids asked.
+- **Size.** Measured on this repository's tree when the code half was settled: 22,802
+  definitions, 254,630 mentions, and a settled half of 19,394 nodes and 73,020 edges.
 
-  | Section | Estimate |
+  | Section | Measured |
   |---|---|
-  | mentions | ~4.0 MB |
-  | definitions | ~0.8 MB |
-  | string pool | ~0.6 MB |
-  | indexes | ~0.7 MB |
-  | **total** | **~6 MB** |
+  | mentions | 8.7 MB |
+  | settled code half (ROW_*, IDX_ROW_*) | 5.6 MB |
+  | string pool | 3.9 MB |
+  | indexes (IDX_LEAF, IDX_NAME, IDX_PROOF_FILE) | 1.7 MB |
+  | definitions | 1.0 MB |
+  | proofs | 0.8 MB |
+  | files, modules, design and workflow facts, groupings | 0.3 MB |
+  | **total** | **22.0 MB** |
 
   Today the graph is 338.7 MB plus its write-ahead log, and the symbols index is 31.5 MB.
 
@@ -699,11 +718,14 @@ so it runs once per advance and is stored in the snapshot:
     definition's proofs and a test's attachment from them instead of resolving each mention of
     the leaf.
   - **definition leaves:** the keys of `IDX_LEAF`, which a lookup's name index reads.
+  - **the code half:** the view resolved whole under the default filter with its groupings
+    joined on (`Indexed::resolved`, the ROW_* sections of section 4.5), so a default read takes
+    a node and its edges rather than resolving the mentions near it.
 
   Their generation (`SETTLED_GENERATION`) is folded into the fingerprint like the grouping
-  generation, and a golden test pins it beside a digest of the rows over three fixtures. A view
-  that holds no settled rows (an in-memory view) has the resolver compute them, and the two
-  are tested to answer alike.
+  generation, and a golden test pins it beside a digest of the rows, the code half included,
+  over three fixtures. A view that holds no settled rows (an in-memory view) has the resolver
+  compute them, and the two are tested to answer alike.
 - A grain other than the default is computed at read, on each open that asks for it, and is
   not stored: the reports and the dash's views go through the one rule (`groupings::computed_at`),
   so a dash view at grain 2 shows the groupings `--resolution 2` reports, joined on beside the
@@ -728,6 +750,7 @@ Grouping before and after:
 | extract | ~ 25 ms | 11.4 s / cores ~ 1.5-3 s |
 | build indexes | ~ 15 ms | ~ 15 ms |
 | groupings | ~ 2.3 s | ~ 2.3 s |
+| the code half (section 4.5) | ~ 220 ms | ~ 220 ms |
 | write + fsync + swap | ~ 20 ms | ~ 20 ms |
 | **budget (Done-when)** | **<= 3 s** | **<= 8 s** (today: 5 min 23.5 s) |
 
@@ -967,6 +990,11 @@ facts, a span past the file's end and a file the read cannot open give no doc.
 The work is proportional to the number of mentions of one leaf. The largest frontier measured is
 25 candidates.
 
+Under the default filter a neighbourhood over a snapshot resolves none of this: the snapshot
+settles the code half whole (section 4.5), and a node, its edges either way, a file's members and
+a leaf's nodes are binary searches in it, and a node's hidden provers are its PROOFS rows. A read
+that shows tests, and the overlay of a worktree that differs from its snapshot, resolve as above.
+
 A lookup term resolves the same way. The distinct leaves the definitions carry are its name
 index; each name a tier reaches (exact, prefix, fuzzy, or the nearest names of a miss) reads
 only the definitions of that leaf, and a name is a match only when one of those is shown. The
@@ -975,24 +1003,35 @@ reached.
 
 ### 6.4 Read cost
 
-| Query | Work | Budget (through the binary) |
-|---|---|---|
-| open + honesty check | read ~6 MB, crc, two git calls (three where discovery asks git, four where the configuration includes a file) | inside the budgets below |
-| `--around <entity>` | the mentions of one leaf | <= 50 ms |
-| whole default view (dash) | 34,301 product mentions + test call mentions for proofs | <= 150 ms |
-| whole view with tests | 164,734 mentions | <= 300 ms |
-| whole view at a non-default grain (dash) | the default view plus groupings on demand | ~ 270 ms |
+`tests/read_budgets.rs` holds each budget: run with `RIGGER_READ_BUDGETS=1`, it clones HEAD,
+builds the release binary, builds the graph, starts the dash on an ephemeral port and takes the
+median of five runs after one warm-up. The gates do not run it. The measured column is that
+median on this repository's tree when the code half was settled (section 4.5).
 
-The interpreted model resolves the product view in 21 ms and everything in 92 ms. Compiled code
-does it in less, so no cache is kept: each view open resolves what its query needs.
+| Query | Work | Budget (through the binary) | Measured |
+|---|---|---|---|
+| open + honesty check | read ~22 MB, crc, two git calls (three where discovery asks git, four where the configuration includes a file) | inside the budgets below | |
+| `--around <entity>`, `--show <entity>` | binary searches in the settled code half; a `--show` miss builds the name index and searches it | < 50 ms | 20 to 35 ms |
+| `--lookup <term>` | the name index, each entity reached with its callees and referrers, the text and prose scans | < 250 ms | 94 to 173 ms |
+| whole default view (dash `/api/graph`) | the product view resolved whole, its proofs read from PROOFS | < 150 ms | 52 ms |
+| whole view with tests (`tests=include`) | every mention resolved whole | < 300 ms | 168 ms |
+| whole view at a non-default grain (`lens=code&resolution=2`) | the default view plus groupings on demand | < 300 ms | 62 ms |
+
+A neighbourhood read under the default filter, on a worktree that matches its snapshot, takes the
+settled code half and resolves nothing near its ids; a whole read, a read under another filter,
+and the overlay of a worktree that differs from its snapshot resolve what the query needs. No
+cache is kept beside the snapshot.
 
 The one exception is the overlay's facts memo (section 13), which keeps the facts extracted from a
 worktree file by the file's content. It cannot be stale, because its key is the content: an
 entry answers only for the bytes it was extracted from. It is bounded at 64 MiB of entries, none
 unread for more than three days, and reaped with the store (section 5.1).
 
-The budgets assume the stamp is current. If HEAD moved without the conductor, the first reader
-afterwards pays one advance first (<= 3 s for a small change, section 5.5).
+The budgets assume the stamp is current and the worktree matches its snapshot. If HEAD moved
+without the conductor, the first reader afterwards pays one advance first (<= 3 s for a small
+change, section 5.5). A worktree that differs from its snapshot has no settled code half to read:
+its overlay resolves near the ids asked, and `--around` with one file changed took 137 to 146 ms
+when the code half was settled, as it did before.
 
 ---
 

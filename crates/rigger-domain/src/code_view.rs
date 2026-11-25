@@ -5,6 +5,7 @@
 //! no language knowledge: extraction and grouping are passed in.
 
 use crate::code_facts::{FileFacts, Half, MentionKind, ModuleDecl, Scope, Stamp, Tip};
+use crate::contextgraph::{Edge, Node};
 use crate::resolve::ProofCall;
 use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap};
@@ -255,6 +256,28 @@ pub trait Settled: Sync {
     fn test_files(&self) -> Vec<&str>;
     /// The proof calls `of` selects, in proof order ([`crate::resolve::Resolver::proof_calls`]).
     fn proofs(&self, of: Proofs<'_>) -> Vec<ProofCall>;
+    /// The code half settled whole, when the store settled it: what
+    /// [`crate::composed::Indexed::resolved`] reads under the default filter. None by default,
+    /// so a reader resolves the half from the facts.
+    fn half(&self) -> Option<&dyn SettledHalf> {
+        None
+    }
+}
+
+/// The code half a store settles whole, under the default filter with the view's groupings
+/// joined on: each read is what [`crate::composed::Indexed::resolved`] answers through
+/// [`crate::contextgraph::Neighbors`].
+pub trait SettledHalf: Sync {
+    /// The node `id`.
+    fn node(&self, id: &str) -> Option<Node>;
+    /// The edges from `id`, in edge order.
+    fn out(&self, id: &str) -> Vec<Edge>;
+    /// The edges into `id`, in edge order.
+    fn incoming(&self, id: &str) -> Vec<Edge>;
+    /// The named code entities of the file `file`.
+    fn members(&self, file: &str) -> Vec<Node>;
+    /// The nodes `leaf` binds.
+    fn leaf_nodes(&self, leaf: &str) -> Vec<Node>;
 }
 
 /// Where a tree is read from: a git repository, or a directory with no git.

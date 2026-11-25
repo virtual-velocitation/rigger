@@ -195,6 +195,23 @@ pub struct Indexed {
     index: OnceLock<Index>,
 }
 
+/// The rows an [`Indexed`] is held and indexed as ([`Indexed::half_rows`]): each index names
+/// nodes or edges by place.
+#[derive(Debug)]
+pub struct HalfRows<'a> {
+    /// The nodes, in id order, one per id.
+    pub nodes: &'a [Node],
+    /// The live edges, in [`ordered`] order.
+    pub edges: &'a [Edge],
+    /// Each id's incoming edges, in edge order.
+    pub incoming: BTreeMap<&'a str, Vec<usize>>,
+    /// Each file's members ([`member_file`]), in the order the nodes were given.
+    pub members: &'a BTreeMap<String, Vec<usize>>,
+    /// Each leaf's nodes, in node order: those whose name, id rest, placeholder or its path leaf
+    /// is the leaf, so each is one the leaf binds ([`binds_leaf`]).
+    pub leaves: &'a BTreeMap<String, Vec<usize>>,
+}
+
 /// The places [`Indexed`] reads its neighbours by.
 #[derive(Default)]
 struct Index {
@@ -228,6 +245,33 @@ impl Indexed {
             given,
             aliases,
             index: OnceLock::new(),
+        }
+    }
+
+    /// The code half `graph` resolves to whole, with `groupings` joined on under the tests
+    /// `graph`'s filter shows: what a store settles ([`Self::half_rows`]) and a neighbourhood
+    /// reads.
+    pub fn resolved(graph: &CodeGraph<'_>, groupings: &Groupings) -> Indexed {
+        let resolved = graph.resolved();
+        let attached = attachments(graph.resolver().proof_calls(), groupings);
+        let joined = joined(resolved.graph, groupings, &attached, graph.tests());
+        Indexed::new(joined, Vec::new())
+    }
+
+    /// The rows this graph is held and indexed as, which a store settles and answers
+    /// [`crate::code_view::SettledHalf`] from.
+    pub fn half_rows(&self) -> HalfRows<'_> {
+        let ix = self.index();
+        let mut incoming: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
+        for &at in &ix.incoming {
+            incoming.entry(&self.edges[at].to).or_default().push(at);
+        }
+        HalfRows {
+            nodes: &self.nodes,
+            edges: &self.edges,
+            incoming,
+            members: &ix.members,
+            leaves: &ix.leaves,
         }
     }
 
