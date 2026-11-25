@@ -11,8 +11,8 @@
 
 use crate::common;
 
-use common::cli::{run_rigger_ok, temp_project};
-use common::fixtures::{git_commit_all, git_out, write_text, READERS};
+use common::cli::{build_head, head_of, run_rigger_ok, temp_project};
+use common::fixtures::{write_files, write_text, READERS};
 use std::path::Path;
 
 /// A file no read below reaches: editing it makes the worktree differ from its head and leaves
@@ -268,11 +268,9 @@ fn a_worktree_edit_a_read_reaches_is_answered_from_the_worktree_not_the_settled_
 /// Builds the project at `root` holding [`READERS`] and an [`UNREAD`] `src/other.rs`, committed,
 /// and returns its head.
 fn built(root: &Path) -> String {
-    write_text(root, "src/lib.rs", READERS);
-    write_text(root, "src/other.rs", UNREAD);
-    git_commit_all(root, "source");
-    run_rigger_ok(root, &["graph", "build"]);
-    git_out(root, &["rev-parse", "HEAD"])
+    write_files(root, &[("src/lib.rs", READERS), ("src/other.rs", UNREAD)]);
+    build_head(root);
+    head_of(root)
 }
 
 /// The label of a read from the worktree at `root` differing from `head` in one file.
