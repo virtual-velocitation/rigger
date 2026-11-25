@@ -796,7 +796,8 @@ const FIELD_USES_SOURCE: &str = "struct SpawnOpts { system_prompt: u8 }\nimpl Sp
 /// `Tr` whose `get` returns `Self::Target` (line 5), and one fn per use: `a` reading
 /// `InstallOutcome::AlreadyCurrent` (line 6), `b` matching `Located::Many(c) =>` (line 7), `c`
 /// matching `Kind::RejectRecurrence { n } =>` (line 8) and `e` calling `Hop::Frontier(cs)` (line
-/// 9). No fn takes or returns a type of the file, so each type mention is its path's.
+/// 9). None of `a`, `b`, `c` and `e` takes or returns a type of the file, so each of their type
+/// mentions is its path's.
 #[cfg(feature = "symbols")]
 const VARIANT_USES_SOURCE: &str = "enum InstallOutcome { AlreadyCurrent }\nenum Located { Many(u8) }\nenum Kind { RejectRecurrence { n: u8 } }\nenum Hop { Frontier(u8) }\ntrait Tr { type Target; fn get(&self) -> Self::Target; }\nfn a() { let o = InstallOutcome::AlreadyCurrent; }\nfn b(x: u8) -> u8 { match x { Located::Many(c) => c, _ => 0 } }\nfn c(k: u8) -> u8 { match k { Kind::RejectRecurrence { n } => n, _ => 0 } }\nfn e(cs: u8) { Hop::Frontier(cs); }\n";
 
