@@ -6411,6 +6411,31 @@ impl Draw for fn() {}
 7 type Plover impl Draw for dyn Plover
 8 impl Draw impl Draw for fn()",
             ),
+            // A self type read through a reference or a pointer is excluded by its path's root as
+            // a bare one is: a standard-library path, or one rooted at a standard-library import,
+            // stages no `impl` row, while a project path's stages its own.
+            (
+                "an impl header's referenced standard-library self type stages no impl row",
+                "\
+use std::fmt;
+impl Draw for &std::path::Path {}
+impl Draw for &mut std::path::Path {}
+impl<'a> Draw for &'a std::collections::HashMap<u8, u8> {}
+impl Draw for *const std::ffi::c_void {}
+impl Draw for &fmt::Formatter {}
+impl Draw for *mut fmt::Formatter {}
+impl Draw for &a::Local {}
+",
+                "\
+2 impl Draw impl Draw for &std::path::Path
+3 impl Draw impl Draw for &mut std::path::Path
+4 impl Draw impl Draw for &'a std::collections::HashMap<u8, u8>
+5 impl Draw impl Draw for *const std::ffi::c_void
+6 impl Draw impl Draw for &fmt::Formatter
+7 impl Draw impl Draw for *mut fmt::Formatter
+8 impl Draw impl Draw for &a::Local
+8 impl Local impl Draw for &a::Local",
+            ),
             // A struct literal and a struct pattern stage one row of their name: a `variant` row
             // of a variant written under an uppercase path (`Enum::Variant { .. }`,
             // [`variant_qualifier`]), else a `type` row of the path's final identifier when it
