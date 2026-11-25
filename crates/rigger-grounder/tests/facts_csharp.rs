@@ -55,7 +55,8 @@ type Case = (
 /// position and under each argument mix, a list case label, a list in one pair of parentheses, a
 /// keyword or typed argument, the left operand of a binary operator binding looser than `is`, at
 /// the bound and one past it, a generic name of two type arguments the grammar splits at its
-/// comma, in each list, form and right operand and at each bound and one past it, and a
+/// comma, in each list, form and right operand, each type argument a name, a generic, an array,
+/// a tuple or a qualified name, nested in turn, and at each bound and one past it, and a
 /// comparison no split leaves, included, stages the `type`, `field` or call mentions, or none,
 /// that the C# reference patterns' doc (`csharp_reference_tags`) states for that form; over the
 /// production extractor.
@@ -87,7 +88,7 @@ fn csharp_stages_its_row() {
     let field = |name: &str, leaf: &str| in_def(1, name, leaf, Some(REF_KIND_FIELD), 3);
     // A call in `K.M` on line 3, written `name` of `leaf`.
     let call = |name: &str, leaf: &str| in_def(1, name, leaf, None, 3);
-    let cases: [Case; 293] = [
+    let cases: [Case; 351] = [
         (
             "a base list, a parameter's types, a member constant, an assigned member and a doc block",
             "/// <summary>A square.</summary>\n/// <remarks>Its <c>Side</c> is fixed.</remarks>\nclass Square : IShape {\n    const int SIDES = 4;\n    int Side;\n    void Draw(List<IShape> s) { var n = Square.SIDES; s.Side = 2; }\n}\n",
@@ -1830,6 +1831,354 @@ fn csharp_stages_its_row() {
             "a generic name of two type arguments as the left operand of `&` in the right operand of `&&` in an argument, split at its comma by the grammar",
             in_m!("F(ok && p is Kh<A, B> & s is null);"),
             vec![ty("Kh"), ty("A"), ty("B")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, the first a generic's array, each name included",
+            in_m!("F(p is Ta<Tb<C>[], A> & s is null);"),
+            vec![ty("Ta"), ty("Tb"), ty("C"), ty("A")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, the first an array of a generic whose type argument is generic, each name included",
+            in_m!("F(p is Ga<Fa<Fb<Fc>>[], B> & s is null);"),
+            vec![ty("Ga"), ty("Fa"), ty("Fc"), ty("Fb"), ty("B")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, the first an array of a generic nested three deep, each name included",
+            in_m!("F(p is Ga<Fa<Fb<Fc<Fd>>>[], B> & s is null);"),
+            vec![ty("Ga"), ty("Fb"), ty("Fa"), ty("Fc"), ty("Fd"), ty("B")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, the first an array of a generic whose type argument is a generic's array, each name included",
+            in_m!("F(p is Tg<Th<Ti<C>[]>[], A> & s is null);"),
+            vec![ty("Tg"), ty("Th"), ty("Ti"), ty("C"), ty("A")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, the first an array of generics' arrays nested three deep, each name included",
+            in_m!("F(p is Tn<To<Tp<Tq<C>[]>[]>[], A> & s is null);"),
+            vec![ty("Tn"), ty("To"), ty("Tq"), ty("Tp"), ty("C"), ty("A")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, the first a tuple, each element included",
+            in_m!("F(p is Tc<(C, D), A> & s is null);"),
+            vec![ty("Tc"), ty("C"), ty("D"), ty("A")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, the first a tuple of named elements, each element's type included",
+            in_m!("F(p is Ga<(A a, Fb b), B> & s is null);"),
+            vec![ty("Ga"), ty("A"), ty("Fb"), ty("B")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, the first a tuple of three elements, each included",
+            in_m!("F(p is Ga<(A, Fb, Fc), B> & s is null);"),
+            vec![ty("Ga"), ty("A"), ty("Fb"), ty("Fc"), ty("B")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, the first a tuple whose first element is a generic, each name included",
+            in_m!("F(p is Tj<(Tk<C>, D), A> & s is null);"),
+            vec![ty("Tj"), ty("C"), ty("Tk"), ty("D"), ty("A")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, the first a qualified name, the field it names to the grammar",
+            in_m!("F(p is Ga<Ns.A, B> & s is null);"),
+            vec![ty("Ga"), field("Ns.A", "A"), ty("B")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, the first a qualified generic name, its type argument included",
+            in_m!("F(p is Ga<Ns.Fa<Fb>, B> & s is null);"),
+            vec![ty("Ga"), ty("Fb"), ty("B")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, the first an array of a generic of two type arguments, each name included",
+            in_m!("F(p is Ga<Fa<Fb, Fc>[], B> & s is null);"),
+            vec![ty("Ga"), ty("Fa"), ty("Fb"), ty("Fc"), ty("B")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, the first an array of a generic whose first type argument is a generic's array, each name included",
+            in_m!("F(p is Ga<Fa<Fb<Fc>[], Fd>[], B> & s is null);"),
+            vec![ty("Ga"), ty("Fa"), ty("Fb"), ty("Fc"), ty("Fd"), ty("B")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, the first a tuple whose first element is a generic's array, two comparisons, the bound",
+            in_m!("F(p is Ga<(Fa<Fb>[], Fc), B> & s is null);"),
+            vec![ty("Ga"), ty("Fa"), ty("Fb"), ty("Fc"), ty("B")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, the first a tuple whose first element is a nested generic's array, four comparisons, past the bound, that element's names none",
+            in_m!("F(p is Ga<(Fa<Fb<Fc>[]>[], Fd), B> & s is null);"),
+            vec![ty("Ga"), ty("Fd"), ty("B")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, its part before the comma eight comparisons, the bound",
+            in_m!("F(p is Ga<Fa<Fb<Fc<Fd<Fe>[]>[]>[], Ff>[], B> & s is null);"),
+            vec![ty("Ga"), ty("Fa"), ty("Fb"), ty("Fd"), ty("Fc"), ty("Fe"), ty("Ff"), ty("B")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, its part before the comma nine comparisons, past the bound, none",
+            in_m!("F(p is Ga<Fa<Fb<Fc<Fd<C>[]>[]>[]>[], B> & s is null);"),
+            vec![],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, the second a generic closing in `>>`, a whole generic to the grammar",
+            in_m!("F(p is Ua<A, Ub<C>> & s is null);"),
+            vec![ty("A"), ty("C"), ty("Ub"), ty("Ua")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, the second a nested generic closing in `>>>`, a whole generic to the grammar",
+            in_m!("F(p is Ug<A, Uh<Ui<C>>> & s is null);"),
+            vec![ty("A"), ty("C"), ty("Ui"), ty("Uh"), ty("Ug")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, the second a generic's array, each name included",
+            in_m!("F(p is Uj<A, Uk<C>[]> & s is null);"),
+            vec![ty("Uj"), ty("A"), ty("Uk"), ty("C")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, the second a tuple, each element included",
+            in_m!("F(p is Ul<A, (C, D)> & s is null);"),
+            vec![ty("Ul"), ty("A"), ty("C"), ty("D")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, the second an array of a generic whose type argument is a generic's array, each name included",
+            in_m!("F(p is Um<A, Un<Uo<C>[]>[]> & s is null);"),
+            vec![ty("Um"), ty("A"), ty("Un"), ty("Uo"), ty("C")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, the second an array of a generic of two type arguments, each name included",
+            in_m!("F(p is Ur<A, Us<C, D>[]> & s is null);"),
+            vec![ty("Ur"), ty("A"), ty("Us"), ty("C"), ty("D")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, the second a tuple whose first element is a generic, each name included",
+            in_m!("F(p is Ga<A, (Sa<Sb>, Sc)> & s is null);"),
+            vec![ty("Ga"), ty("A"), ty("Sb"), ty("Sa"), ty("Sc")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, the second a tuple of three elements, each included",
+            in_m!("F(p is Ga<A, (B, Sb, Sc)> & s is null);"),
+            vec![ty("Ga"), ty("A"), ty("B"), ty("Sb"), ty("Sc")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, the second a generic whose type argument is an array, each name included",
+            in_m!("F(p is Ga<A, Sa<Sb[]>> & s is null);"),
+            vec![ty("Ga"), ty("A"), ty("Sb"), ty("Sa")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, the second an array of a generic nested three deep, each name included",
+            in_m!("F(p is Ga<A, Sa<Sb<Sc<Sd>>>[]> & s is null);"),
+            vec![ty("Ga"), ty("A"), ty("Sc"), ty("Sa"), ty("Sb"), ty("Sd")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, the second an array of a generic whose type argument is a tuple, each name included",
+            in_m!("F(p is Ga<A, Sa<(Sb, Sc)>[]> & s is null);"),
+            vec![ty("Ga"), ty("A"), ty("Sb"), ty("Sa"), ty("Sc")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, the second an array of a generic whose type arguments are a tuple and a name, each included",
+            in_m!("F(p is Ga<A, Sa<(Sb, Sc), Sd>[]> & s is null);"),
+            vec![ty("Ga"), ty("A"), ty("Sa"), ty("Sb"), ty("Sc"), ty("Sd")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, the second an array of a generic whose type arguments are two tuples, each name included",
+            in_m!("F(p is Ga<A, Sa<(Sb, Sc), (Sd, Se)>[]> & s is null);"),
+            vec![ty("Ga"), ty("A"), ty("Sd"), ty("Sa"), ty("Sb"), ty("Sc"), ty("Se")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, the second eight generics' arrays nested, eight comparisons, the bound",
+            in_m!("F(p is Ga<A, Sa<Sb<Sc<Sd<Se<Sf<Sg<Sh<C>[]>[]>[]>[]>[]>[]>[]>[]> & s is null);"),
+            vec![ty("Ga"), ty("A"), ty("Sa"), ty("Sb"), ty("Sc"), ty("Sd"), ty("Se"), ty("Sf"), ty("Sg"), ty("Sh"), ty("C")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, the second nine generics' arrays nested, nine comparisons, past the bound, its two leftmost names none",
+            in_m!("F(p is Ga<A, Sa<Sb<Sc<Sd<Se<Sf<Sg<Sh<Si<C>[]>[]>[]>[]>[]>[]>[]>[]>[]> & s is null);"),
+            vec![ty("Ga"), ty("A"), ty("Sc"), ty("Sd"), ty("Se"), ty("Sf"), ty("Sg"), ty("Sh"), ty("Si"), ty("C")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, the first a generic's array, in a collection expression",
+            in_m!("int[] c = [p is Ya<Yb<C>[], A> & s is null];"),
+            vec![ty("Ya"), ty("Yb"), ty("C"), ty("A")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, the first a generic's array, in an interpolation",
+            in_m!("var t = $\"{p is Yc<Yd<C>[], A> & s is null}\";"),
+            vec![ty("Yc"), ty("Yd"), ty("C"), ty("A")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, the first a generic's array, as an assigned value in a `for` update",
+            in_m!("for (;; i++, b = p is Ye<Yf<C>[], A> & s is null) { }"),
+            vec![ty("Ye"), ty("Yf"), ty("C"), ty("A")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, the second a generic's array, as an assigned value in a `for` initializer",
+            in_m!("for (i = 0, b = p is Zp<A, Zq<C>[]> & s is null;;) { }"),
+            vec![ty("Zp"), ty("A"), ty("Zq"), ty("C")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, the second a generic's array, in an index",
+            in_m!("var e = xs[p is Yk<A, Yl<C>[]> & s is null];"),
+            vec![ty("Yk"), ty("A"), ty("Yl"), ty("C")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, the first a generic's array, in an object creation's argument",
+            in_m!("var k = new K(p is Zg<Zh<C>[], A> & s is null);"),
+            vec![call("K", "K"), ty("Zg"), ty("Zh"), ty("C"), ty("A")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, the second a nested generic's array, in parentheses under `!`",
+            in_m!("var r = !(p is Zi<A, Zj<Zk<C>[]>[]> & s is null);"),
+            vec![ty("Zi"), ty("A"), ty("Zj"), ty("Zk"), ty("C")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, the second a tuple, as an object initializer's assigned value",
+            in_m!("var k = new K { X = p is Zl<A, (C, D)> & s is null };"),
+            vec![call("K", "K"), ty("Zl"), ty("A"), ty("C"), ty("D")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, the first a nested generic's array, in a collection initializer",
+            in_m!("var l = new List<int> { p is Zm<Zn<Zo<C>[]>[], A> & s is null };"),
+            vec![call("List", "List"), ty("Zm"), ty("Zn"), ty("Zo"), ty("C"), ty("A")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, as the right of `and`, the second a generic's array, each name included",
+            in_m!("F(p is Foo and Zd<A, Ze<C>[]> & s is null);"),
+            vec![ty("Foo"), ty("Zd"), ty("A"), ty("Ze"), ty("C")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, as the right of `or`, the first a tuple, each element included",
+            in_m!("F(p is Foo or Zf<(C, D), A> & s is null);"),
+            vec![ty("Foo"), ty("Zf"), ty("C"), ty("D"), ty("A")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, in a lambda's body, the first a tuple, before `&&` and `!=`, each element included",
+            in_m!("F(x => x is Yo<(C, D), A> && x != null);"),
+            vec![ty("Yo"), ty("C"), ty("D"), ty("A")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, as an assigned value, the second a generic, before `&&` and a conditional's `?`, each name included",
+            in_m!("F(b = p is Yp<A, Yq<C>> && ok ? 1 : 0);"),
+            vec![ty("Yp"), ty("A"), ty("C"), ty("Yq")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, the first a tuple whose first element is a generic, before `^`, each name included",
+            in_m!("F(p is Zr<(Zs<C>, D), A> ^ s is null);"),
+            vec![ty("Zr"), ty("C"), ty("Zs"), ty("D"), ty("A")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments split at its comma, the second a nested generic's array, before `&` and then `&&`, each name included",
+            in_m!("F(p is Zt<A, Zu<Zv<C>[]>[]> & s is null && ok);"),
+            vec![ty("Zt"), ty("A"), ty("Zu"), ty("Zv"), ty("C")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments in a declaration pattern in an argument, then an argument comparing by `<`, its operands none",
+            in_m!("F(p is Gen<A, B> c, z < u);"),
+            vec![ty("Gen"), ty("A"), ty("B")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments in a declaration pattern in an argument, then an argument comparing by `<` with a tuple and a third argument, its operands none",
+            in_m!("F(p is Gen<A, B> c, z < (u, v), w);"),
+            vec![ty("Gen"), ty("A"), ty("B")],
+            k_m(),
+        ),
+        (
+            "an identifier compared by `<` after `is` in an argument, then an argument comparing by `<`, its operands none",
+            in_m!("F(p is Gen < A, z < u);"),
+            vec![ty("Gen"), ty("A")],
+            k_m(),
+        ),
+        (
+            "an identifier compared by `<` after `is` in an argument, then an argument comparing by `<` with a tuple, its operands none",
+            in_m!("F(p is Gen < A, z < (u, v));"),
+            vec![ty("Gen"), ty("A")],
+            k_m(),
+        ),
+        (
+            "an identifier compared by `<` after `is` in parentheses, a tuple to the grammar, then an element comparing by `<` with a tuple, its operands none",
+            in_m!("var t = (p is Gen < A, z < (u, v));"),
+            vec![ty("Gen"), ty("A")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments as the left operand of `&&` whose right operand compares by `<` with a tuple, a whole generic to the grammar, its operands none",
+            in_m!("F(p is Gen<A, B> && x < (y, z));"),
+            vec![ty("A"), ty("B"), ty("Gen")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments as the left operand of `&` whose right operand compares by `<` with a tuple, a whole generic to the grammar, its operands none",
+            in_m!("F(p is Gen<A, B> & s < (y, z));"),
+            vec![ty("A"), ty("B"), ty("Gen")],
+            k_m(),
+        ),
+        (
+            "a generic positional pattern after `is` in an argument, then an argument comparing by `>`, comparisons to the grammar, none",
+            in_m!("F(p is Px<A>(0, 0), y > z);"),
+            vec![],
+            k_m(),
+        ),
+        (
+            "a generic's array after `is` in an argument, then an argument comparing by `>`, comparisons to the grammar, none",
+            in_m!("F(p is Py<A>[], y > z);"),
+            vec![],
+            k_m(),
+        ),
+        (
+            "a generic's array after `is`, comparisons to the grammar, none",
+            in_m!("var r = p is Pz<A>[];"),
+            vec![],
+            k_m(),
+        ),
+        (
+            "a generic positional pattern as the left operand of `&&` whose right operand compares by `>`, its type argument only",
+            in_m!("F(p is Pw<A>(0, 0) && y > z);"),
+            vec![ty("A")],
             k_m(),
         ),
         (
