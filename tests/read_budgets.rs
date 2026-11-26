@@ -57,8 +57,14 @@ enum Read {
         shows: &'static [&'static str],
         matches: usize,
     },
-    /// `GET <path>` from the clone's dash.
-    Dash { path: &'static str },
+    /// `GET <path>` from the clone's dash. Its overview folds a cluster (it states no
+    /// `empty_state`), states `grain` as the grain it shows (none under the files lens) and states
+    /// a `tests_hidden` count exactly when `hides_tests`, so the row times the read it names.
+    Dash {
+        path: &'static str,
+        grain: Option<&'static str>,
+        hides_tests: bool,
+    },
 }
 
 /// A read and the budget its median stays strictly under.
@@ -156,18 +162,26 @@ const ROWS: &[Row] = &[
         under: LOOKUP,
     },
     Row {
-        read: Read::Dash { path: "/api/graph" },
+        read: Read::Dash {
+            path: "/api/graph",
+            grain: None,
+            hides_tests: true,
+        },
         under: OVERVIEW,
     },
     Row {
         read: Read::Dash {
             path: "/api/graph?tests=include",
+            grain: None,
+            hides_tests: false,
         },
         under: WIDE_OVERVIEW,
     },
     Row {
         read: Read::Dash {
             path: "/api/graph?lens=code&resolution=2",
+            grain: Some("2"),
+            hides_tests: true,
         },
         under: WIDE_OVERVIEW,
     },
@@ -370,13 +384,20 @@ impl Scratch {
 }
 
 /// One timed `GET path` from the dash at `served`, from the connect to the response's end. The
-/// response must be a `200` whose graph label is `label`.
-fn timed_get(served: &str, path: &str, label: &str) -> Duration {
+/// response must be a `200` whose graph label is `label` and whose overview folds a cluster,
+/// states `grain` and states a hidden-test count exactly when `hides_tests` ([`Read::Dash`]).
+fn timed_get(
+    served: &str,
+    path: &str,
+    label: &str,
+    grain: Option<&str>,
+    hides_tests: bool,
+) -> Duration {
     let start = Instant::now();
     let response =
         http_attempt(served, path).unwrap_or_else(|| panic!("the dash answered nothing to {path}"));
     let took = start.elapsed();
-    let (headers, _) = response
+    let (headers, body) = response
         .split_once("\r\n\r\n")
         .expect("an answered response has a header block");
     assert_eq!(
@@ -388,6 +409,23 @@ fn timed_get(served: &str, path: &str, label: &str) -> Duration {
         header_value(headers, rigger::dash::GRAPH_LABEL_HEADER),
         Some(label),
         "GET {path} must serve the clone's head"
+    );
+    let overview: serde_json::Value = serde_json::from_str(body)
+        .unwrap_or_else(|e| panic!("GET {path} must answer an overview: {e}"));
+    assert_eq!(
+        overview.get("empty_state"),
+        None,
+        "GET {path} must fold a cluster"
+    );
+    assert_eq!(
+        overview["grain"].as_str(),
+        grain,
+        "GET {path} must state the grain it shows"
+    );
+    assert_eq!(
+        overview.get("tests_hidden").is_some(),
+        hides_tests,
+        "GET {path} must state a hidden-test count exactly when it hides tests"
     );
     took
 }
@@ -424,9 +462,13 @@ fn the_read_budgets_hold_on_the_release_binary() {
                 format!("rigger {}", args.join(" ")),
                 median_after_warm_up(|| scratch.timed_cli(args, &label, shows, matches)),
             ),
-            Read::Dash { path } => (
+            Read::Dash {
+                path,
+                grain,
+                hides_tests,
+            } => (
                 format!("GET {path}"),
-                median_after_warm_up(|| timed_get(&served, path, &label)),
+                median_after_warm_up(|| timed_get(&served, path, &label, grain, hides_tests)),
             ),
         };
         let samples: Vec<String> = samples.into_iter().map(ms).collect();
