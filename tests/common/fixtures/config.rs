@@ -140,6 +140,7 @@ pub fn panel_of(lenses: &[&str], adversary: &str, adjudicator: &str) -> ReviewPa
         adjudicator: adjudicator.into(),
         steps: None,
         tiers: None,
+        later_rounds: Default::default(),
     }
 }
 
@@ -547,6 +548,7 @@ pub fn lens_only_panel() -> ReviewPanel {
         adjudicator: "adj".to_string(),
         steps: None,
         tiers: None,
+        later_rounds: Default::default(),
     }
 }
 

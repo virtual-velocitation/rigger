@@ -2451,9 +2451,7 @@ You review a diff for architectural defects ONLY. Quote the rule or doc violated
 Name the SOLID principle for each finding.\n\
 Never re-run a gate the GATE EVIDENCE block in your prompt shows green on the tree under review:\n\
 the gates prove what they ran, and your lens covers what no gate sees.\n\
-Output the REVIEW schema: {verdict, issues:[{title,file_line,reason}]}.\n\
-Mark a finding that records your sign-off (the review complete, no defect raised)\n\
-with `\"sign_off\": true`, so peers rank it with the verdicts; never mark one about the code.\n",
+Output the REVIEW schema: {verdict, issues:[{title,file_line,reason}]}.\n",
     ),
     (
         "sdet.md",
@@ -2470,9 +2468,7 @@ defects ONLY. Output the REVIEW schema: {verdict, issues:[{title,file_line,reaso
 Confirm the unit's first source commit follows a test commit (red before green).\n\
 Never re-run a gate the GATE EVIDENCE block in your prompt shows green on the tree under review:\n\
 reproduce only a specific suspicion (one named test, a reversion probe), in your own\n\
-scratch worktree, never the whole battery.\n\
-Mark a finding that records your sign-off (the review complete, no defect raised)\n\
-with `\"sign_off\": true`, so peers rank it with the verdicts; never mark one about the code.\n",
+scratch worktree, never the whole battery.\n",
     ),
     (
         "sdet-author.md",
@@ -2507,8 +2503,6 @@ AND the diff, trying to PROVE THE LENSES WRONG: hold them to a higher bar, surfa
 the substantive issues they all missed, and refute lens overreach. You review the\n\
 reviews - not a parallel lens - and you do NOT render the final verdict. Default to\n\
 skepticism; cite file:line. Record findings with rigger_emit.\n\
-Mark a finding that records your sign-off (the review complete, no defect raised)\n\
-with `\"sign_off\": true`, so peers rank it with the verdicts; never mark one about the code.\n\
 Never re-run a gate the GATE EVIDENCE block in your prompt shows green on the tree under review:\n\
 verify a behavioral claim by running that one claim, never the battery.\n\
 \n\
@@ -5447,10 +5441,12 @@ mod tests {
     // bounces a bare source grep.
     // =======================================================================================
 
-    /// The reviewing personas, committed and seeded, and only they, tell their reviewer to mark a
-    /// sign-off finding with `"sign_off": true`, the mark the peers ranking reads.
+    /// No agent text rigger ships, the reviewing personas committed and seeded among them, asks
+    /// its reviewer to mark a finding `"sign_off": true`: the round's findings block names each
+    /// member that recorded no finding, so no member owes a sign-off record. The readers of the
+    /// mark stay, so a store whose findings carry it still loads.
     #[test]
-    fn the_reviewing_personas_and_only_they_mark_a_sign_off() {
+    fn no_shipped_persona_asks_for_a_sign_off_mark() {
         let reviewing = ["architecture-reviewer.md", "sdet.md", "adversary.md"];
         let shipped = every_shipped_persona();
         for name in reviewing {
@@ -5460,13 +5456,16 @@ mod tests {
                 "{name} is committed and seeded"
             );
         }
-        for (at, text) in shipped {
-            assert_eq!(
-                text.contains(r#"`"sign_off": true`"#),
-                reviewing.iter().any(|name| at.ends_with(name)),
-                "{at}"
-            );
-        }
+        let marking: Vec<&str> = shipped
+            .iter()
+            .filter(|(_, text)| text.contains(r#""sign_off""#))
+            .map(|(at, _)| at.as_str())
+            .collect();
+        assert_eq!(
+            marking,
+            Vec::<&str>::new(),
+            "no shipped persona asks for a sign-off mark"
+        );
     }
 
     /// `install_operator_mcp` is drift-aware and re-runnable, the same three-state contract
@@ -6003,12 +6002,12 @@ mod tests {
     }
 
     /// Spec 120's THE REVIEWER PROMPT CARRIES ONLY THE CONTRACT, with the review rule: the
-    /// working-discipline body, read through the shipped-text helper, holds the three review
-    /// sentences the reviewer discipline no longer carries and the six sentences of the review
-    /// rule, the two the run notes no longer carry among them, in order, as the whole of its
-    /// `## When you review` section, which sits after the
-    /// hand-over section and before the fan-out one, and the fan-out section's `verify` bullet no
-    /// longer restates the battery rule.
+    /// working-discipline body, read through the shipped-text helper, holds the sentence sending a
+    /// reviewer to the REVIEW PACKET, the three review sentences the reviewer discipline no longer
+    /// carries and the six sentences of the review rule, the two the run notes no longer carry
+    /// among them, in order, as the whole of its `## When you review` section, which sits after
+    /// the hand-over section and before the fan-out one, and the fan-out section's `verify`
+    /// bullet no longer restates the battery rule.
     #[test]
     fn the_working_discipline_body_holds_the_review_method_under_when_you_review() {
         let body = shipped_builtin("working-discipline");
@@ -6432,6 +6431,7 @@ mod tests {
             "cargo test --test boundary_audit",
             "content.sh style",
             "content.sh no-os-kill",
+            "content.sh no-new-event-type",
             "red-before-green.sh",
             "cargo test --tests",
             "--no-default-features -- -D warnings",
@@ -6519,9 +6519,9 @@ mod tests {
         assert_section_belongs_to(HEADING, &["sdet.md"]);
         let flat = rigger::wave::normalize_ws(&committed_persona("sdet.md"));
         for wanted in [
-            "Read the unit's test hunks over its whole range, `git diff $(git merge-base \
-             rigger-run HEAD)..HEAD -- tests crates src`, beside the Done-when criteria the unit \
-             owns.",
+            "Read the unit's test hunks beside the Done-when criteria the unit owns: from the \
+             REVIEW PACKET when your prompt carries one, reading each file it lists under ELIDED \
+             before you judge that file, and from the change under review itself otherwise.",
             "A behaviour a criterion names that no test of the unit drives, or that a test drives \
              without an assertion a wrong change would break, is the missing test the review \
              rule blocks on: name the criterion, the behaviour and the test that would prove it.",
@@ -6554,6 +6554,8 @@ mod tests {
             "mutant-probes",
             "test-shape-audit",
             "ENVIRON[\"b\"]",
+            "git merge-base rigger-run HEAD",
+            "(red before green)",
         ] {
             assert!(
                 !flat.contains(retired),
@@ -6580,7 +6582,8 @@ mod tests {
             "A fact the unit's production delta spells a second time - a constant, list, closure \
              or predicate the tree already states - is a DRY finding raised as a note, citing \
              both spellings' `file:line`: you read the unit's production hunks for it yourself, \
-             and no author record, the hand-over walk included, stands in for that read.",
+             from the REVIEW PACKET when your prompt carries one, and no author record, the \
+             hand-over walk included, stands in for that read.",
         ] {
             assert!(
                 flat.contains(wanted),
@@ -6600,6 +6603,41 @@ mod tests {
                 !flat.contains(retired),
                 "architecture-reviewer.md requires no record and blocks on no one-home line: \
                  {retired:?}"
+            );
+        }
+    }
+
+    /// The adjudicator's Constraints Recheck walks each of the spec's constraints over the change
+    /// under review - the REVIEW PACKET when its prompt carries one - and leaves to their gates the
+    /// mechanical checks the recheck once ran by hand: no em dash is the `style` gate's and no new
+    /// event type the `no-new-event-type` gate's, so the recheck runs no standing item of its own.
+    /// An event type that gate cannot see, a literal or a const of another name, is wrong code the
+    /// adjudicator rejects on its own line.
+    #[test]
+    fn the_adjudicator_rechecks_the_spec_constraints_over_the_packet_and_leaves_the_rest_to_gates()
+    {
+        let flat = rigger::wave::normalize_ws(&committed_persona("adjudicator.md"));
+        for wanted in [
+            "do not re-run what the gates already prove (fmt, clippy, build, test, style, \
+             no-new-event-type).",
+            "For each listed constraint, walk the change under review - the REVIEW PACKET and \
+             each file it lists under ELIDED, when your prompt carries one - and record an \
+             explicit pass or fail",
+            "An event type the `no-new-event-type` gate cannot see - a string literal passed \
+             where an event type goes, or one held in a const not named `TYPE_<NAME>` - is wrong \
+             code whatever the spec says: a REJECT citing its file:line.",
+        ] {
+            assert!(flat.contains(wanted), "adjudicator.md must say {wanted:?}");
+        }
+        for retired in [
+            "standing items",
+            "walk the unit's actual diff",
+            "no em dashes (U+2014) anywhere the diff adds text",
+            "no new event types - metadata is stamped",
+        ] {
+            assert!(
+                !flat.contains(retired),
+                "adjudicator.md still says {retired:?}"
             );
         }
     }

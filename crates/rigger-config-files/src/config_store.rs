@@ -2082,6 +2082,7 @@ agent: worker\n";
                 threshold: 3,
                 high_risk_paths: vec!["src/conductor.rs".into()],
             })),
+            later_rounds: Default::default(),
         };
         assert!(
             cfg.validate().is_ok(),
