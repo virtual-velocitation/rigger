@@ -23,9 +23,9 @@
 use crate::common;
 
 use common::cli::{build_head, rebuilt_graph, repository_code_store, temp_project, BuiltGraph};
-use common::fixtures::{head_honesty, write_files};
+use common::fixtures::write_files;
 use rigger_domain::code_view::{CodeView, Compared, OpenCodeView, Tests, ViewFilter};
-use rigger_domain::composed::{Composed, DocReader, Indexed};
+use rigger_domain::composed::{Composed, Indexed};
 use rigger_domain::contextgraph::ContextGraph;
 use rigger_store::code::WorktreeLines;
 use std::path::Path;
@@ -260,23 +260,15 @@ fn assert_docs(root: &Path, state: &str, differing: usize, column: usize) {
         .expect("the head reads");
     assert_eq!(head.compared, Compared::Overlaid(differing), "{state}");
     let lines = WorktreeLines::new(&head.worktree);
-    let extract = (head.extract.as_deref()).expect("the head carries the store's extractor");
+    assert!(
+        head.extract.is_some(),
+        "the head carries the store's extractor"
+    );
     let records = Indexed::default();
     let filter = ViewFilter {
         tests: Tests::Include,
     };
-    let docs = DocReader {
-        lines: &lines,
-        extract,
-    };
-    let graph = Composed::near(
-        &records,
-        &*head.view,
-        filter,
-        head_honesty(&head),
-        Some(docs),
-    )
-    .expect("the head composes");
+    let graph = Composed::near_head(&records, &head, filter, &lines).expect("the head composes");
     for (id, want) in DOCS {
         let seed = [id.to_string()];
         let node = (graph.subgraph(&seed, 0).expect("the graph reads").nodes)
