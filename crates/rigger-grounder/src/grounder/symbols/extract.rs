@@ -727,9 +727,14 @@ pub fn extract(source: &str, lang: Lang, tags: &CompiledTags) -> Result<FileSymb
     let file_range = 0..source.len();
     let whole = std::slice::from_ref(&file_range);
     let structure = StructuralNodes::of(root, lang, whole);
+    let file_uses: Vec<UseLeaf> = structure
+        .uses
+        .iter()
+        .flat_map(|&decl| use_leaves(decl, bytes))
+        .collect();
     let file_scope = Scope {
-        std_imports: std_imports(&structure.uses, bytes),
-        aliases: use_aliases(&structure.uses, bytes),
+        std_imports: std_imports(&file_uses),
+        aliases: use_aliases(&file_uses, bytes),
         ..Scope::default()
     };
     // Spec 117 (MACRO TOKEN TREES): every macro invocation's token tree, re-parsed, of a Rust
@@ -1592,25 +1597,23 @@ fn kept(keep: &[std::ops::Range<usize>], range: &std::ops::Range<usize>) -> bool
     keep.iter().any(|read| within(range, read))
 }
 
-/// The names the `use` declarations `uses` bind from the standard library
-/// ([`UseLeaf::roots_at_std`]), an alias by its alias name: a file's [`Scope::std_imports`].
-fn std_imports(uses: &[tree_sitter::Node], source: &[u8]) -> Vec<String> {
+/// The names the `use` leaves `uses` bind from the standard library ([`UseLeaf::roots_at_std`]),
+/// an alias by its alias name: a file's [`Scope::std_imports`].
+fn std_imports(uses: &[UseLeaf]) -> Vec<String> {
     uses.iter()
-        .flat_map(|&decl| use_leaves(decl, source))
         .filter(|leaf| leaf.roots_at_std())
-        .map(|leaf| leaf.bound)
+        .map(|leaf| leaf.bound.clone())
         .collect()
 }
 
-/// The aliases the `use` declarations `uses` bind, each with the name it imports (`use a::B as
-/// C` gives `(C, B)`): a file's [`Scope::aliases`], which [`rust_qualifier`] writes an alias
+/// The aliases the `use` leaves `uses` bind, each with the name it imports (`use a::B as C`
+/// gives `(C, B)`): a file's [`Scope::aliases`], which [`rust_qualifier`] writes an alias
 /// qualifier by.
-fn use_aliases(uses: &[tree_sitter::Node], source: &[u8]) -> Vec<(String, String)> {
+fn use_aliases(uses: &[UseLeaf], source: &[u8]) -> Vec<(String, String)> {
     uses.iter()
-        .flat_map(|&decl| use_leaves(decl, source))
         .filter_map(|leaf| {
             let imported = leaf.node.utf8_text(source).ok()?;
-            (leaf.bound != imported).then(|| (leaf.bound, imported.to_string()))
+            (leaf.bound != imported).then(|| (leaf.bound.clone(), imported.to_string()))
         })
         .collect()
 }
@@ -1775,11 +1778,6 @@ impl UseLeaf<'_> {
 /// token tree stages what its re-parse reads ([`reparse_invocations`]), and no name [`excluded`]
 /// under `scope` stages, save a variant, which its qualifier and root alone exclude.
 fn rust_references(structure: &StructuralNodes, source: &[u8], scope: &Scope) -> Vec<TaggedRef> {
-    let uses: Vec<UseLeaf> = structure
-        .uses
-        .iter()
-        .flat_map(|&decl| use_leaves(decl, source))
-        .collect();
     // Each impl header's trait, when it has one, then its self type, by its base name, with the
     // impl's range: the impl loop stages them and the type pass skips them.
     let header_leaves: Vec<(tree_sitter::Node, std::ops::Range<usize>)> = structure
@@ -1823,10 +1821,7 @@ fn rust_references(structure: &StructuralNodes, source: &[u8], scope: &Scope) ->
     for &node in &structure.references {
         match node.kind() {
             "use_declaration" => {
-                let leaves = uses
-                    .iter()
-                    .filter(|u| node.byte_range().contains(&u.node.start_byte()));
-                for leaf in leaves {
+                for leaf in use_leaves(node, source) {
                     if !leaf.roots_at_std() {
                         stage(
                             leaf.node,
