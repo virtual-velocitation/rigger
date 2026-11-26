@@ -8,10 +8,11 @@
 //! planner's `complexity` and `complexity_reason` reach the log through the real record courier
 //! exactly as the planner wrote them, a refused pair included; that the step and reason the run
 //! takes are the ones its gate's adjudicator is served, round by round, across the re-plan a reject
-//! drives; that a refused pair's `unassessed-complexity` record lands on the on-disk log once,
-//! under its replay key, over every harvest the run makes; and that a second `rigger run` over the
-//! same store, which re-enters the run with the widget integrated, records it no more and takes
-//! nothing from a proposal logged after the widget started.
+//! drives; that the re-plan's task opens with the reject and the sentence asking for every unit
+//! again with its step and reason; that a refused pair's `unassessed-complexity` record lands on
+//! the on-disk log once, under its replay key, over every harvest the run makes; and that a second
+//! `rigger run` over the same store, which re-enters the run with the widget integrated, records it
+//! no more and records nothing for a refused proposal logged after the widget started.
 //!
 //! Every run is minted through `run_store::start_fresh` on [`WIDGET_SPEC`]'s one criterion and
 //! adopted by a `rigger run` naming that spec, so the planner's widget unit, which supersedes the
@@ -26,8 +27,8 @@ use common::cli::{
 };
 use common::fixtures::{
     critique_reject, dag_complexity, dag_critique_prompt, dag_re_review_prompt, pair_of,
-    served_task, unassessed_complexity_record, unknown_step, DAG_DISJOINT_OVERLAP, DAG_UNASSESSED,
-    WIDGET_CRITERION, WIDGET_SPEC, WIDGET_UNIT,
+    served_task, unassessed_complexity_record, unknown_step, DAG_DISJOINT_OVERLAP,
+    DAG_NONE_GROUNDED, DAG_UNASSESSED, REPLAN_REVISE, WIDGET_CRITERION, WIDGET_SPEC, WIDGET_UNIT,
 };
 use rigger::conductor::{META_REPLAY_KEY, META_SPAWN, TYPE_UNIT_PROPOSED};
 use rigger::config::Complexity;
@@ -53,9 +54,6 @@ const PLANNERS: [&str; 2] = ["plan/implementer#0", "plan/replan#1"];
 /// The spawn that records a proposal after the widget started, between the two runs.
 const LATE_PLANNER: &str = "plan/replan#2";
 
-/// The blast radius a unit of a project with no grounded source lists.
-const NONE_GROUNDED: &str = "(none grounded)";
-
 /// The line `rigger run` ends its run state with when every unit is integrated.
 const DONE: &str = "done: every unit integrated";
 
@@ -76,11 +74,19 @@ fn adjudicator_task(complexity: &str, reject: Option<&str>) -> String {
             WIDGET_CRITERION,
             "plan-critique",
             complexity,
-            NONE_GROUNDED,
+            DAG_NONE_GROUNDED,
         ]],
         DAG_DISJOINT_OVERLAP,
     );
     framed(&reject.map_or(dag.clone(), |reject| dag_re_review_prompt(reject, &dag)))
+}
+
+/// The lead a re-plan's task opens with after the reject line `reject`: the reject quoted, then
+/// [`REPLAN_REVISE`].
+fn re_plan_lead(reject: &str) -> String {
+    format!(
+        "The plan-critique gate REJECTED your previous decomposition:\n{reject}\n\n{REPLAN_REVISE}"
+    )
 }
 
 /// Each `UnitProposed` of `events` as the spawn that recorded it and its payload, in log order.
@@ -136,8 +142,9 @@ struct Row {
 /// Given a planner proposing the widget with the row's first pair and, after the gate's reject,
 /// its re-plan proposing it again with the second, when `rigger run` drives the gate to its
 /// approve and the widget to done, then each proposal is on the log as the planner wrote it, each
-/// round's adjudicator is served the widget's step and reason the run took (or `unassessed`), and
-/// the run's decisions are one `unassessed-complexity` record per refused proposal, keyed on its
+/// round's adjudicator is served the widget's step and reason the run took (or `unassessed`), the
+/// re-plan's task opens with the reject and asks for every unit with its step and reason, and the
+/// run's decisions are one `unassessed-complexity` record per refused proposal, keyed on its
 /// log position. When a later proposal with a refused pair is recorded after the widget started
 /// and a second `rigger run` re-enters the same run, it records nothing more.
 #[test]
@@ -230,6 +237,8 @@ fn a_planners_step_and_reason_reach_the_critique_and_a_refused_pair_is_recorded_
         let events = read_run_events(root);
         let run = current_run_id_of(root);
         let positions = PLANNERS.map(|spawn| proposed_at(&events, spawn));
+        let lead = re_plan_lead(&reject);
+        let re_plan_task = served_task(&launches, PLANNERS[1]);
         let records: Vec<(Option<String>, Value)> = row
             .refused
             .iter()
@@ -251,6 +260,7 @@ fn a_planners_step_and_reason_reach_the_critique_and_a_refused_pair_is_recorded_
                     served_task(&launches, "plan-critique/adjudicator#0"),
                     served_task(&launches, "plan-critique/adjudicator#1"),
                 ],
+                re_plan_task.get(..lead.len()),
                 decisions_on_record(&events),
             ),
             (
@@ -264,11 +274,13 @@ fn a_planners_step_and_reason_reach_the_critique_and_a_refused_pair_is_recorded_
                     adjudicator_task(&row.cells[0], None),
                     adjudicator_task(&row.cells[1], Some(&reject)),
                 ],
+                Some(lead.as_str()),
                 records.clone(),
             ),
             "{given}: the run ends done, each proposal is on the log as the planner wrote it, each \
-             round's adjudicator is served the widget's step and reason, and each refused pair is \
-             recorded once; stdout:\n{out}\nstderr:\n{err}"
+             round's adjudicator is served the widget's step and reason, the re-plan's task opens \
+             with the reject and asks for every unit with its step and reason, and each refused \
+             pair is recorded once; stdout:\n{out}\nstderr:\n{err}"
         );
 
         propose_unit_via_rigger_emit(root, LATE_PLANNER, &late);
