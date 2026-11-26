@@ -5585,9 +5585,10 @@ impl Local for Vec<u8> {
     /// (`.map(Store::open)`), and a bare identifier passed as a call's argument
     /// (`.map(entity_block)`) that starts lowercase, that no exclusion holds and that no binding
     /// in scope binds. A parameter, a `let`, an `if let`, a `while let` and each let of a let chain
-    /// after its own value, a match arm (in its guard too, the guard's own names binding nothing),
-    /// a `for` and a closure parameter bind, through every pattern a binding writes; a call's head
-    /// stages once, and in a token tree the scope is the invocation's.
+    /// after its own value (never in an `if`'s else, an else if's condition included), a match arm
+    /// (in its guard too, the guard's own names binding nothing), a `for` and a closure parameter
+    /// bind, through every pattern a binding writes; a call's head stages once, and in a token
+    /// tree the scope is the invocation's.
     #[test]
     fn rust_stages_function_values() {
         let cases = [
@@ -5715,6 +5716,24 @@ fn u() {
 4 ref call g u
 4 ref call h u
 5 ref call w u",
+            ),
+            (
+                "an if let binds nothing in its else",
+                "fn t() {\n    if let Some(x) = g() {} else {\n        k(x);\n    }\n}\n",
+                "\
+1 def Function t to 5
+2 ref call g t
+3 ref call k t
+3 ref call x t",
+            ),
+            (
+                "an if let binds nothing in an else if's condition",
+                "fn t() {\n    if let Some(x) = a() {} else if let Some(y) = b(x) {}\n}\n",
+                "\
+1 def Function t to 3
+2 ref call a t
+2 ref call b t
+2 ref call x t",
             ),
             (
                 "a match arm's pattern binds in its guard, the guard's own names binding nothing",
