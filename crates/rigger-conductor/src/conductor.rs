@@ -16017,7 +16017,7 @@ fn write_peers_pointer(b: &mut String) {
 /// term at once from the graph, a live scan of the spawn's own working tree and the project's
 /// ranked prose, and leads as the one call most lookups need; `rigger graph --around`
 /// answers STRUCTURE (who-calls-X and the caller/callee neighborhood), `rigger graph --show`
-/// answers TEXT (an entity's definition site and its body), and `rigger peers` answers MEMORY (the
+/// answers TEXT (an entity's definition site, doc, referrers and body), and `rigger peers` answers MEMORY (the
 /// prior decisions, findings, and lessons about the files). It names the tools and one worked
 /// example each of the two commonest questions, who calls a name and where it is defined, with a
 /// `<name>` placeholder so it names no language; the lookup method - the graph before grep, and
