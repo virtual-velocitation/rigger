@@ -35023,6 +35023,7 @@ stage "implement" adjudicator "adj" failed
             let store = Store::open(":memory:").unwrap();
             let deps = Deps {
                 repo: repo.path().to_str().unwrap().to_string(),
+                run_branch: branch_of(repo.path().to_str().unwrap()),
                 ..stub_deps(&store, &driver, Vec::new())
             };
             let rs = run_isolated(&cfg, &deps).unwrap();
@@ -35557,6 +35558,7 @@ stage "implement" adjudicator "adj" failed
                 );
             }
             let deps = Deps {
+                run_branch: branch_of(&repo_path),
                 repo: repo_path,
                 ..stub_deps(&st, &driver, Vec::new())
             };
@@ -39165,6 +39167,7 @@ stage "implement" adjudicator "adj" failed
             };
             let deps = Deps {
                 repo: repo_path.clone(),
+                run_branch: branch_of(&repo_path),
                 ..stub_deps(&st, &driver, vec![criterion.to_string()])
             };
             let rs = run_isolated(&cfg, &deps).unwrap();
