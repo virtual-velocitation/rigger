@@ -22401,6 +22401,37 @@ mod tests {
             (Some(Complexity::Involved), STEP_REASON),
             &[(1, unknown_step("trivial"))],
         );
+        a_refine_with_no_text_and_a_valid_pair_replaces_the_earlier_pair: assert_planner_records_complexity(
+            &[
+                Logged::Proposed(Cites::A, pair_of(Complexity::Routine, STEP_REASON)),
+                Logged::Proposed(
+                    Cites::A,
+                    json!({
+                        "criterion": "",
+                        "criterion_id": "",
+                        "complexity": Complexity::Hard.name(),
+                        "complexity_reason": LATER_REASON,
+                    }),
+                ),
+            ],
+            (Some(Complexity::Hard), LATER_REASON),
+            &[],
+        );
+        a_refine_with_no_text_and_a_refused_pair_keeps_the_earlier_pair_and_records_it: assert_planner_records_complexity(
+            &[
+                Logged::Proposed(Cites::A, pair_of(Complexity::Routine, STEP_REASON)),
+                Logged::Proposed(
+                    Cites::A,
+                    json!({
+                        "criterion": "",
+                        "criterion_id": "",
+                        "complexity": Complexity::Hard.name(),
+                    }),
+                ),
+            ],
+            (Some(Complexity::Routine), STEP_REASON),
+            &[(1, "a step with no reason".to_string())],
+        );
         a_refine_after_the_units_first_start_is_not_read: assert_planner_records_complexity(
             &[
                 Logged::Proposed(Cites::A, pair_of(Complexity::Routine, STEP_REASON)),
