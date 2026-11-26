@@ -17988,8 +17988,9 @@ mod tests {
     };
     use crate::test_support::{
         critique_reject, dag_complexity, dag_critique_prompt, dag_critique_verdict_paragraph,
-        keyed_index, keyed_payload, payloads_of_type, plan_protocol_text, policy_counts, run_log,
-        spec_defect_halt_text, stop_records, the_stop_records, wave_lessons, DAG_DISJOINT_OVERLAP,
+        keyed_index, keyed_payload, pair_of, payloads_of_type, plan_protocol_text, policy_counts,
+        run_log, spec_defect_halt_text, stop_records, the_stop_records,
+        unassessed_complexity_record, unknown_step, wave_lessons, DAG_DISJOINT_OVERLAP,
         DAG_PRIOR_REJECT_HEADER, DAG_UNASSESSED, STOP_ESCALATED_KEY, STOP_LESSON_KEY,
         STOP_SPEC_DEFECT_KEY, WIDGET_CRITERION,
     };
@@ -22258,17 +22259,6 @@ mod tests {
         Started(&'static str),
     }
 
-    /// The `complexity` and `complexity_reason` fields of a proposal at `step` for `reason`.
-    fn pair_of(step: Complexity, reason: &str) -> Value {
-        json!({"complexity": step.name(), "complexity_reason": reason})
-    }
-
-    /// What a refused proposal carries when its step is the word `word`, none of the steps.
-    fn unknown_step(word: &str) -> String {
-        let steps: Vec<&str> = Complexity::ALL.iter().map(|step| step.name()).collect();
-        format!("the step {word:?}, which is none of {}", steps.join(", "))
-    }
-
     const STEP_REASON: &str = "the alpha parser is one pure function over a fixed grammar";
     const LATER_REASON: &str = "the alpha error type threads through every caller of the module";
 
@@ -22325,15 +22315,7 @@ mod tests {
             let want_records: Vec<Value> = refused
                 .iter()
                 .map(|(index, what)| {
-                    let position = logged[*index].position;
-                    json!({
-                        "id": format!("unassessed-complexity:u-a#{position}"),
-                        "summary": format!(
-                            "unassessed-complexity: proposed unit u-a carries {what}, so its \
-                             step and reason are not taken"
-                        ),
-                        "governs": [],
-                    })
+                    unassessed_complexity_record("u-a", logged[*index].position, what)
                 })
                 .collect();
             let records = || {

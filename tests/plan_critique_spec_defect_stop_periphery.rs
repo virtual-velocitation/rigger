@@ -36,7 +36,7 @@ use common::cli::{
 use common::fixtures::{
     critique_reject, dag_critique_verdict_paragraph, keyed_index, keyed_payload, served_task,
     spec_defect_halt_text, stop_records, the_stop_records, STOP_ESCALATED_KEY, STOP_LESSON_KEY,
-    STOP_SPEC_DEFECT_KEY, WIDGET_CRITERION,
+    STOP_SPEC_DEFECT_KEY, WIDGET_CRITERION, WIDGET_SPEC,
 };
 use rigger::conductor::STREAM;
 use rigger::eventstore::{Event, ExpectedRevision};
@@ -49,11 +49,6 @@ const SPEC: &str = "./specs/widget.md";
 
 /// The spec an earlier run in the same store was launched with.
 const EARLIER_SPEC: &str = "specs/old.md";
-
-/// [`SPEC`]'s text as a run is launched on it: a Design sentence and its one criterion,
-/// [`WIDGET_CRITERION`], which the planner's unit ([`widget_unit`]) covers.
-const ORIGINAL_SPEC: &str = "# Widget\n\n## Design\n\nThe renderer draws widgets.\n\n\
-                             ## Done when\n\n- [ ] the widget renderer is implemented\n";
 
 /// [`SPEC`]'s text as the operator amends it after the stop: a Design sentence closing the
 /// defect, and [`WIDGET_CRITERION`].
@@ -138,7 +133,7 @@ fn requested(events: &[Event]) -> Vec<String> {
         .collect()
 }
 
-/// A project holding [`ORIGINAL_SPEC`] at [`SPEC`] whose latest run, launched on [`SPEC`] after
+/// A project holding [`WIDGET_SPEC`] at [`SPEC`] whose latest run, launched on [`SPEC`] after
 /// one on [`EARLIER_SPEC`], both on `criteria`, one `rigger run` drives through two critique
 /// rounds: a `spec-ambiguity` reject, the re-plan it drives, and `second`, the round-1 reject
 /// line, the second re-plan failing should the gate ask for one. Asserts on the way that the
@@ -150,7 +145,7 @@ fn driven_through_a_second_reject_on(
     let dir = critique_project();
     let root = dir.path();
     std::fs::create_dir_all(root.join("specs")).unwrap();
-    std::fs::write(root.join(SPEC), ORIGINAL_SPEC).unwrap();
+    std::fs::write(root.join(SPEC), WIDGET_SPEC).unwrap();
     launch(root, &[EARLIER_SPEC, SPEC], criteria);
     let ran = run(root, &critique_arm(&[&spec_ambiguity_first(), second], 1));
     assert!(

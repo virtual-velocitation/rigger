@@ -2884,6 +2884,17 @@ pub fn run_on_arms(
     (out, err, ok, fakebin)
 }
 
+/// The lines of a `rigger run`'s stdout that say how it ended: its run state, then any halt.
+pub fn how_the_run_ended(out: &str) -> Vec<&str> {
+    out.lines()
+        .filter(|line| {
+            ["done: ", "incomplete: ", "halted: "]
+                .iter()
+                .any(|end| line.starts_with(end))
+        })
+        .collect()
+}
+
 /// What an author session answers once its work is done, as the stand-in `claude` prints it:
 /// `answer`, then the handover line the author handover contract asks its final message to end
 /// with.

@@ -16,6 +16,11 @@ pub const WIDGET_UNIT: &str = "u-widget";
 /// The criterion [`WIDGET_UNIT`] serves, which the plan-critique fixtures plan against.
 pub const WIDGET_CRITERION: &str = "the widget renderer is implemented";
 
+/// A widget spec's text as a run is launched on it: a Design sentence and its one criterion,
+/// [`WIDGET_CRITERION`], which the planner's unit covers.
+pub const WIDGET_SPEC: &str = "# Widget\n\n## Design\n\nThe renderer draws widgets.\n\n\
+                               ## Done when\n\n- [ ] the widget renderer is implemented\n";
+
 /// The planning policy, in order: the sentences telling the planner how to plan, which the
 /// planner persona and its scaffold seed state and the plan protocol never does.
 pub const PLANNING_POLICY: [&str; 6] = [
@@ -110,6 +115,30 @@ pub const DAG_UNASSESSED: &str = "unassessed";
 /// and the reason quoted, escaped as its `Debug` form prints it.
 pub fn dag_complexity(step: Complexity, reason: &str) -> String {
     format!("{} ({reason:?})", step.name())
+}
+
+/// The `complexity` and `complexity_reason` fields of a proposal at `step` for `reason`.
+pub fn pair_of(step: Complexity, reason: &str) -> serde_json::Value {
+    serde_json::json!({"complexity": step.name(), "complexity_reason": reason})
+}
+
+/// What a refused proposal carries when its step is the word `word`, none of the steps.
+pub fn unknown_step(word: &str) -> String {
+    let steps: Vec<&str> = Complexity::ALL.iter().map(|step| step.name()).collect();
+    format!("the step {word:?}, which is none of {}", steps.join(", "))
+}
+
+/// The `DecisionMade` the conductor records when the proposal of `unit` at log `position` carries
+/// `what` in place of a step and a reason.
+pub fn unassessed_complexity_record(unit: &str, position: u64, what: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": format!("unassessed-complexity:{unit}#{position}"),
+        "summary": format!(
+            "unassessed-complexity: proposed unit {unit} carries {what}, so its step and reason \
+             are not taken"
+        ),
+        "governs": [],
+    })
 }
 
 /// The whole DAG critique prompt of a round no reject precedes: its opener, one line per `[id,

@@ -48,8 +48,9 @@ use common::cli::{
 };
 use common::cli::{escalate_solo_unit, REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW};
 use common::cli::{
-    fake_claude_env, install_fake_claude, plant_stale_stream, run_on_arms, run_on_arms_beside,
-    run_on_arms_beside_with, run_recording, POLLS_BESIDE_A_RUN, RECORDING_WORKER_ARM,
+    fake_claude_env, how_the_run_ended, install_fake_claude, plant_stale_stream, run_on_arms,
+    run_on_arms_beside, run_on_arms_beside_with, run_recording, POLLS_BESIDE_A_RUN,
+    RECORDING_WORKER_ARM,
 };
 use common::fixtures::file_len;
 use common::fixtures::{
@@ -12642,17 +12643,6 @@ stages:
       adjudicator: judge
 "#,
 };
-
-/// The lines of a `rigger run`'s stdout that say how it ended: its run state, then any halt.
-fn how_the_run_ended(out: &str) -> Vec<&str> {
-    out.lines()
-        .filter(|line| {
-            ["done: ", "incomplete: ", "halted: "]
-                .iter()
-                .any(|end| line.starts_with(end))
-        })
-        .collect()
-}
 
 /// Spec 105's RESUME BY SESSION across two `rigger run`s: given a reviewed unit whose run the
 /// operator interrupted while its adjudicator was live, once its implementer and its lens had
