@@ -853,21 +853,16 @@ impl<'v> Resolver<'v> {
     /// 117, READERS), and whether it gave them no single edge: those its own rule's candidates
     /// hold, or the one it settles. A call lists under the definition its edge lands on
     /// ([`Self::call_edge`]), else under the candidates the placeholder it lands on keeps in its
-    /// pool ([`Self::down_hop`]), no single edge when it keeps several, and under none when the
+    /// pool ([`Self::reached`]), no single edge when it keeps several, and under none when the
     /// call rule makes it no link. A tagged reference lists under the one candidate its rule
     /// takes, else, no single edge, under those it took none from ([`Self::tagged`]).
     fn listed(&self, facts: &FileFacts, m: &Mention, test: bool) -> (Vec<String>, bool) {
         let pool = Pool::of(test);
         let MentionKind::Tagged(tag) = &m.kind else {
             let edge = self.call_edge(&facts.path, &facts.lang, &m.name, &m.leaf, test);
-            return match edge.map(|(to, _)| (self.down_hop(&to, pool), to)) {
-                None => (Vec::new(), false),
-                Some((None, to)) => (vec![to], false),
-                Some((Some(hop), _)) => {
-                    let several = matches!(hop, Hop::Frontier(_));
-                    (hop.into_vec().into_iter().map(|c| c.id).collect(), several)
-                }
-            };
+            let reached = edge.map_or(Hop::Terminal, |(to, _)| self.reached(&to, pool));
+            let several = matches!(reached, Hop::Frontier(_));
+            return (reached.into_vec(), several);
         };
         let candidates = self.candidates(&m.leaf);
         match self.tagged(facts, m, tag, pool, &candidates) {
@@ -1416,6 +1411,15 @@ impl<'v> Resolver<'v> {
         })
     }
 
+    /// The ids a call edge landing on `to` reaches in `pool`: `to` itself when it is a
+    /// definition, else the candidates its placeholder keeps there ([`Self::down_hop`]).
+    fn reached(&self, to: &str, pool: Pool) -> Hop<String> {
+        match self.down_hop(to, pool) {
+            None => Hop::One(to.to_string()),
+            Some(h) => hop(h.into_vec().into_iter().map(|c| c.id).collect()),
+        }
+    }
+
     /// The up-hop of the definition `id` named `leaf`: every call and reference edge that lands
     /// on it, or on a placeholder whose candidates hold it; test edges only for [`Pool::All`].
     pub fn callers(&self, id: &str, leaf: &str, pool: Pool) -> Vec<Link> {
@@ -1426,8 +1430,9 @@ impl<'v> Resolver<'v> {
             .collect();
         let reaches = |l: &Link| {
             l.to == id
-                || (self.down_hop(&l.to, Pool::of(l.test)))
-                    .is_some_and(|h| h.into_vec().iter().any(|c| c.id == id))
+                || (self.reached(&l.to, Pool::of(l.test)).into_vec())
+                    .iter()
+                    .any(|to| to == id)
         };
         files
             .into_iter()
