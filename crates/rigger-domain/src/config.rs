@@ -215,8 +215,43 @@ pub struct AgentDef {
     /// authority [`without_advisor`](Self::without_advisor).
     #[serde(default)]
     pub advisor: Option<bool>,
+    /// The kind of work this persona does, its frontmatter's `work:`; `None` when it declares
+    /// none or a null value. Set by [`parse_agent`], which refuses any other value, naming the
+    /// persona and the three kinds.
+    #[serde(skip)]
+    pub work: Option<Work>,
+    /// The host effort this persona pins, its frontmatter's `effort:`: an opaque host string kept
+    /// as written, never interpreted. Empty (the default) pins none.
+    #[serde(default)]
+    pub effort: String,
     #[serde(skip)]
     pub prompt: String,
+}
+
+/// The kind of work a persona does, declared by its frontmatter's `work:` with the kind's
+/// [`name`](Self::name).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Work {
+    /// Decides whether work is right: a planner, reviewer, adversary, adjudicator or evaluator.
+    Judging,
+    /// Changes the tree: an implementer, test author or scribe.
+    Writing,
+    /// Gathers and reports without deciding.
+    Reading,
+}
+
+impl Work {
+    /// Every kind, in the order a refusal lists them.
+    pub const ALL: [Work; 3] = [Work::Judging, Work::Writing, Work::Reading];
+
+    /// The word a persona's `work:` declares this kind with.
+    pub fn name(self) -> &'static str {
+        match self {
+            Work::Judging => "judging",
+            Work::Writing => "writing",
+            Work::Reading => "reading",
+        }
+    }
 }
 
 /// Gate is a verification command plus how much it is trusted.
@@ -1423,14 +1458,40 @@ pub fn index_agents(
 }
 
 /// ParseAgent parses a markdown-with-YAML-frontmatter agent definition: the
-/// frontmatter is the agent's fields, the body is its prompt.
+/// frontmatter is the agent's fields, the body is its prompt. Its `work:` key is read after the
+/// rest, so a value that is none of [`Work`]'s names is refused naming the agent's id wherever the
+/// key sits; an absent or null `work:` declares none.
 pub fn parse_agent(b: &[u8]) -> Result<AgentDef, Error> {
     let s = std::str::from_utf8(b).map_err(|e| err(e.to_string()))?;
     let (front, body) = split_frontmatter(s)?;
-    let mut a: AgentDef =
-        parse_yaml_naming_unknown_keys(front).map_err(|msg| err(format!("frontmatter: {msg}")))?;
+    let frontmatter = |msg| err(format!("frontmatter: {msg}"));
+    let mut a: AgentDef = parse_yaml_naming_unknown_keys(front).map_err(frontmatter)?;
+    let key: WorkKey = parse_yaml_naming_unknown_keys(front).map_err(frontmatter)?;
+    a.work = key
+        .work
+        .map(|value| {
+            Work::ALL
+                .into_iter()
+                .find(|w| value.as_str() == Some(w.name()))
+                .ok_or_else(|| {
+                    let names: Vec<_> = Work::ALL.into_iter().map(Work::name).collect();
+                    err(format!(
+                        "agent {:?}: work must be one of {}",
+                        a.id,
+                        names.join(", ")
+                    ))
+                })
+        })
+        .transpose()?;
     a.prompt = body.trim().to_string();
     Ok(a)
+}
+
+/// The `work:` key of an agent's frontmatter as written, which [`parse_agent`] reads apart from
+/// the [`AgentDef`] fields so a refusal of its value can name the agent's id.
+#[derive(Deserialize)]
+struct WorkKey {
+    work: Option<serde_yaml::Value>,
 }
 
 /// Split a markdown-with-YAML-frontmatter document into `(frontmatter, body)`: the text
