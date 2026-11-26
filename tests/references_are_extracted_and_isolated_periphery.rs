@@ -38,7 +38,8 @@
 //!    at all, and each stored call lands where its name reaches - nowhere for a qualifier naming no
 //!    type of the tree, and the trait's own `file` over its same-file namesake; and a fn passed by
 //!    name in an `if let`'s scrutinee, `g(x)`, is a call of `x` though the pattern `Some(x)` binds
-//!    `x` in the body;
+//!    `x` in the body, as is one passed in its else or in its else if's condition, `h(x)`, where
+//!    the pattern binds nothing;
 //!  - Rust stages its field uses: `opts.system_prompt = x`, `SpawnOpts { system_prompt }` and
 //!    `self.root` inside `impl Store` are stored as the `field` mentions `system_prompt`,
 //!    `SpawnOpts::system_prompt` and `Store.root`, and `opts.run()` as a call alone; the
@@ -689,12 +690,12 @@ fn stored_mentions(graph: &common::cli::BuiltGraph, file: &str) -> Option<Vec<(S
 /// REFERENCES), one module-prefixed turbofish, whose type the rule reads by its final segment, and
 /// one per shape AN EXCLUDED QUALIFIER STAGES NOTHING names - a standard-library import's
 /// qualifier, in a call and in a macro's token tree, and an alias qualifier - and one `if let`
-/// whose pattern binds the name of a fn its scrutinee passes by name (RUST STAGES FUNCTION
-/// VALUES), each `(what it shows, source, its stored mentions as (name as written, leaf), the
-/// calls it lands as (caller, callee), and the `impl` mentions it lands as (impl, self type)
-/// `REFERENCES` edges, each by id path and `extracted`)`. An impl header stages an `impl` mention
-/// of its self type (spec 117, RUST TAGS IMPL HEADERS), so `impl Store` referencing `Store` is a
-/// row's landing too.
+/// whose pattern binds the name of a fn its scrutinee passes by name, one whose else passes it
+/// and one whose else if's condition passes it (RUST STAGES FUNCTION VALUES), each `(what it
+/// shows, source, its stored mentions as (name as written, leaf), the calls it lands as (caller,
+/// callee), and the `impl` mentions it lands as (impl, self type) `REFERENCES` edges, each by id
+/// path and `extracted`)`. An impl header stages an `impl` mention of its self type (spec 117,
+/// RUST TAGS IMPL HEADERS), so `impl Store` referencing `Store` is a row's landing too.
 #[cfg(feature = "symbols")]
 type RustQualifiedCall = (
     &'static str,
@@ -706,7 +707,7 @@ type RustQualifiedCall = (
 
 /// The rows of [`graph_build_names_a_rust_call_by_the_qualifier_rust_writes`].
 #[cfg(feature = "symbols")]
-const RUST_QUALIFIED_CALLS: [RustQualifiedCall; 10] = [
+const RUST_QUALIFIED_CALLS: [RustQualifiedCall; 12] = [
     (
         "`Store::open()`, its uppercase segment naming no type of the tree, makes no link",
         "fn open() {}\nfn main() { Store::open(); }\n",
@@ -786,6 +787,23 @@ const RUST_QUALIFIED_CALLS: [RustQualifiedCall; 10] = [
         &[("u", "g"), ("u", "k"), ("u", "x")],
         &[],
     ),
+    (
+        "`if let Some(x) = g() { k(x); } else { k(x); }` stores its else's `x`, which the pattern \
+         does not bind there, landing on the fn `x`, and not its consequence's, which it binds",
+        "fn x() {}\nfn g() {}\nfn k() {}\nfn u() { if let Some(x) = g() { k(x); } else { k(x); } }\n",
+        &[("g", "g"), ("k", "k"), ("k", "k"), ("x", "x")],
+        &[("u", "g"), ("u", "k"), ("u", "x")],
+        &[],
+    ),
+    (
+        "`if let Some(x) = g() {} else if let Some(y) = h(x) { k(y); }` stores its else if's \
+         condition's `x`, which the first pattern does not bind there, landing on the fn `x`, and \
+         not the `y` its own pattern binds",
+        "fn x() {}\nfn y() {}\nfn g() {}\nfn h() {}\nfn k() {}\nfn u() { if let Some(x) = g() {} else if let Some(y) = h(x) { k(y); } }\n",
+        &[("g", "g"), ("h", "h"), ("k", "k"), ("x", "x")],
+        &[("u", "g"), ("u", "h"), ("u", "k"), ("u", "x")],
+        &[],
+    ),
 ];
 
 /// GIVEN a project whose one Rust file `f.rs` makes a call in a shape RUST WRITES THE QUALIFIER
@@ -806,7 +824,10 @@ const RUST_QUALIFIED_CALLS: [RustQualifiedCall; 10] = [
 /// each other name - the macro's own `check` among them - which `paths::module_dir`, its
 /// qualifier naming no type, would not reach. Under `if let Some(x) = g(x) { k(x); }` the
 /// scrutinee's `x`, a fn passed by name where the pattern binds nothing yet, is stored and lands
-/// on the fn `x`, while the body's `x`, which the pattern binds, is not stored.
+/// on the fn `x`, while the body's `x`, which the pattern binds, is not stored. The pattern binds
+/// nothing in its `if`'s else, an else if's condition included, so the `x` of
+/// `else { k(x); }` and of `else if let Some(y) = h(x)` is stored and lands on the fn `x`, while
+/// the consequence's `x` and the else if's own `y` are not stored.
 #[cfg(feature = "symbols")]
 #[test]
 fn graph_build_names_a_rust_call_by_the_qualifier_rust_writes() {
