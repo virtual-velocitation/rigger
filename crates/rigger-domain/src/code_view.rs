@@ -257,7 +257,7 @@ pub trait Settled: Sync {
     /// The proof calls `of` selects, in proof order ([`crate::resolve::Resolver::proof_calls`]).
     fn proofs(&self, of: Proofs<'_>) -> Vec<ProofCall>;
     /// The code half settled whole, when the store settled it: what
-    /// [`crate::composed::Indexed::resolved`] reads under the default filter, the view's groupings
+    /// [`crate::composed::Indexed::resolved`] reads under [`SETTLED_FILTER`], the view's groupings
     /// joined on. None by default, so a reader resolves the half from the facts; a view answering
     /// other facts or other groupings than the store settled offers none.
     fn half(&self) -> Option<&dyn SettledHalf> {
@@ -265,7 +265,13 @@ pub trait Settled: Sync {
     }
 }
 
-/// The code half a store settles whole, under the default filter with the view's groupings
+/// The filter a store settles the code half under ([`SettledHalf`]) and the one alone a read
+/// takes the settled half under: the default, test code hidden.
+pub const SETTLED_FILTER: ViewFilter = ViewFilter {
+    tests: Tests::Exclude,
+};
+
+/// The code half a store settles whole, under [`SETTLED_FILTER`] with the view's groupings
 /// joined on: each read is what [`crate::composed::Indexed::resolved`] answers through
 /// [`crate::contextgraph::Neighbors`].
 pub trait SettledHalf: Sync {
@@ -789,6 +795,11 @@ mod tests {
     #[test]
     fn view_filter_defaults_to_excluding_tests() {
         let cases = [
+            (
+                "the filter the half settles under",
+                SETTLED_FILTER,
+                Tests::Exclude,
+            ),
             (
                 "the filter's default",
                 ViewFilter::default(),

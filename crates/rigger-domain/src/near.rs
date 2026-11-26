@@ -18,7 +18,9 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use crate::code_facts::{Bound, FileFacts, Half, MentionKind, Recorded};
 use crate::code_graph::{Asserts, Builder, CodeGraph};
-use crate::code_view::{Cluster, CodeView, FileRef, Groupings, SettledHalf, Tests, ViewFilter};
+use crate::code_view::{
+    Cluster, CodeView, FileRef, Groupings, SettledHalf, Tests, ViewFilter, SETTLED_FILTER,
+};
 use crate::composed::{
     binds_leaf, cluster_files, id_binds_leaf, ordered, provers_of, CodeHalf, Indexed,
 };
@@ -322,7 +324,7 @@ struct State<'v> {
     graph: CodeGraph<'v>,
     tests: Tests,
     /// The code half the view settles whole, read in place of resolving near an id: offered
-    /// under the default filter alone, the one it is settled under.
+    /// under [`SETTLED_FILTER`] alone, the one it is settled under.
     half: Option<&'v dyn SettledHalf>,
     files: Vec<FileRef<'v>>,
     places: FxHashMap<&'v str, u32>,
@@ -374,7 +376,7 @@ impl<'v> Near<'v> {
                 view,
                 graph: CodeGraph::new(view, filter),
                 tests: filter.tests,
-                half: (filter == ViewFilter::default())
+                half: (filter == SETTLED_FILTER)
                     .then(|| view.settled()?.half())
                     .flatten(),
                 files,
