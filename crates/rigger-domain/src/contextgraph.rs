@@ -2029,6 +2029,24 @@ mod reference_candidate_kinds_rule {
         );
     }
 
+    /// Every tag a stored mention may carry has a label: the kinds of [`ASKED`] the rule names
+    /// candidates for, which the declared protocol accepts as tags, with a module row's tag and a
+    /// call's absent one, are the tags [`REFERRER_LABELS`] holds a row for.
+    #[test]
+    fn every_tag_the_rule_resolves_has_a_referrer_label() {
+        let resolved = ASKED
+            .into_iter()
+            .filter(|tag| !reference_candidate_kinds(tag).is_empty());
+        let tags: std::collections::BTreeSet<Option<&str>> = [None, Some(REF_KIND_MODULE)]
+            .into_iter()
+            .chain(resolved.map(Some))
+            .collect();
+        assert_eq!(
+            tags,
+            REFERRER_LABELS.map(|(tag, _)| tag).into_iter().collect()
+        );
+    }
+
     /// A module is declared by a `CONTAINS` onto a `file` node alone: never by another relation
     /// onto one, nor by a `CONTAINS` onto a code entity or an absent node.
     #[test]
