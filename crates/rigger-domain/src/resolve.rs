@@ -4589,7 +4589,7 @@ pub(crate) mod tests {
         let sides = "src/handler.cs::Handler.Handle -REFERENCES/extracted-> \
                      src/square.cs::Square.SIDES";
         // (what the answer shows, the view's files, the file asked, its whole answer)
-        let cases: [(&str, Vec<FileFacts>, &str, Vec<&str>); 10] = [
+        let cases: [(&str, Vec<FileFacts>, &str, Vec<&str>); 11] = [
             (
                 "`x.lang` beside a same-file `lang` field and one in another file: no edge",
                 vec![config(unqualified()), locale()],
@@ -4643,6 +4643,18 @@ pub(crate) mod tests {
                 vec![config(type_path()), locale()],
                 "src/config.rs",
                 config_contains.to_vec(),
+            ),
+            (
+                "a type-path qualifier keeping none, beside one `lang` field in its own file \
+                 alone: INFERRED",
+                vec![config(type_path())],
+                "src/config.rs",
+                [
+                    &["src/config.rs::describe -REFERENCES/inferred-> \
+                       src/config.rs::Config::lang"][..],
+                    &config_contains[..],
+                ]
+                .concat(),
             ),
             (
                 "a member qualifier keeping none falls back to the field rule: `Request.lang` \
