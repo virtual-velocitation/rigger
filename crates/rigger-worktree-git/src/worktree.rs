@@ -8483,6 +8483,48 @@ mod tests {
         );
     }
 
+    /// A unit whose base moved before it integrated lands as a merge commit whose second parent
+    /// is the prior run tip: its revert takes back the unit's own change and keeps the work
+    /// that landed on the run branch beside it.
+    #[test]
+    fn revert_on_base_rolls_back_a_merge_integration_and_keeps_the_prior_run_tip() {
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let wt_path = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let wt = Worktree::create(
+            &repo_path,
+            wt_path.to_str().unwrap(),
+            "rigger/revert-merge",
+            "",
+        )
+        .unwrap();
+        std::fs::write(wt_path.join("unit.txt"), "the unit's change\n").unwrap();
+        std::fs::write(repo.path().join("sibling.txt"), "a sibling's change\n").unwrap();
+        run_git(&repo_path, &["add", "sibling.txt"]).unwrap();
+        run_git(&repo_path, &["commit", "-q", "-m", "a sibling lands"]).unwrap();
+        let prior_tip = run_git(&repo_path, &["rev-parse", "HEAD"]).unwrap();
+        let commit = wt
+            .integrate("rigger: integrate the unit")
+            .unwrap()
+            .expect_merged();
+        wt.remove().unwrap();
+        assert_eq!(
+            parents_of(&repo_path, &commit)[1..],
+            [prior_tip.trim().to_string()],
+            "premise: the integration is a merge whose second parent is the prior run tip"
+        );
+
+        Worktree::revert_on_base(&repo_path, &commit, "rigger: compensate the unit").unwrap();
+        assert_eq!(
+            (
+                repo.path().join("unit.txt").exists(),
+                std::fs::read_to_string(repo.path().join("sibling.txt")).ok(),
+            ),
+            (false, Some("a sibling's change\n".to_string())),
+            "the revert takes back the unit's change and keeps the sibling's"
+        );
+    }
+
     #[test]
     fn revert_on_base_aborts_and_errors_on_a_conflicting_revert() {
         // spec 12, unit 4 (the reverse gear's FAILURE path, which the happy-path test never
