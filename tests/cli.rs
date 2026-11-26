@@ -31861,6 +31861,107 @@ fn validate_warns_of_no_built_in_for_a_near_named_or_other_operator_file() {
     assert_validate_names_the_shadowed_built_ins(root, &[]);
 }
 
+/// Spec 135's THE CONSIDERATIONS ARE BUILT IN, read from the file: given a project whose
+/// `.rigger/instructions/` holds `complexity.md` beside two operator files that sort before it,
+/// when the operator runs `rigger instructions`, `rigger validate`, `rigger prime` and `rigger
+/// run`, then a body that is not blank replaces the complexity built-in in its own place and a
+/// blank one - empty, a lone byte order mark, ASCII whitespace, a byte order mark before an em
+/// space - switches it off: each reporter names that state, the file is never listed or counted as
+/// an operator file, and the worker's system prompt carries the file's body as the complexity
+/// section, or no complexity section, before the two operator files.
+#[test]
+fn a_complexity_file_replaces_the_considerations_or_switches_them_off_for_every_reporter_and_the_spawn(
+) {
+    use common::cli::{
+        assert_validate_names_the_shadowed_built_ins, prime_first_line, write_operator_layer,
+    };
+    use common::fixtures::{
+        house_and_team_operator_layer, op, rendered_layer_closing_with_complexity,
+        NON_EMPTY_BLANK_BODIES,
+    };
+    const FILE: &str = ".rigger/instructions/complexity.md";
+    const HOUSE: &str = "Weigh what a wrong answer costs first.\n";
+    let operator = house_and_team_operator_layer();
+    let printed_operator: String = operator
+        .iter()
+        .map(|file| format!("\n## {}\n{}\n", file.name, file.body))
+        .collect();
+    let replacing = [(
+        HOUSE,
+        "replaced",
+        Some(HOUSE.trim_end()),
+        "# Rigger instructions in force: engineering-principles, working-discipline, \
+         communication, complexity (replaced) (+2 operator files) - see rigger instructions",
+    )];
+    let blank = std::iter::once("")
+        .chain(NON_EMPTY_BLANK_BODIES)
+        .map(|body| {
+            (
+                body,
+                "switched off",
+                None,
+                "# Rigger instructions in force: engineering-principles, working-discipline, \
+                 communication (+2 operator files) - see rigger instructions",
+            )
+        });
+    for (body, verb, printed, in_force) in replacing.into_iter().chain(blank) {
+        let dir = temp_git_project_with_commit();
+        let root = dir.path();
+        write_workflow_fixture(root, &LIVENESS_WORKFLOW);
+        let layer: Vec<_> = house_and_team_operator_layer()
+            .into_iter()
+            .chain([op("complexity", body)])
+            .collect();
+        write_operator_layer(root, &layer);
+        let complexity = format!(
+            "\n## complexity ({verb} by {FILE})\n{}",
+            printed.map(|body| format!("{body}\n")).unwrap_or_default()
+        );
+        assert_eq!(
+            run_rigger_ok(root, &["instructions"]),
+            rendered_layer_closing_with_complexity(&complexity, &printed_operator),
+            "the complexity file of body {body:?} leaves the complexity built-in {verb} in its \
+             place and is listed under no operator heading"
+        );
+        assert_validate_names_the_shadowed_built_ins(
+            root,
+            &[&format!(
+                "warning: built-in instruction complexity is {verb} by {FILE}"
+            )],
+        );
+        assert_eq!(
+            prime_first_line(root, &[]).as_deref(),
+            Some(in_force),
+            "the complexity file of body {body:?} is never counted as an operator file"
+        );
+        #[cfg(unix)]
+        {
+            use common::cli::run_capturing_system_prompt;
+            use common::fixtures::{builtin_section, expected_composed_prompt, persona};
+            let sections: Vec<(&str, &str)> = [
+                "engineering-principles",
+                "working-discipline",
+                "communication",
+            ]
+            .map(builtin_section)
+            .into_iter()
+            .chain(printed.map(|body| ("complexity", body)))
+            .chain(
+                operator
+                    .iter()
+                    .map(|file| (file.name.as_str(), file.body.as_str())),
+            )
+            .collect();
+            assert_eq!(
+                run_capturing_system_prompt(root, &["run"]),
+                expected_composed_prompt(&persona(UNISOLATED_WORKER), &sections),
+                "the complexity file of body {body:?} stands in the complexity section in its \
+                 place, or leaves none, and the operator files follow the built-ins"
+            );
+        }
+    }
+}
+
 rigger::test_cases! {
     /// Spec 120's EVERY BUILT-IN'S STATE IS REPORTED, from a unit worktree: given a committed
     /// project whose `.rigger/instructions/` holds the named-entry fixture, uncommitted, and a

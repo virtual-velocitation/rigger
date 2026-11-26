@@ -498,22 +498,33 @@ fn rendered_beside_the_shadowing_entries(communication: &str, tail: &str) -> Str
 /// What `rigger instructions` prints when no operator file is read, spelled without calling
 /// `render`: every built-in in force, in `BUILTIN` order, then `(none)` under the operator heading.
 pub fn rendered_built_ins_only_layer() -> String {
-    let sections = [
+    rendered_layer_closing_with_complexity(&rendered_in_force_section("complexity"), "(none)\n")
+}
+
+/// What `rigger instructions` prints over a layer that shadows no built-in but, at most, the
+/// complexity one, spelled without calling `render`: the other three built-ins in force, in
+/// `BUILTIN` order, then `complexity` - the complexity built-in's section as printed - then the
+/// operator heading and `operator`, what is printed under it.
+pub fn rendered_layer_closing_with_complexity(complexity: &str, operator: &str) -> String {
+    let in_force = [
         "engineering-principles",
         "working-discipline",
         "communication",
-        "complexity",
     ]
-    .map(|name| {
-        format!(
-            "\n## {name} (built-in)\n{}\n",
-            builtin_body(name).trim_end()
-        )
-    })
+    .map(rendered_in_force_section)
     .concat();
     format!(
-        "{}\n\nBuilt-in:\n{sections}{RENDERED_OPERATOR_HEADING}(none)\n",
+        "{}\n\nBuilt-in:\n{in_force}{complexity}{RENDERED_OPERATOR_HEADING}{operator}",
         rigger_domain::prompt_surface::INSTRUCTIONS_HEADING
+    )
+}
+
+/// The section `rigger instructions` prints for the built-in `name` in force: its heading labelled
+/// `(built-in)`, then its shipped body.
+fn rendered_in_force_section(name: &str) -> String {
+    format!(
+        "\n## {name} (built-in)\n{}\n",
+        builtin_body(name).trim_end()
     )
 }
 
