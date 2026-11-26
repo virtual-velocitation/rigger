@@ -14,11 +14,11 @@
 //! declarations are incoherent with the workflow the command would leave in place stops every seed
 //! (spec 135), that `rigger setup --agents <dir>` imports a collection's agent in the place of the
 //! seed of its id, refuses a collection that would define an id twice, and imports a persona only
-//! when it is coherent with the project's workflow, refusing an incoherent one before it writes
-//! (spec 135), that a command naming no template root scaffolds no gate and keeps what an earlier
-//! root scaffolded, and that every argument and template root a command refuses, a set whose
-//! implementer declares `work` under the table-less workflow it scaffolds among them, is refused
-//! before any write.
+//! when it is coherent with the project's workflow, refusing an incoherent one before it writes,
+//! in a fresh project before any write (spec 135), that a command naming no template root
+//! scaffolds no gate and keeps what an earlier root scaffolded, and that every argument and
+//! template root a command refuses, a set whose implementer declares `work` under the table-less
+//! workflow it scaffolds among them, is refused before any write.
 
 use crate::common;
 use common::cli::{build_report_lines, UNDECLARED_BUILD_REPORT};
@@ -915,6 +915,52 @@ fn setup_agents_imports_a_persona_only_when_it_is_coherent_with_the_projects_wor
             ),
             "{persona}under the table {table}: stdout:\n{out}\nstderr:\n{err}"
         );
+    }
+}
+
+/// Given a fresh project, with no `.rigger/`, and a collection holding one persona
+/// `config::coherence` refuses against the workflow the scaffold would write, which declares no
+/// `defaults.capability` table - under a seed's id, whose seed the scaffold skips for it, or under
+/// an id no seed carries - when the operator runs `rigger setup --agents <collection>`, then the
+/// command fails on that refusal, which names the persona, before any write: no agent is reported
+/// imported, the project holds exactly the files and top-level entries it held, and no `.rigger/`
+/// is made.
+#[test]
+fn setup_agents_refuses_an_incoherent_collection_in_a_fresh_project_before_any_write() {
+    let refused = persona_coherence()
+        .into_iter()
+        .filter(|(_, table, _)| table == "~")
+        .filter_map(|(persona, _, verdict)| Some((persona, verdict.err()?)));
+    for (persona, refusal) in refused {
+        for id in ["implementer", "worker"] {
+            let dir = temp_project();
+            let root = dir.path();
+            let persona = persona.replacen("id: worker", &format!("id: {id}"), 1);
+            let refusal = refusal.replacen("\"worker\"", &format!("{id:?}"), 1);
+            write_files(
+                &root.join(COLLECTION),
+                &[(&format!("{id}.md"), persona.as_str())],
+            );
+            let snapshot = || (project_files(root), dir_snapshot(root, ""));
+            let before = snapshot();
+
+            let (out, err, ok) = run_rigger(root, &["setup", "--agents", COLLECTION]);
+            assert_eq!(
+                (
+                    failure_line(ok, &err),
+                    import_lines(&out),
+                    root.join(".rigger").exists(),
+                    snapshot(),
+                ),
+                (
+                    Some(refusal_line(&format!("config: {refusal}"))),
+                    Vec::<&str>::new(),
+                    false,
+                    before,
+                ),
+                "{persona}: stdout:\n{out}\nstderr:\n{err}"
+            );
+        }
     }
 }
 
