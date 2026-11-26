@@ -16,7 +16,7 @@ This is a *capability boundary*, not a suggestion - the driver only exposes the 
 |---|---|---|
 | Reviewer / adversary / adjudicator | `Read, Grep, Glob, Bash` | `Edit`/`Write` - a reviewer that can modify code can "fix" its way past a finding instead of reporting it. Read-only reviewers keep the review adversarial. |
 | Planner | `Read, Grep, Glob, Bash` | Write access - plans are emitted as events (`UnitProposed`, `DecisionMade`), not files. |
-| Implementer | `Read, Edit, Write, Grep, Glob, Bash` + `isolation: worktree` | The `Agent` tool (`recurse: false`) - workers must not spawn workers. Capability constraint beats prompt instruction: an agent that *cannot* recurse never burns your budget recursing. |
+| Implementer | `Read, Edit, Write, Grep, Glob, Bash` + `isolation: worktree` | The `Agent` tool (`recurse: false`) - workers must not spawn workers. Capability constraint beats prompt instruction: an agent that *cannot* recurse never burns your quota recursing. |
 | Scribe | `Read, Edit, Write, Grep, Glob, Bash` | Nothing extra - but its prompt confines edits to docs. |
 
 Note that `Bash` is the widest grant on the list: it transitively includes every CLI on the box, including `rigger` itself and your whole toolchain. If a role should not run arbitrary commands, do not grant `Bash` - there is no half-grant.
@@ -55,7 +55,7 @@ The event vocabulary agents use directly:
 | `LessonLearned` | You hit a wall others will hit | the fix class, the trigger, how to avoid it |
 | `FileTouched` | You modified a file (drivers largely automate this) | powers blast-radius partitioning and peer awareness |
 
-The conductor emits the orchestration events (`UnitProposed`, `UnitIntegrated`, `BudgetExhausted`, gate results); agents read their effects through `peers` and `graph` rather than parsing the log raw.
+The conductor emits the orchestration events (`UnitProposed`, `UnitIntegrated`, gate results); agents read their effects through `peers` and `graph` rather than parsing the log raw.
 
 The discipline that makes this layer worth having: **emit at decision time, not at report time.** A decision recorded live is visible to a concurrently running peer *before* it collides with you; a decision batched into a final report reaches the log after every agent who needed it already guessed. The prompts enforce this ("record each planning decision so the implementers inherit your reasoning") - keep that language in any agent you author.
 

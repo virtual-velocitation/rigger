@@ -55,7 +55,9 @@ pub const RIGGER_GRAPH: &str =
     "Three lookups in one tool; pass exactly one of `lookup`, `show` or \
 `around`. `lookup` <term>... answers each term from three sources in one reply, each section \
 labelled by its source: `graph` (each entity the term names, its definition site `file:line`, its \
-callers and callees; a term resolves exactly, by case or separator variant, by prefix or fuzzily, \
+doc's first line, its referrers on one line per label (`called by`, `reads`, `type use` and the \
+rest), a referrer whose mention gave the entity no single edge marked ` ?`, and its callees, a test \
+site marked ` [test]`; a term resolves exactly, by case or separator variant, by prefix or fuzzily, \
 and one that resolves to no entity is answered with the nearest names), `text` (every line of your \
 working tree holding the term, scanned live) and `prose:<kind>` (specs, their criteria, personas, \
 instructions, skills, docs, decisions, lessons and findings, ranked by relevance). Every section \

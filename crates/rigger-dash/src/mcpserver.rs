@@ -569,7 +569,8 @@ impl<'a> Server<'a> {
     /// STRUCTURE (`around`) and resolution (`show`) lookups. `lookup` answers through the wired
     /// [`Lookup`], which states in its own graph section why the graph did not answer (none wired,
     /// a rebuild owed), so it is never refused while its text and prose halves can answer, and it
-    /// answers as text. `around` and `show` read the graph [`with_context`](Server::with_context)
+    /// answers as text, an entity's test referrers listed only when the call's `tests` is include
+    /// or only. `around` and `show` read the graph [`with_context`](Server::with_context)
     /// opens, under the call's `tests` filter - `around` serves [`crate::contextgraph::around`]
     /// (the graph's subgraph plus the seed's callers), `show` its `locate` - and each answers its
     /// honesty `label` (6.1) as a field. Both render a node through [`site_object`] (spec 119, SHOW
@@ -592,7 +593,7 @@ impl<'a> Server<'a> {
                 .ok_or("rigger_graph: no lookup is wired on this server")?;
             let answer = |graph: Result<&dyn ContextGraph, String>| {
                 lookup
-                    .lookup(&terms, graph)
+                    .lookup(&terms, graph, filter.tests)
                     .map(Value::String)
                     .map_err(|e| format!("rigger_graph: {e}").into())
             };
@@ -2672,6 +2673,123 @@ mod tests {
         }
     }
 
+    /// GIVEN a worktree whose `src/lib.rs` documents the constant `LIMIT` on line 1, and the tree's
+    /// facts where `spill` and `fits` each read `LIMIT`, WHEN `rigger_graph` shows
+    /// `src/lib.rs::LIMIT` through a context that, as the composition root's does, answers from
+    /// the near read with a node's doc read from that worktree, THEN the site carries the
+    /// extractor's text of the doc's lines as `doc_comment` and the two readers as `referenced by
+    /// reads`, each as the lookup lists it, joined by `, ` (spec 117, READERS).
+    #[test]
+    fn the_mcp_show_carries_the_doc_and_the_referrers() {
+        use crate::composed::{Composed, DocReader};
+        use crate::contextgraph::sqlite::Projector;
+        use crate::contextgraph::{ContextGraph, Error, OpenGraph, REF_KIND_CONST};
+        use crate::test_support::{
+            facts_view, matching_honesty, planted_file, with_tagged, NoDocRule, ViewedRecords,
+        };
+        use rigger_domain::code_view::{Head, ViewFilter};
+
+        /// The records and planted view of `viewed`, answered from the near read with a node's
+        /// doc read from `worktree`'s lines as an extractor with no doc rule gives their text.
+        struct Documented<'a> {
+            viewed: ViewedRecords<'a>,
+            worktree: &'a std::path::Path,
+        }
+        impl OpenGraph for Documented<'_> {
+            fn head(&self) -> Result<Head, String> {
+                self.viewed.head()
+            }
+            fn head_in(&self, worktree: &std::path::Path) -> Result<Head, String> {
+                self.viewed.head_in(worktree)
+            }
+            fn open_on(
+                &self,
+                head: &Head,
+                filter: ViewFilter,
+            ) -> Result<Box<dyn ContextGraph + '_>, Error> {
+                self.viewed.open_on(head, filter)
+            }
+            fn answer(
+                &self,
+                filter: ViewFilter,
+                ask: &mut dyn FnMut(&dyn ContextGraph) -> Result<(), Error>,
+            ) -> Result<(), Error> {
+                let lines = rigger_store::code::WorktreeLines::new(self.worktree);
+                let docs = DocReader {
+                    lines: &lines,
+                    extract: &NoDocRule,
+                };
+                let (records, view) = (self.viewed.records, &self.viewed.view);
+                let composed =
+                    Composed::near(records, view, filter, matching_honesty(), Some(docs))?;
+                ask(&composed)
+            }
+        }
+
+        let (worktree, _) = crate::temp_root();
+        std::fs::create_dir(worktree.path().join("src")).unwrap();
+        std::fs::write(
+            worktree.path().join("src/lib.rs"),
+            "/// The most widgets one bin holds.\n\
+             pub const LIMIT: u32 = 3;\n\
+             \n\
+             pub fn spill(n: u32) -> bool {\n\
+             \x20   n > LIMIT\n\
+             }\n\
+             \n\
+             pub fn fits(n: u32) -> bool {\n\
+             \x20   n <= LIMIT\n\
+             }\n",
+        )
+        .unwrap();
+        let defs = [
+            ("LIMIT", "constant"),
+            ("spill", "function"),
+            ("fits", "function"),
+        ];
+        let mut lib = with_tagged(
+            planted_file("src/lib.rs", &defs, &[], &[]),
+            REF_KIND_CONST,
+            &[("spill", "LIMIT"), ("fits", "LIMIT")],
+        );
+        // Each definition at its line of the source above, the constant's doc on line 1 and each
+        // read of it on its reader's body line.
+        for (def, (line, end_line)) in lib.defs.iter_mut().zip([(2, 2), (4, 6), (8, 10)]) {
+            (def.line, def.end_line) = (line, end_line);
+        }
+        lib.defs[0].doc = Some((1, 1));
+        for (read, line) in lib.mentions.iter_mut().zip([5, 9]) {
+            read.line = line;
+        }
+        let graph = Projector::open(":memory:", "test").unwrap();
+        let context = Documented {
+            viewed: ViewedRecords {
+                records: &graph,
+                view: facts_view(vec![lib]),
+            },
+            worktree: worktree.path(),
+        };
+        let answer =
+            shown_graph_answer_over(&graph, &context, json!({"show": "src/lib.rs::LIMIT"}));
+        assert_eq!(
+            answer["site"],
+            json!({
+                "id": "src/lib.rs::LIMIT",
+                "file": "src/lib.rs",
+                "line": 2,
+                "kind": "constant",
+                // Its file's edge to it and the two reads.
+                "degree": 3,
+                "name": "LIMIT",
+                "lang": "rust",
+                "doc_comment": "/// The most widgets one bin holds.",
+                "referenced by reads":
+                    "src/lib.rs:5 src/lib.rs::spill (function), src/lib.rs:9 src/lib.rs::fits (function)",
+            }),
+            "{answer}"
+        );
+    }
+
     /// Each row: the `tests` argument of a `rigger_graph` call and the filter its read opens
     /// under, or the refusal that names the three spellings.
     #[test]
@@ -2847,6 +2965,8 @@ mod tests {
                        "doc": "docs/decisions/one-renderer.md"}),
                 json!({"id": "docs/x.md#sec", "file": "docs/x.md", "line": 0,
                        "kind": "design-doc", "degree": 0, "title": "Sec", "doc": "docs/x.md"}),
+                json!({"id": "src/limits.rs", "file": "src/limits.rs", "line": 0,
+                       "kind": "file", "degree": 4, "lang": "rust"}),
             ],
             "each node's site object"
         );

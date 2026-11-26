@@ -54,6 +54,22 @@ pub enum MentionKind {
     Tagged(String),
 }
 
+impl MentionKind {
+    /// The kind of a reference the extractor tags `tag`: a call when it tags none. The one map
+    /// from a reference's tag to its kind, [`Self::tag`] its inverse.
+    pub fn from_tag(tag: Option<&str>) -> Self {
+        tag.map_or(Self::Call, |tag| Self::Tagged(tag.to_string()))
+    }
+
+    /// The tag a reference of this kind carries, none for a call ([`Self::from_tag`]'s inverse).
+    pub fn tag(&self) -> Option<&str> {
+        match self {
+            Self::Call => None,
+            Self::Tagged(tag) => Some(tag),
+        }
+    }
+}
+
 /// One definition in a file.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Def {
@@ -69,6 +85,9 @@ pub struct Def {
     pub parent: Option<u32>,
     /// Whether the language marks this definition test-only (a test function, a test module).
     pub test: bool,
+    /// The 1-based, inclusive lines of the definition's doc comment, from its first doc line to
+    /// its last; none when it has no doc comment. The text is never kept.
+    pub doc: Option<(u32, u32)>,
 }
 
 /// A definition as its graph node records it, the one [`Recorded::widest_end`] bounds.
@@ -119,28 +138,42 @@ impl Recorded<'_> {
     /// field beside a same-named fn, or a variant inside its same-named enum, never widens the
     /// bound. `None` when no such definition sits at the line.
     pub fn widest_end<'d>(&self, defs: impl IntoIterator<Item = Bound<'d>>) -> Option<u32> {
+        self.widest(defs).map(|d| d.end_line)
+    }
+
+    /// The definition among `defs` whose end [`Self::widest_end`] gives, the first of an end-line
+    /// tie as the definition an id records is: the one a node's doc span is read off.
+    pub fn widest<'d, D: Copy + Into<Bound<'d>>>(
+        &self,
+        defs: impl IntoIterator<Item = D>,
+    ) -> Option<D> {
+        let bound = |d: D| -> Bound<'d> { d.into() };
         (defs.into_iter())
-            .filter(|d| {
+            .filter(|&d| {
+                let d = bound(d);
                 !d.test
                     && d.name == self.name
                     && self.path.is_none_or(|path| d.path == path)
                     && d.kind == self.kind
                     && d.line == self.line
             })
-            .map(|d| d.end_line)
-            .max()
+            .min_by_key(|&d| std::cmp::Reverse(bound(d).end_line))
     }
 }
 
-/// One name-reference in a file: the name as written, never a target.
+/// A name-reference in a file: the name as written, never a target. Each call is one mention, at
+/// its line; the tagged references sharing an enclosing definition, name, leaf, tag and test flag
+/// are one mention, at the first of their lines (spec 117, ONE TAGGED MENTION PER SITE KIND).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Mention {
     /// The index in the file's `defs` of the enclosing definition; none at file level.
     pub enclosing: Option<u32>,
     /// The name as written ("bar", "Foo::bar", "crate::x::bar").
     pub name: String,
-    /// The final identifier of `name` ("bar"), the key the resolver finds candidates by. Every
-    /// extractor names a reference by its identifier alone, so it equals `name` today.
+    /// The final identifier of `name` ("bar"), the key the resolver finds candidates by: the
+    /// reference's name as its extractor gives it, without its qualifier, so it equals `name` for
+    /// a mention written with no qualifier. A bundled grammar's never holds `::`, `.`, `<` or `>`
+    /// (spec 117, CAPTURES).
     pub leaf: String,
     pub kind: MentionKind,
     pub line: u32,
@@ -148,7 +181,9 @@ pub struct Mention {
     pub test: bool,
 }
 
-/// One module declared in a file (Rust's `mod foo;`).
+/// One module declared in a file (Rust's `mod foo;`). Its two lists depend on the declaring file
+/// alone; which list the view tries, and the first path in it that is a file in the tree, are
+/// picked at read ([`crate::resolve::Resolver::module_target`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ModuleDecl {
     pub name: String,
@@ -156,10 +191,14 @@ pub struct ModuleDecl {
     pub def: u32,
     /// Whether the declaration is test-only.
     pub test: bool,
-    /// The paths the module's file can have, from the declaring file's path and any explicit path
-    /// attribute. They depend on the declaring file alone; the view picks the first one that is
-    /// a file in the tree.
-    pub candidates: Vec<String>,
+    /// The paths the module's file can have when the declaring file is a crate root or a
+    /// `mod.rs` file, in the order they are tried.
+    pub as_root: Vec<String>,
+    /// The paths the module's file can have when the declaring file is any other file, in the
+    /// order they are tried.
+    pub as_child: Vec<String>,
+    /// Whether the declaration carries an explicit path attribute (Rust's `#[path = ".."]`).
+    pub path_attr: bool,
 }
 
 /// One design-intent concept a document yields, as written.
@@ -215,6 +254,9 @@ pub struct FileFacts {
     /// Whether the extraction covered only part of the file - the parse held an error, or the
     /// declared extractor said so - so its defs and mentions cover only as far as it reached.
     pub partial: bool,
+    /// The 1-based, inclusive lines of the file's own doc comment, from its first doc line to its
+    /// last; none when it has none. The text is never kept.
+    pub doc: Option<(u32, u32)>,
     /// In the extractor's order.
     pub defs: Vec<Def>,
     /// In the extractor's order.

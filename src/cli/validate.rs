@@ -20,14 +20,11 @@ fn has_tracked_project_id(root: &Path) -> Result<bool, String> {
 const CLAUDE_LOGIN_BOUND: Duration = Duration::from_secs(5);
 
 /// The `rigger validate` CLAUDE LOGIN report (spec 105, WHAT A PERSON SEES): the auth method the
-/// one login reader ([`rigger::claude_auth::auth_method`]) reads from the `claude` on PATH within
+/// one login reader ([`rigger::claude_auth::auth_method`]) reads from `host` within
 /// [`CLAUDE_LOGIN_BOUND`], on stdout, whatever the method; when no report came, one warning on
 /// stderr in its place. Neither changes the exit status.
-fn print_claude_login() {
-    match rigger::claude_auth::auth_method(
-        rigger::claude_auth::DEFAULT_BIN,
-        Instant::now() + CLAUDE_LOGIN_BOUND,
-    ) {
+fn print_claude_login(host: &rigger::claude_auth::SessionHost) {
+    match rigger::claude_auth::auth_method(host, Instant::now() + CLAUDE_LOGIN_BOUND) {
         Some(method) => println!("claude login: {method}"),
         None => eprintln!(
             "warning: claude login: `claude auth status --json` gave no report within {} s \
@@ -36,6 +33,22 @@ fn print_claude_login() {
              from PATH, logged in.",
             CLAUDE_LOGIN_BOUND.as_secs()
         ),
+    }
+}
+
+/// The `rigger validate` SESSION HOST VERSION report: the version the one reader
+/// ([`rigger::claude_version::read`]) reads from `host` within its bound, on stdout; below the
+/// version the installed exec-form hooks need, the one too-old line `rigger run` refuses with
+/// ([`rigger::claude_version::too_old`]) as a warning in its place; when it read no version, one
+/// warning saying the read failed and why. None changes the exit status.
+fn print_session_host_version(host: &rigger::claude_auth::SessionHost) {
+    use rigger::claude_version::{read, too_old, READ_BOUND};
+    match read(host, READ_BOUND) {
+        Ok(version) => match too_old(host, version) {
+            Some(line) => eprintln!("warning: {line}"),
+            None => println!("session host version: {version}"),
+        },
+        Err(why) => eprintln!("warning: the session host version read failed: {why}"),
     }
 }
 
@@ -222,7 +235,10 @@ pub(crate) fn cmd_validate(args: &[String]) -> Res {
     {
         println!("{line}");
     }
-    print_claude_login();
+    // The session host a run would start: its login and its version are read from the one host.
+    let host = rigger::claude_auth::SessionHost::default();
+    print_claude_login(&host);
+    print_session_host_version(&host);
     // Non-fatal advisories (spec 05:55): surface config/install drift so it is seen,
     // not discovered by accident. Each is a stderr warning that never changes the exit
     // status - `rigger validate` still succeeds so long as the config itself is valid.
@@ -280,7 +296,7 @@ fn store_advisories(
     // degrading to a wrong-store read that would misreport live worktrees/branches as residue
     // (d-u2rr-observer-selection-loud). The residue FINDINGS themselves stay warning-only below;
     // this only makes an inability to even resolve the run store loud, never silent.
-    for advisory in residue_advisories(loc, selection, cfg)? {
+    for advisory in residue_advisories(site, loc, selection, cfg)? {
         eprintln!("{advisory}");
     }
     // Model-drift advisory (spec 13b, unit 1): warn when a tier's resolved model id
@@ -347,7 +363,7 @@ fn store_advisories(
 /// per variable the workflow's `build.env` declares, in name order, or `build env: none
 /// declared` when it declares none; then the machine-wide build budget, ALWAYS:
 /// `build.max_concurrent` gates every compiler invocation this loop runs (spec 65 unit 3). `0`
-/// is the documented unlimited convention (mirrors `defaults.budget`), reported in words rather
+/// is the documented unlimited convention, reported in words rather
 /// than a bare, easily-misread `0`.
 ///
 /// Pure formatting over the declaration `Config::validate` already accepted, so it is
@@ -483,10 +499,11 @@ fn bloat_advisory_for(path: &str, project: &str) -> Option<String> {
 /// this on every `rigger validate` invocation, so a leak would fire on nearly every
 /// non-self-hosting target project; mirrors [`git_commit_distance`]'s already-correct `.output()` pattern immediately below.
 fn git_is_ancestor(root: &Path, ancestor: &str, descendant: &str) -> Option<bool> {
-    let out = subprocess::command("git")
-        .args(["merge-base", "--is-ancestor", ancestor, descendant])
-        .current_dir(root)
-        .output()
+    let out = subprocess::git_in(root)
+        .and_then(|mut git| {
+            git.args(["merge-base", "--is-ancestor", ancestor, descendant])
+                .output()
+        })
         .ok()?;
     match out.status.code() {
         Some(0) => Some(true),
@@ -502,10 +519,11 @@ fn git_is_ancestor(root: &Path, ancestor: &str, descendant: &str) -> Option<bool
 /// of `descendant`: this just counts, it never itself verifies order (spec 74, criterion
 /// 2's commit-distance figure for the behind-the-tree advisory).
 fn git_commit_distance(root: &Path, ancestor: &str, descendant: &str) -> Option<u64> {
-    let out = subprocess::command("git")
-        .args(["rev-list", "--count", &format!("{ancestor}..{descendant}")])
-        .current_dir(root)
-        .output()
+    let out = subprocess::git_in(root)
+        .and_then(|mut git| {
+            git.args(["rev-list", "--count", &format!("{ancestor}..{descendant}")])
+                .output()
+        })
         .ok()?;
     if !out.status.success() {
         return None;
@@ -633,10 +651,11 @@ fn session_hooks_advisory(root: &Path, grep_guard: bool) -> Vec<String> {
 /// --porcelain -- .rigger` rooted at `root` and folds its output through the pure
 /// [`dirty_tracked_paths`] seam.
 fn uncommitted_rigger_advisory(root: &Path) -> Option<String> {
-    let out = subprocess::command("git")
-        .args(["status", "--porcelain", "--", RIGGER_DIR])
-        .current_dir(root)
-        .output()
+    let out = subprocess::git_in(root)
+        .and_then(|mut git| {
+            git.args(["status", "--porcelain", "--", RIGGER_DIR])
+                .output()
+        })
         .ok()?;
     if !out.status.success() {
         return None; // not a git repo / git absent: nothing to flag
@@ -685,6 +704,7 @@ fn dirty_tracked_paths(porcelain: &str) -> Vec<String> {
 /// SAME `<repo>/.rigger/tmp` the run uses; the path is resolved WITHOUT creating it, so
 /// validate stays read-only.
 fn residue_advisories(
+    site: &Site,
     loc: &StoreLocation,
     selection: &StoreSelection,
     cfg: &config::Config,
@@ -706,14 +726,31 @@ fn residue_advisories(
     let run_units = read_run_units(loc, selection)?;
     let slugs = live_slugs(&run_units.live_branches);
     let local_branches = rigger::worktree::unit_branches(Path::new(&repo));
-    let report = scan_residue(
+    let mut report = scan_residue(
         &scratch,
         &slugs,
         &run_units.dead_slugs,
         &local_branches,
         &run_units.live_branches,
     );
+    // Every ref rigger holds aside, a kept tree or one set aside, live or not: only a person
+    // or the run-start reaper removes one. Outside any repository no ref is held, so none is read
+    // (the site's own discovery answers where `repo` lies, and git refusing inside a repository
+    // fails validate, as the identity read below does). A read inside one that fails lists none
+    // and says so on its own line, naming git's error, so an empty list is never read as none held.
+    let unread = if site.toplevel_of(Path::new(&repo))?.is_empty() {
+        None
+    } else {
+        match rigger::worktree::held_refs(&repo) {
+            Ok(held) => {
+                report.held = held;
+                None
+            }
+            Err(e) => Some(held_refs_unread(&e.0)),
+        }
+    };
     let mut advisories = format_residue(&report);
+    advisories.extend(unread);
     // Leaked-process advisory (spec 23, unit 2): any process still rooted under the SAME
     // resolved scratch root, warning-only like the residue block above. Reuses the `scratch`
     // path already resolved here and the shared scan authority - no second resolver, no second
@@ -721,6 +758,15 @@ fn residue_advisories(
     // visible even when no teardown is running.
     advisories.extend(leaked_process_advisories(&scratch));
     Ok(advisories)
+}
+
+/// The advisory `rigger validate` gives when the refs rigger holds aside cannot be read: one line
+/// naming `error`, the read's own failure, its lines joined.
+fn held_refs_unread(error: &str) -> String {
+    format!(
+        "warning: the refs rigger holds aside could not be read, so none are listed: {}",
+        rigger::wave::normalize_ws(error)
+    )
 }
 
 /// The warning-only `rigger validate` advisories (spec 23, unit 2) naming every process still

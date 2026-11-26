@@ -2155,9 +2155,9 @@ mod budget_tests {
     /// not a synthetic worst case: a real rigger run's log is dominated by non-lifecycle
     /// events (`DecisionMade`, findings, progress - the bulk of what agents actually emit,
     /// this very unit's own session included) over a MODEST number of units, never one
-    /// distinct unit per event. `console::fold`'s two consumers (`ledger::project`,
-    /// `blocker::budget_halt`) both skip a non-lifecycle type with a single string-compare
-    /// miss (see `ledger.rs`'s own `apply` match and `blocker.rs`'s own `budget_halt` match) -
+    /// distinct unit per event. `console::fold`'s projection (`ledger::project`)
+    /// skips a non-lifecycle type with a single string-compare miss (see `ledger.rs`'s own
+    /// `apply` match) -
     /// so this fixture's `DecisionMade` majority exercises exactly that cheap path, while its
     /// 40-unit lifecycle minority exercises the real projection work, matching this repo's
     /// own observed run-log shape rather than an artificial all-lifecycle stream no real run

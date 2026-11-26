@@ -47,6 +47,10 @@ pub use rigger_domain::concepts;
 /// the auth method `rigger validate` reports.
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_driver::claude_auth;
+/// The one reader of `claude --version`: the session host's version, which `rigger validate`
+/// warns of and `rigger run` refuses to launch on when the installed hooks need a newer one.
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub use rigger_driver::claude_version;
 /// The machine-wide build concurrency budget (spec 65): a flock-based slot directory that
 /// caps how many actual compiler invocations run at once, across every rigger process on
 /// the machine. Wired at the gate-build call site ([`crate::gate::ExecRunner::run`]) only -
@@ -124,6 +128,9 @@ pub use rigger_process::holders;
 pub use rigger_process::interrupt;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_process::keep_awake;
+/// The login-start interface a run registers its relaunch with: see that module's own doc.
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub use rigger_process::login_start;
 /// The one interface every fact about a running process is read through: see that module's own
 /// doc.
 #[cfg(any(feature = "store", not(feature = "core")))]

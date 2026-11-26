@@ -8,7 +8,13 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use rigger::contextgraph::{CallGraph, Direction, Graph};
-use rigger::dash::{self, route, DashInputs, InstanceView, Response};
+use rigger::dash::{self, route, DashInputs, GraphRead, InstanceView, Response};
+use rigger::eventstore::Event;
+
+/// A state graph provider that draws no run-seeded graph.
+pub fn no_state_graph(_: Option<&str>, _: &[Event]) -> GraphRead {
+    GraphRead::default()
+}
 
 /// `GET target` through the in-process dash router over `graph` (no events, no liveness),
 /// asserting it is served 200.
@@ -43,6 +49,9 @@ pub fn get_raw(target: &str) -> Vec<u8> {
     let provider = |_instance: Option<&str>| -> Result<DashInputs, String> {
         panic!("the served route reads no run-scoped store input")
     };
+    let state_graph_provider = |_instance: Option<&str>, _events: &[Event]| -> GraphRead {
+        panic!("the served route draws no run-seeded graph")
+    };
     let graph_provider =
         |_instance: Option<&str>, _tests: rigger::code_view::Tests, _: f64| -> Graph {
             panic!("the served route opens no whole-graph projection")
@@ -65,6 +74,7 @@ pub fn get_raw(target: &str) -> Vec<u8> {
         let _ = dash::serve_on(
             listener,
             provider,
+            state_graph_provider,
             graph_provider,
             calls_provider,
             instances_provider,
@@ -95,7 +105,7 @@ pub fn get_raw(target: &str) -> Vec<u8> {
 }
 
 /// Start the dash on a FRESH ephemeral loopback port - `graph_provider` behind its lazy
-/// whole-graph provider (`/api/graph` reads it), `poll_graph` behind its state-poll provider -
+/// whole-graph provider (`/api/graph` reads it), `poll_graph` behind its state graph provider -
 /// and fetch `GET path` once, returning the raw HTTP response, or `None` on a genuine
 /// socket-level failure.
 ///
@@ -113,14 +123,11 @@ where
     let listener = TcpListener::bind(("127.0.0.1", 0)).ok()?;
     let addr = listener.local_addr().ok()?;
 
-    let provider = move |_instance: Option<&str>| -> Result<DashInputs, String> {
-        Ok((
-            Vec::new(),
-            poll_graph.clone().into(),
-            Vec::new(),
-            HashMap::new(),
-        ))
+    let provider = |_instance: Option<&str>| -> Result<DashInputs, String> {
+        Ok((Vec::new(), Vec::new(), HashMap::new()))
     };
+    let state_graph_provider =
+        move |_instance: Option<&str>, _events: &[Event]| GraphRead::from(poll_graph.clone());
     let calls_provider =
         |_: Option<&str>,
          _: &[String],
@@ -134,6 +141,7 @@ where
         let _ = dash::serve_on(
             listener,
             provider,
+            state_graph_provider,
             graph_provider,
             calls_provider,
             instances_provider,
@@ -251,6 +259,67 @@ pub fn body_of(resp: &str) -> &str {
     resp.split_once("\r\n\r\n")
         .map(|(_, body)| body)
         .expect("a served response body")
+}
+
+/// How long a probe keeps trying to get a complete response out of a just-spawned server
+/// before it gives up and reports that the server never came up. A real dash answers in well
+/// under a second, so 5s keeps ample margin while bounding how long each of the many tests that
+/// poll through [`http_probe`] waits on a dash that never starts.
+const SERVER_READY_SECS: u64 = 5;
+
+/// How long ONE attempt waits for the server to answer. Shorter than
+/// [`SERVER_READY_SECS`] on purpose: an attempt that stalls must leave the deadline room
+/// for further attempts, because "answered nothing yet" is what a server still coming up
+/// looks like.
+const ATTEMPT_READ_SECS: u64 = 3;
+
+/// ONE complete HTTP GET attempt of `path` at `hostport` over a raw TCP socket (the test
+/// crate has no HTTP client): connect, send, read to EOF, and answer with the WHOLE response
+/// (status line + headers + body). `None` means this ATTEMPT produced no complete response.
+///
+/// Every way an attempt can come up short is the same one answer - a refused connect, a
+/// failed write, a read that timed out, a peer that closed with nothing, or a reply with no
+/// header terminator - because to a caller probing a server that is still coming up they are
+/// all the same fact, and only [`http_probe`] decides when that stops being acceptable.
+pub fn http_attempt(hostport: &str, path: &str) -> Option<String> {
+    let mut stream = TcpStream::connect(hostport).ok()?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(ATTEMPT_READ_SECS)))
+        .ok()?;
+    write!(
+        stream,
+        "GET {path} HTTP/1.1\r\nHost: {hostport}\r\nConnection: close\r\n\r\n"
+    )
+    .ok()?;
+    let mut resp = String::new();
+    stream.read_to_string(&mut resp).ok()?;
+    // A response without a header terminator is not a response: the peer accepted the
+    // connection and closed (or dribbled) without answering, which is a server that has not
+    // finished coming up, NOT a server that answered something unexpected.
+    resp.contains("\r\n\r\n").then_some(resp)
+}
+
+/// Poll `hostport` for `path` until a WHOLE response arrives, on a bounded deadline.
+///
+/// Bringing a server up is not one instant but a sequence - the child is spawned, then binds,
+/// then accepts, then answers - and a probe fired anywhere before the end of it comes back
+/// empty-handed for a reason that says nothing about whether the server works. Retrying only
+/// the CONNECT covers just the first of those steps: the kernel completes a handshake into the
+/// backlog the moment the port is bound, so a connect starts succeeding while the server is
+/// still too busy to answer, and a probe that gave up there reported a healthy server as dead
+/// on a loaded machine. So the whole exchange is what gets retried. A server that never
+/// answers within the deadline still fails LOUD (the safe direction), never a false green.
+pub fn http_probe(hostport: &str, path: &str) -> Option<String> {
+    let deadline = Instant::now() + Duration::from_secs(SERVER_READY_SECS);
+    loop {
+        if let Some(resp) = http_attempt(hostport, path) {
+            return Some(resp);
+        }
+        if Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 /// Connect to a dash server that is still starting, retrying for up to four seconds.

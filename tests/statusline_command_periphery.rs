@@ -174,8 +174,8 @@ fn setup_registers_the_statusline_command() {
     // The pre-existing SessionStart hook (installed by the same setup run) must survive
     // untouched - the settings.json merges must not clobber each other.
     assert_eq!(
-        settings["hooks"]["SessionStart"][0]["hooks"][0]["command"],
-        "rigger prime"
+        settings["hooks"]["SessionStart"][0]["hooks"][0],
+        common::fixtures::exec_hook(&["rigger", "prime"])
     );
 
     // A rerun on an up-to-date repo is a silent no-op for this artifact.

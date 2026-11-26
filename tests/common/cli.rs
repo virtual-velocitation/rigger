@@ -13,6 +13,7 @@ use rigger::contextgraph::{Edge, Error as GraphError, Graph, Node};
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, Event, EventStore, ExpectedRevision};
+use rigger::lockfile::HeldLock;
 use rigger::run::{RunHeld, RunReleased, TYPE_RUN_HELD, TYPE_RUN_RELEASED};
 
 pub use super::fixtures::keyed;
@@ -159,6 +160,27 @@ pub fn rigger_db(root: &Path, name: &str) -> rusqlite::Connection {
 /// Run `rigger <args...>` in `cwd` and return (stdout, stderr, success).
 pub fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
     run_rigger_envs(cwd, args, &[])
+}
+
+/// [`run_rigger`] with the run's stdout and stderr written to files, not piped: the run is over
+/// when the rigger process exits, never when the last child it left holding its output open does,
+/// so a test reads what each such child had done by the time rigger itself exited.
+pub fn run_rigger_to_files(cwd: &Path, args: &[&str]) -> (String, String, bool) {
+    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME for the rigger run");
+    let output = tempfile::tempdir().expect("create a dir for the rigger run's output");
+    let file = |name: &str| {
+        std::fs::File::create(output.path().join(name)).expect("create the run's output file")
+    };
+    let status = rigger_command(cwd, args, &[], state.path())
+        .stdin(Stdio::null())
+        .stdout(file("stdout"))
+        .stderr(file("stderr"))
+        .status()
+        .expect("failed to run the rigger binary");
+    let read = |name: &str| {
+        std::fs::read_to_string(output.path().join(name)).expect("read the run's output file")
+    };
+    (read("stdout"), read("stderr"), status.success())
 }
 
 /// Post one `UnitProposed` decision for the currently-parked spawn `spawn`, through the
@@ -1788,9 +1810,6 @@ pub fn head_of(root: &Path) -> String {
     super::fixtures::git_out(root, &["rev-parse", "HEAD"])
 }
 
-/// What `rigger graph build` leaves a project, read as the binary's readers read it: the record
-/// half its `.rigger/graph.db` holds, composed with the view of the head the build advanced the
-/// code store to.
 /// The code store of the repository `root` lies in, discovered there.
 #[cfg(feature = "symbols")]
 pub fn repository_code_store(root: &Path) -> rigger::code_store::CodeStore {
@@ -1798,6 +1817,9 @@ pub fn repository_code_store(root: &Path) -> rigger::code_store::CodeStore {
     rigger::code_store::CodeStore::in_repository(checkout.expect("a repository"))
 }
 
+/// What `rigger graph build` leaves a project, read as the binary's readers read it: the record
+/// half its `.rigger/graph.db` holds, composed with the view of the head the build advanced the
+/// code store to.
 #[cfg(feature = "symbols")]
 pub struct BuiltGraph {
     pub records: Projector,
@@ -1821,6 +1843,14 @@ impl BuiltGraph {
             records: open_graph(root),
             view: opened.view,
         }
+    }
+
+    /// The mentions the code store holds for `file`, in its order; none when it holds no facts for
+    /// `file`.
+    pub fn mentions(&self, file: &str) -> Option<Vec<rigger_domain::code_facts::Mention>> {
+        use rigger_domain::code_view::CodeView;
+
+        (self.view.file(file)).map(|facts| facts.into_owned().mentions)
     }
 
     /// Every node and edge the composed graph serves ([`Self::composed`]).
@@ -1897,7 +1927,7 @@ pub fn build_head(root: &Path) -> String {
 /// exactly one node `<path>::<id path>` per `definitions` row, an (id path, leaf, kind, line)
 /// quadruple (spec 119, IDS FOLLOW THE LANGUAGE'S PATH), each carrying exactly that leaf as its
 /// name, kind and line, and one placeholder `<path>::%<leaf>` ([`placeholder_id`]) per
-/// `placeholders` leaf, a name a reference reaches that no one same-file call target gives
+/// `placeholders` leaf, a name a call reaches that no one same-file call target gives
 /// (`entities_why` says what makes no node), and its `CALLS` edges are exactly `calls`. Any other
 /// code entity is the nameless node a call folds from, named in `calls`.
 ///
@@ -2129,12 +2159,32 @@ pub fn body_line_count(out: &str) -> usize {
     out.lines().filter(|l| is_body_line(l)).count()
 }
 
+/// The `  <entry> <value>` lines a `rigger graph --show` output prints after its header line,
+/// until the body or the note.
+pub fn printed_entry_lines(out: &str) -> impl Iterator<Item = &str> {
+    (out.lines().skip(2)).take_while(|line| !line.starts_with("  (") && !is_body_line(line))
+}
+
+/// An entry line's entry and value: a `referenced by <label>` entry whole, its label one of
+/// [`REFERRER_LABELS`](rigger::contextgraph::REFERRER_LABELS) (spec 117, READERS), else the
+/// line's first word.
+fn entry_and_value(line: &str) -> (&str, &str) {
+    let line = line.trim_start();
+    let referrers = rigger::contextgraph::REFERRER_LABELS
+        .iter()
+        .find_map(|(_, label)| {
+            let entry = format!("referenced by {label}");
+            let value = line.strip_prefix(entry.as_str())?.strip_prefix(' ')?;
+            Some((&line[..entry.len()], value))
+        });
+    referrers.unwrap_or_else(|| line.split_once(' ').expect("an entry line"))
+}
+
 /// The entry and value pairs a `rigger graph --show` output prints, in order (spec 119, SHOW IS
 /// ONE RENDERER): the header's `file`, `line`, `kind` and `degree` (no `site:` part for a node with
-/// no file), then one `  <entry> <value>` line each until the body or the note.
+/// no file), then each of its [`printed_entry_lines`] ([`entry_and_value`]).
 pub fn printed_site_entries(out: &str) -> Vec<(String, String)> {
-    let mut lines = out.lines().skip(1);
-    let header = lines.next().expect("a header line");
+    let header = out.lines().nth(1).expect("a header line");
     let mut pairs: Vec<(&str, &str)> = Vec::new();
     let rest = match header.strip_prefix("  site: ") {
         Some(site) => {
@@ -2149,11 +2199,7 @@ pub fn printed_site_entries(out: &str) -> Vec<(String, String)> {
         rest.split("   ")
             .map(|part| part.split_once(' ').expect("an entry")),
     );
-    pairs.extend(
-        lines
-            .take_while(|line| !line.starts_with("  (") && !is_body_line(line))
-            .map(|line| line.trim_start().split_once(' ').expect("an entry line")),
-    );
+    pairs.extend(printed_entry_lines(out).map(entry_and_value));
     pairs
         .into_iter()
         .map(|(key, value)| (key.to_string(), value.to_string()))
@@ -2206,21 +2252,27 @@ pub fn real_result_body(spawn_id: &str) -> String {
     serde_json::to_string(&rigger::spawn::SpawnResult::ok(spawn_id, "done")).unwrap()
 }
 
-/// Open, exclusively lock (non-blocking), and return `.rigger/step.lock` under `root` - standing
-/// in for a `rigger run` holding it for its whole duration. The lock lasts until the returned
-/// file is dropped.
-pub fn hold_step_lock(root: &Path) -> std::fs::File {
-    use fs2::FileExt;
-    let lock_file = std::fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(false)
-        .open(rigger_file(root, "step.lock"))
-        .unwrap();
-    lock_file
-        .try_lock_exclusive()
-        .expect("the test must be able to take the lock first");
-    lock_file
+/// Take, without waiting, and return `.rigger/step.lock` under `root` - standing in for a
+/// `rigger run` holding it for its whole duration. The lock lasts until the returned guard is
+/// dropped.
+pub fn hold_step_lock(root: &Path) -> HeldLock {
+    take_step_lock(root).expect("the test must be able to take the lock first")
+}
+
+/// The step lock under `root`, taken without waiting through the guard `rigger run` holds it by,
+/// or `None` while another holder has it. The guard unlocks when it drops instead of only closing
+/// its descriptor, so a process another test thread forks, which holds a copy of that descriptor
+/// until it execs, never keeps the lock past the drop.
+fn take_step_lock(root: &Path) -> Option<HeldLock> {
+    HeldLock::try_take(&rigger_file(root, "step.lock")).expect("the step lock opens and locks")
+}
+
+/// A second descriptor on the open file a [`hold_step_lock`] guard holds, as a process another
+/// test thread forks holds one until it execs.
+pub fn forked_copy(lock: &HeldLock) -> std::fs::File {
+    lock.file()
+        .try_clone()
+        .expect("the lock's descriptor duplicates")
 }
 
 /// Configures `defaults.workdir` in the `workflow.yml` of the store under `root` - a fresh
@@ -2432,7 +2484,7 @@ pub fn assert_stopped_at_the_grounder(output: &(String, String, bool), what: &st
 /// appended verbatim after the stage.
 pub fn write_workflow(root: &Path, block: &str) {
     let workflow = format!(
-        "defaults:\n  grounder: nop\n  budget: 60\n\
+        "defaults:\n  grounder: nop\n\
          stages:\n  a:\n    agent: worker\n    on_pass: none\n\
          {block}"
     );
@@ -2515,7 +2567,6 @@ pub const REVIEWLESS_GIT_UNIT_WORKFLOW: WorkflowFixture = WorkflowFixture {
     worker: "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nDo the unit.\n",
     body: r#"defaults:
   grounder: nop
-  budget: 60
 gates:
   ok: { run: "true", kind: core }
 stages:
@@ -2535,7 +2586,6 @@ pub const REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW: WorkflowFixture = WorkflowFix
     worker: ISOLATED_WORKER,
     body: r#"defaults:
   grounder: nop
-  budget: 60
   max_retries: 1
 gates:
   red: { run: "false", kind: core }
@@ -2799,21 +2849,41 @@ pub fn release_the_unit(fakebin: &Path) {
     std::fs::write(fakebin.join("bin").join("release"), "").unwrap();
 }
 
+/// The shell of a session whose first launch marks `started` beside the fake and waits for a
+/// `release` there ([`release_the_unit`]), then dies with no result: the launch a test ends its run
+/// at with [`a_run_interrupted_at_its_waiting_launch`]. Each later launch goes on past it.
+pub const FIRST_LAUNCH_WAITS_FOR_ITS_INTERRUPT: &str = r#"    if [ ! -e "$here/started" ]; then
+        : > "$here/started"
+        while [ ! -e "$here/release" ]; do sleep 0.05; done
+        exit 1
+    fi
+"#;
+
+/// `rigger run` in `cwd` under the scratch root `scratch` over the fake host answering from
+/// `arms`, interrupted as an operator's Ctrl-C interrupts a driver once a launch
+/// [`FIRST_LAUNCH_WAITS_FOR_ITS_INTERRUPT`] holds is live, its stranded session then released:
+/// every spawn before that launch is answered in the run's log, and that one is not.
+#[cfg(unix)]
+pub fn a_run_interrupted_at_its_waiting_launch(cwd: &Path, scratch: &Path, arms: &str) -> EndedRun {
+    let ended = a_run_ended_mid_units(cwd, &["run"], scratch, &[], arms, &["started"], |driver| {
+        assert!(
+            super::interrupt_pid(driver.id()),
+            "the interrupt reaches the driver"
+        );
+        driver.wait().unwrap();
+    });
+    release_the_unit(ended.fake.path());
+    ended
+}
+
 /// What `.rigger/step.lock` under `root` holds: the record a run's driver keeps of itself.
 pub fn driver_record(root: &Path) -> String {
     std::fs::read_to_string(rigger_file(root, "step.lock")).unwrap_or_default()
 }
 
-/// Whether no process holds the step lock under `root` now.
+/// Whether no process holds the step lock under `root` now: none when there is no lock file.
 pub fn step_lock_free(root: &Path) -> bool {
-    use fs2::FileExt;
-    let Ok(file) = std::fs::OpenOptions::new()
-        .write(true)
-        .open(rigger_file(root, "step.lock"))
-    else {
-        return true;
-    };
-    file.try_lock_exclusive().is_ok()
+    !rigger_file(root, "step.lock").exists() || take_step_lock(root).is_some()
 }
 
 /// `rigger run` in `cwd` under the scratch root `scratch`, with [`HOLDING_WORKER_ARM`]'s fake
@@ -2827,13 +2897,22 @@ pub fn a_run_ended_mid_unit(
     envs: &[(&str, &str)],
     end: impl FnOnce(&mut Child),
 ) -> EndedRun {
-    a_run_ended_mid_units(cwd, scratch, envs, HOLDING_WORKER_ARM, &["started"], end)
+    a_run_ended_mid_units(
+        cwd,
+        &["run"],
+        scratch,
+        envs,
+        HOLDING_WORKER_ARM,
+        &["started"],
+        end,
+    )
 }
 
-/// [`a_run_ended_mid_unit`] over the fake host answering from `arms`, driven until each of
-/// `started`, a file its arms mark beside the fake, exists.
+/// [`a_run_ended_mid_unit`] started as `rigger <args>` over the fake host answering from `arms`,
+/// driven until each of `started`, a file its arms mark beside the fake, exists.
 pub fn a_run_ended_mid_units(
     cwd: &Path,
+    args: &[&str],
     scratch: &Path,
     envs: &[(&str, &str)],
     arms: &str,
@@ -2843,7 +2922,7 @@ pub fn a_run_ended_mid_units(
     let (fakebin, path_env) = install_fake_claude(arms);
     let mut all = fake_claude_env(&path_env, scratch).to_vec();
     all.extend_from_slice(envs);
-    let (state, child) = spawn_rigger(cwd, &["run"], &all);
+    let (state, child) = spawn_rigger(cwd, args, &all);
     let mut owned = OwnedChild::new(child);
     let marks: Vec<PathBuf> = started
         .iter()

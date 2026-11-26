@@ -2,11 +2,12 @@
 //! holds (`.rigger/step.lock`), the binary it runs as among it, and four verbs invoked from the
 //! project's main checkout check it: the session-start hook `rigger prime`, `rigger status` read by
 //! a person (neither `--line` nor `--json`), `rigger release` and `rigger resume-unit`
-//! ([`check_point`]). No other verb checks, so none pays for it. A record whose lock no driver
+//! ([`check_point`]). No other verb checks, so none pays for it; the login entry a run opted into
+//! checks it too (below). A record whose lock no driver
 //! holds is a driver that died, by a crash, a forced end, a hangup or a reboot, and the check
 //! relaunches it by adoption, in the background, through the binary it recorded and with the
-//! variables its roots resolve from set as it had them ([`ROOTS_ENV`]), as a hand
-//! `rigger run <spec> --base <ref>` would. A driver that ran on a credential ([`CREDENTIALS_ENV`])
+//! variables its roots and its tools' search path resolve from set as it had them
+//! ([`ROOTS_ENV`]), as a hand `rigger run <spec> --base <ref>` would. A driver that ran on a credential ([`CREDENTIALS_ENV`])
 //! is relaunched only by a check whose environment sets it too. The relaunched driver's stdout and stderr go to one
 //! file under the store (`.rigger/driver.out`, [`DRIVER_OUTPUT_FILE`]), what it would have said on
 //! the operator's terminal; each relaunch overwrites it and `rigger reset --runs` removes it once no driver holds the step
@@ -23,12 +24,28 @@
 //! so a held run stops for good however its driver then ends, until `rigger release` relaunches
 //! it. A hold of any other writer, an outage's, is waited out by the driver and released by itself.
 //!
+//! A RUN COMES BACK AT LOGIN WHERE ITS USER OPTED IN: a driver started with
+//! `--relaunch-at-login` registers, once it holds the step lock, one entry under its project's key
+//! with the OS's login-start facility ([`rigger::login_start`]), which runs its binary as
+//! `rigger run --at-login <root>` at the user's next login ([`relaunch_at_login`]). A driver the
+//! machine's end killed (a power loss, a reboot, a forced end) leaves its record and the entry,
+//! and that login relaunches the run through the one relaunch entry; a driver parked on an
+//! operator hold leaves both for `rigger release`. Without the flag nothing is registered. The
+//! entry's reapers are its driver as it ends, a login that finds no relaunch owed, and the sweep
+//! of every entry whose program is gone ([`sweep`]) that each flagged launch and `rigger setup`
+//! run.
+//!
 //! The record's one reaper is the driver that wrote it, as it ends; a record whose driver ended
 //! without reaping it is reaped by the check that relaunches it, by the driver that relaunch
-//! starts, or, when no relaunch is owed, by the check itself.
+//! starts, or, when no relaunch is owed, by the check itself. The login entry's reaper is the
+//! driver that registered it, as it empties its record; an entry it left is reaped by the login
+//! that finds no relaunch owed: a run that ended, a run last started without the flag, a record a
+//! relaunch cleared, and a project or store since removed.
 
 use super::*;
 use rigger::interrupt::{empty_on_interrupt, InterruptTrigger};
+use rigger::login_start::{run_key, sweep, LoginStart};
+use rigger::sleep_hold::Unavailable;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -47,10 +64,14 @@ const BACKOFF: Duration = Duration::from_secs(600);
 /// home that roots the instance registry (`XDG_STATE_HOME`, then the home directory), and the walk
 /// that finds the project's repository and store (`GIT_CEILING_DIRECTORIES`,
 /// `GIT_DISCOVERY_ACROSS_FILESYSTEM`), and the home directory ([`rigger_process::home_dir`]) by
-/// the variable it is read from on this OS ([`rigger_process::home::HOME_ENV`]). A driver records
-/// each, set or not, and its relaunch sets or removes each on the child as the driver had it, so
-/// the relaunched driver resolves the roots the one that died did.
-const ROOTS_ENV: [&str; 6] = [
+/// the variable it is read from on this OS ([`rigger_process::home::HOME_ENV`]), with the search
+/// path the driver finds its tools on ([`rigger::subprocess::PATH_ENV`]): the agent host, git and
+/// the project's gate tools, which the short search path a login manager starts a login entry on
+/// does not reach. A driver records each, set or not, and its relaunch sets or removes each on the
+/// child as the driver had it, so the relaunched driver resolves the roots and finds the tools the
+/// one that died did.
+const ROOTS_ENV: [&str; 7] = [
+    rigger::subprocess::PATH_ENV,
     rigger::worktree::SCRATCH_ROOT_ENV,
     rigger::driver::replay::CACHE_HOME_ENV,
     rigger_process::home::HOME_ENV,
@@ -73,8 +94,9 @@ struct Credential {
 
 /// The credentials a driver can run on: the login token its agents get, and the server event
 /// store's connection string, which `--conn` gives too. A driver records which it had, never a
-/// value, and only a check whose environment sets each of them relaunches it, since a relaunch
-/// without one runs its agents on another login or drives another store.
+/// value, and only a check whose environment sets each of them relaunches it, handing each on to
+/// the relaunch by name, since a relaunch without one runs its agents on another login or drives
+/// another store.
 const CREDENTIALS_ENV: [Credential; 2] = [
     Credential {
         var: rigger::claude_auth::RIGGER_AGENT_TOKEN_VAR,
@@ -102,11 +124,10 @@ fn credentials_had(parsed: Option<&RunArgs>) -> BTreeSet<String> {
         .collect()
 }
 
-/// Each of [`ROOTS_ENV`] with its value in this process, `None` where it is unset.
-fn roots_env() -> BTreeMap<String, Option<OsString>> {
-    ROOTS_ENV
-        .iter()
-        .map(|var| ((*var).to_string(), std::env::var_os(var)))
+/// Each of `vars` with its value in this process, `None` where it is unset.
+fn env_of<'a>(vars: impl IntoIterator<Item = &'a str>) -> BTreeMap<String, Option<OsString>> {
+    vars.into_iter()
+        .map(|var| (var.to_string(), std::env::var_os(var)))
         .collect()
 }
 
@@ -173,7 +194,8 @@ fn now_secs() -> u64 {
 }
 
 /// The step lock a live driver holds, keeping its record: emptied as the driver ends, by any
-/// return or panic (this guard's drop) or by an interactive interrupt (its trigger).
+/// return or panic (this guard's drop) or by an interactive interrupt (its trigger), the login
+/// entry it registered removed with it.
 pub(super) struct KeptRecord {
     /// Dropped before the lock, so the trigger never outlives the file it empties.
     _interrupt: InterruptTrigger,
@@ -182,6 +204,14 @@ pub(super) struct KeptRecord {
     prior: Option<DriverRecord>,
     /// Whether the record is left for `rigger release` ([`KeptRecord::leave_for_release`]).
     left: std::cell::Cell<bool>,
+    /// The login entry this driver registered ([`KeptRecord::register_at_login`]).
+    at_login: std::cell::OnceCell<AtLogin>,
+}
+
+/// A login entry a driver registered: the facility it is registered with, and its key.
+struct AtLogin {
+    start: Box<dyn LoginStart>,
+    key: String,
 }
 
 impl KeptRecord {
@@ -196,6 +226,7 @@ impl KeptRecord {
             lock,
             prior,
             left: std::cell::Cell::new(false),
+            at_login: std::cell::OnceCell::new(),
         }
     }
 
@@ -223,6 +254,49 @@ impl KeptRecord {
         }
     }
 
+    /// Register this driver's relaunch with the login-start facility `start`, the user's opt-in
+    /// (`--relaunch-at-login`): one entry under the project's key ([`run_key`]) that runs this
+    /// binary as `run --at-login <root>`, `<root>` the project whose store is at `dir`, so a login
+    /// after the machine went down mid-run relaunches the run ([`relaunch_at_login`]). The entry
+    /// is removed as the record is emptied, and left beside a record left for `rigger release`.
+    /// A registration the facility refuses is the launch's refusal, naming why. Once the facility
+    /// takes the entry, the entries it holds whose program is gone are swept ([`sweep`]), one line
+    /// on stderr for each entry the sweep names.
+    pub(super) fn register_at_login(
+        &self,
+        start: Box<dyn LoginStart>,
+        dir: &Path,
+    ) -> Result<(), String> {
+        let refused = |why: String| {
+            format!("rigger run: {RELAUNCH_AT_LOGIN_FLAG}: no login entry was made: {why}")
+        };
+        let dir = dir
+            .canonicalize()
+            .map_err(|e| refused(format!("{}: {e}", dir.display())))?;
+        let program = standing_executable();
+        let (Some(root), Some(bin)) = (dir.parent().and_then(Path::to_str), program.to_str())
+        else {
+            return Err(refused(format!(
+                "the project {} or the binary {} is not a UTF-8 path",
+                dir.display(),
+                program.display()
+            )));
+        };
+        let key = run_key(root);
+        let args = ["run", AT_LOGIN_FLAG, root].map(str::to_string);
+        start
+            .register(&key, bin, &args)
+            .map_err(|Unavailable(why)| refused(why))?;
+        match sweep(&*start) {
+            Ok(swept) => swept
+                .iter()
+                .for_each(|swept| stderr_line(&format!("rigger run: {}", swept.line()))),
+            Err(unlisted) => stderr_line(&format!("rigger run: {}", unlisted.line())),
+        }
+        let _ = self.at_login.set(AtLogin { start, key });
+        Ok(())
+    }
+
     /// Record this driver: started in `cwd` against the store at `dir` with `parsed`, driving
     /// `run`. A driver a relaunch of the same run started carries when that relaunch was made; a
     /// driver started by hand removes what an earlier relaunched driver said, so `rigger status`
@@ -245,7 +319,7 @@ impl KeptRecord {
             args: relaunch_args(parsed, run),
             bin: Some(standing_executable()),
             run: run.to_string(),
-            env: roots_env(),
+            env: env_of(ROOTS_ENV),
             credentials: credentials_had(Some(parsed)),
             relaunched_at: None,
             revived_at,
@@ -271,17 +345,29 @@ impl KeptRecord {
 }
 
 impl Drop for KeptRecord {
+    /// Empty the record and remove the login entry this driver registered, unless the record is
+    /// left for `rigger release`. An entry that cannot be removed is said on stderr; the next login
+    /// finds no relaunch owed and removes it ([`relaunch_at_login`]).
     fn drop(&mut self) {
-        if !self.left.get() {
-            let _ = self.lock.replace("");
+        if self.left.get() {
+            return;
+        }
+        let _ = self.lock.replace("");
+        if let Some(AtLogin { start, key }) = self.at_login.take() {
+            if let Err(Unavailable(why)) = start.unregister(&key) {
+                stderr_line(&format!(
+                    "rigger run: the login entry {key} was not removed ({why}); the next login \
+                     removes it"
+                ));
+            }
         }
     }
 }
 
 /// The arguments that relaunch the run `parsed` started as `run`: `run`, the spec, an explicit
-/// base (the flag's or `RIGGER_BASE`'s), the event store a flag chose, then `--adopt <run>`.
-/// `--fresh` and `--rebase-definition` are a start's own, and `--conn` may carry a credential,
-/// so none is recorded.
+/// base (the flag's or `RIGGER_BASE`'s), the event store a flag chose, the opt-in to a login
+/// entry, then `--adopt <run>`. `--fresh` and `--rebase-definition` are a start's own, and
+/// `--conn` may carry a credential, so none is recorded.
 fn relaunch_args(parsed: &RunArgs, run: &str) -> Vec<String> {
     let mut args = vec!["run".to_string()];
     args.extend(parsed.spec.clone());
@@ -298,6 +384,9 @@ fn relaunch_args(parsed: &RunArgs, run: &str) -> Vec<String> {
             StoreKind::KurrentDb => "kurrentdb",
         };
         args.extend(["--eventstore".to_string(), kind.to_string()]);
+    }
+    if parsed.relaunch_at_login {
+        args.push(RELAUNCH_AT_LOGIN_FLAG.to_string());
     }
     args.extend(["--adopt".to_string(), run.to_string()]);
     args
@@ -429,7 +518,7 @@ pub(crate) fn relaunch_a_dead_driver(site: &Site, released: bool) {
         now: now_secs(),
         released,
         in_main_checkout: &|| main_worktree_or_refuse(site, "").is_ok(),
-        operator_holds: &|run| operator_holds(site, run),
+        manually_held: &|run| manually_held(site, run),
         credentials: credentials_had(None),
     };
     let said = launcher().map_or_else(Some, |launcher| revive(&dir, &check, launcher.as_ref()));
@@ -438,16 +527,16 @@ pub(crate) fn relaunch_a_dead_driver(site: &Site, released: bool) {
     }
 }
 
-/// Whether an operator hold stands on `run`, the current run of the project at `site`. A store
-/// that cannot be read answers no hold: the relaunched driver reads the hold again as it adopts
-/// the run and parks on an operator hold it finds.
-fn operator_holds(site: &Site, run: &str) -> bool {
+/// Whether a manual hold, the operator's or the conductor's, stands on `run`, the current run of the
+/// project at `site`. A store that cannot be read answers no hold: the relaunched driver reads the
+/// hold again as it adopts the run and parks on such a hold it finds.
+fn manually_held(site: &Site, run: &str) -> bool {
     require_store_dir_in(site)
         .and_then(|(loc, selection)| {
             over_the_run_store_at(&loc, &selection, |store| {
                 let current = runscope::read::read_current_run_id(store, conductor::STREAM)?;
-                let hold = runscope::read::read_current_hold(store, conductor::STREAM)?;
-                Ok(current.as_deref() == Some(run) && hold.is_some_and(|hold| hold.operator))
+                let hold = runscope::read::read_manual_hold(store, conductor::STREAM)?;
+                Ok(current.as_deref() == Some(run) && hold.is_some())
             })
         })
         .unwrap_or(false)
@@ -455,19 +544,19 @@ fn operator_holds(site: &Site, run: &str) -> bool {
 
 /// What one check reads beside the step lock: the time it runs at, whether it follows the
 /// operator's `rigger release`, whether it was invoked from the project's main checkout, whether
-/// an operator hold stands on a run, and which credentials its own environment sets.
+/// a manual hold stands on a run, and which credentials its own environment sets.
 struct Check<'a> {
     now: u64,
     released: bool,
     in_main_checkout: &'a dyn Fn() -> bool,
-    operator_holds: &'a dyn Fn(&str) -> bool,
+    manually_held: &'a dyn Fn(&str) -> bool,
     credentials: BTreeSet<String>,
 }
 
 /// Relaunch the driver whose record the step lock under `dir` holds when no driver holds that
 /// lock, as `check` reads it, through `launcher`: the line to say, `None` when there is nothing to
 /// say. Every failure to read the lock is read as nothing to do. A check invoked from a linked
-/// worktree, and a run an operator hold stands on, leave the record as it is: the hold is the
+/// worktree, and a run a manual hold stands on, leave the record as it is: the hold is the
 /// run's stop. A check that follows the operator's release relaunches a driver that died soon
 /// after its own relaunch too, since the operator asked for it. A driver that ran on a
 /// credential is relaunched only from an environment that sets it too, and is otherwise left as
@@ -499,10 +588,9 @@ fn revive(dir: &Path, check: &Check, launcher: &dyn Launcher) -> Option<String> 
             return None;
         }
     };
-    if (check.operator_holds)(&record.run) {
+    if (check.manually_held)(&record.run) {
         return Some(format!(
-            "rigger: run {} is held by the operator and no driver is alive for it; `rigger \
-             release` relaunches it",
+            "rigger: run {} is held and no driver is alive for it; `rigger release` relaunches it",
             record.run
         ));
     }
@@ -566,8 +654,14 @@ fn revive(dir: &Path, check: &Check, launcher: &dyn Launcher) -> Option<String> 
     lock.replace(&stamp).ok()?;
     // The lock is released before the launch, so the relaunched driver can take it.
     drop(lock);
+    // No child inherits the agents' login token (`subprocess::command`), so the driver is handed
+    // by name each credential this invocation was just checked for; no record holds a value.
+    let mut env = record.env.clone();
+    env.extend(env_of(
+        CREDENTIALS_ENV.iter().map(|credential| credential.var),
+    ));
     Some(
-        match launcher.launch(&bin, &record.args, &record.env, &record.cwd, &output) {
+        match launcher.launch(&bin, &record.args, &env, &record.cwd, &output) {
             Ok(pid) => format!(
             "rigger: no driver was alive for this project's run {}, so rigger relaunched it in \
              the background (pid {pid}), its output in {}: {}. Follow it with `rigger status`.",
@@ -637,6 +731,47 @@ pub(crate) fn forget_driver_output(rigger_dir: &Path) -> std::io::Result<bool> {
     }
 }
 
+/// THE LOGIN ENTRY'S RUN, `rigger run --at-login <root>`: relaunch the run of the project at
+/// `root` whose driver died through the one relaunch entry ([`relaunch_a_dead_driver`]) while a
+/// login owes it one ([`owed_at_login`]); once none is owed, before that relaunch or after it,
+/// remove the project's entry from `start`. So the entry outlives only a driver the machine's end
+/// killed, and every other end is reaped at the next login.
+pub(super) fn relaunch_at_login(root: &str, start: &dyn LoginStart) -> Res {
+    let dir = Path::new(root).join(RIGGER_DIR);
+    if owed_at_login(&dir) {
+        relaunch_a_dead_driver(&Site::of(Path::new(root)), false);
+        if owed_at_login(&dir) {
+            return Ok(());
+        }
+    }
+    start
+        .unregister(&run_key(root))
+        .map_err(|Unavailable(why)| {
+            format!("rigger run {AT_LOGIN_FLAG}: the login entry of {root} was not removed: {why}")
+        })?;
+    Ok(())
+}
+
+/// Whether a login owes the project whose store is at `dir` its relaunch: a driver holds the step
+/// lock there, or none does and the lock holds the record of a driver started with
+/// `--relaunch-at-login`. A store or lock that is gone, and a free lock over an emptied,
+/// unreadable or unflagged record, owe nothing. A lock that cannot be taken is read as held, so a
+/// failure to read it never removes the entry of a run still owed.
+fn owed_at_login(dir: &Path) -> bool {
+    let path = dir.join("step.lock");
+    if !path.is_file() {
+        return false;
+    }
+    match HeldLock::try_take(&path) {
+        Ok(Some(lock)) => lock
+            .contents()
+            .ok()
+            .and_then(|text| serde_json::from_str::<DriverRecord>(&text).ok())
+            .is_some_and(|record| record.args.iter().any(|arg| arg == RELAUNCH_AT_LOGIN_FLAG)),
+        Ok(None) | Err(_) => true,
+    }
+}
+
 /// This binary's path as it stands, the path a relaunch of it runs: an upgrade that replaced it
 /// while it runs leaves the new build there ([`rigger::detached::standing_path`]).
 fn standing_executable() -> PathBuf {
@@ -667,7 +802,8 @@ mod tests {
 
     /// A relaunch hands its launcher the roots variables the dead driver recorded, each set or
     /// removed as the driver had it, and a record an older driver wrote, which recorded none,
-    /// hands it none, so the relaunch keeps the checker's.
+    /// hands it none, so the relaunch keeps the checker's; beside them it hands each credential
+    /// as this process has it, which no record holds and no child inherits.
     #[test]
     fn a_relaunch_hands_the_launcher_the_roots_variables_the_driver_recorded() {
         let recorded: BTreeMap<String, Option<OsString>> = [
@@ -706,12 +842,18 @@ mod tests {
                 now: now_secs(),
                 released: false,
                 in_main_checkout: &|| true,
-                operator_holds: &|_| false,
+                manually_held: &|_| false,
                 credentials: BTreeSet::new(),
             };
             let keeper = EnvKeeper::default();
             revive(dir.path(), &check, &keeper);
-            assert_eq!(keeper.0.into_inner(), vec![env], "{name}");
+            let mut handed = env;
+            handed.extend(
+                CREDENTIALS_ENV.iter().map(|credential| {
+                    (credential.var.to_string(), std::env::var_os(credential.var))
+                }),
+            );
+            assert_eq!(keeper.0.into_inner(), vec![handed], "{name}");
         }
     }
 
@@ -720,13 +862,9 @@ mod tests {
     fn a_kept_record_holds_each_roots_variable_as_the_driver_has_it() {
         let dir = tempfile::tempdir().unwrap();
         let parsed = RunArgs {
-            store: None,
-            conn: None,
             spec: Some("specs/a.md".into()),
-            fresh: false,
-            rebase_definition: false,
             base: Some("main".into()),
-            adopt: None,
+            ..RunArgs::default()
         };
         let kept = KeptRecord::hold(acquire_step_lock(dir.path()).unwrap());
         kept.keep(&parsed, dir.path(), dir.path(), "a-run");
@@ -736,6 +874,39 @@ mod tests {
             .map(|var| ((*var).to_string(), std::env::var_os(var)))
             .collect();
         assert_eq!(record.env, expected);
+    }
+
+    /// A relaunch starts the driver on the PATH the driver that died found its tools on, not the
+    /// checker's: a login manager starts what a login entry runs on its own short PATH, which
+    /// finds none of the agent host, git or the project's gate tools the run was started with.
+    #[test]
+    fn a_relaunch_starts_the_driver_on_the_path_it_found_its_tools_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let parsed = RunArgs {
+            adopt: Some("a-run".into()),
+            ..RunArgs::default()
+        };
+        let kept = KeptRecord::hold(acquire_step_lock(dir.path()).unwrap());
+        kept.keep(&parsed, dir.path(), dir.path(), "a-run");
+        let text = kept.lock.contents().unwrap();
+        drop(kept);
+        std::fs::write(dir.path().join("step.lock"), &text).unwrap();
+        let check = Check {
+            now: now_secs(),
+            released: false,
+            in_main_checkout: &|| true,
+            manually_held: &|_| false,
+            credentials: BTreeSet::new(),
+        };
+        let keeper = EnvKeeper::default();
+        revive(dir.path(), &check, &keeper);
+        let handed: Vec<Option<OsString>> = keeper
+            .0
+            .into_inner()
+            .into_iter()
+            .map(|env| env.get("PATH").cloned().flatten())
+            .collect();
+        assert_eq!(handed, vec![std::env::var_os("PATH")], "record: {text}");
     }
 
     /// A driver given the store connection by `--conn` has had the store connection as surely as
@@ -753,13 +924,9 @@ mod tests {
         for (name, conn, flagged) in rows {
             let dir = tempfile::tempdir().unwrap();
             let parsed = RunArgs {
-                store: None,
                 conn: conn.map(str::to_string),
-                spec: None,
-                fresh: false,
-                rebase_definition: false,
-                base: None,
                 adopt: Some("a-run".into()),
+                ..RunArgs::default()
             };
             let kept = KeptRecord::hold(acquire_step_lock(dir.path()).unwrap());
             kept.keep(&parsed, dir.path(), dir.path(), "a-run");
@@ -775,7 +942,7 @@ mod tests {
                 now: now_secs(),
                 released: false,
                 in_main_checkout: &|| true,
-                operator_holds: &|_| false,
+                manually_held: &|_| false,
                 credentials: BTreeSet::new(),
             };
             let said = revive(dir.path(), &check, &EnvKeeper::default()).unwrap_or_default();
@@ -797,13 +964,9 @@ mod tests {
     fn a_panic_that_unwinds_the_driver_empties_its_record() {
         let dir = tempfile::tempdir().unwrap();
         let parsed = RunArgs {
-            store: None,
-            conn: None,
             spec: Some("specs/a.md".into()),
-            fresh: false,
-            rebase_definition: false,
             base: Some("main".into()),
-            adopt: None,
+            ..RunArgs::default()
         };
         let unwound = std::panic::catch_unwind(|| {
             let kept = KeptRecord::hold(acquire_step_lock(dir.path()).unwrap());
@@ -821,5 +984,177 @@ mod tests {
             "",
             "a panic that unwinds the driver leaves no record to relaunch"
         );
+    }
+
+    /// What a login-start facility was asked, in order, kept in memory; given a reason, it refuses
+    /// every registration with it, recording nothing for it.
+    #[derive(Clone, Default)]
+    struct Asked {
+        calls: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
+        refuses: Option<&'static str>,
+    }
+
+    impl LoginStart for Asked {
+        fn register(&self, key: &str, program: &str, args: &[String]) -> Result<(), Unavailable> {
+            if let Some(why) = self.refuses {
+                return Err(Unavailable(why.to_string()));
+            }
+            self.calls
+                .borrow_mut()
+                .push(format!("register {key} {program} {}", args.join(" ")));
+            Ok(())
+        }
+
+        fn unregister(&self, key: &str) -> Result<(), Unavailable> {
+            self.calls.borrow_mut().push(format!("unregister {key}"));
+            Ok(())
+        }
+
+        fn entries(
+            &self,
+        ) -> Result<Vec<rigger::login_start::Entry>, rigger::login_start::Unlisted> {
+            Ok(Vec::new())
+        }
+    }
+
+    /// How a driver that took the step lock ends, for
+    /// [`a_driver_removes_its_login_entry_as_its_record_is_emptied`].
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum Ends {
+        Returns,
+        Panics,
+        ParksForRelease,
+    }
+
+    /// A driver started with `--relaunch-at-login` registers, once it holds the step lock, one
+    /// entry under its project's key ([`run_key`]) that runs this binary as `run --at-login
+    /// <root>`, and removes it as its record is emptied, by a return or a panic that unwinds it; a
+    /// driver parked for `rigger release` leaves the entry beside the record it leaves. A
+    /// registration the facility refuses refuses the launch, naming why, and leaves nothing for
+    /// the driver's end to remove.
+    #[test]
+    fn a_driver_removes_its_login_entry_as_its_record_is_emptied() {
+        let rows = [
+            ("a driver that returns", None, Ends::Returns, true),
+            ("a driver a panic unwinds", None, Ends::Panics, true),
+            (
+                "a driver parked for release",
+                None,
+                Ends::ParksForRelease,
+                false,
+            ),
+            (
+                "a driver whose facility refuses",
+                Some("no login session here"),
+                Ends::Returns,
+                false,
+            ),
+        ];
+        for (case, refuses, ends, removed) in rows {
+            let project = tempfile::tempdir().unwrap();
+            let dir = project.path().join(RIGGER_DIR);
+            std::fs::create_dir_all(&dir).unwrap();
+            let root = project.path().canonicalize().unwrap();
+            let root = root.to_str().unwrap();
+            let key = run_key(root);
+            let asked = Asked {
+                refuses,
+                ..Asked::default()
+            };
+            let parsed = RunArgs {
+                adopt: Some("a-run".into()),
+                relaunch_at_login: true,
+                ..RunArgs::default()
+            };
+            let refused = std::cell::RefCell::new(None);
+            let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let kept = KeptRecord::hold(acquire_step_lock(&dir).unwrap());
+                if let Err(why) = kept.register_at_login(Box::new(asked.clone()), &dir) {
+                    *refused.borrow_mut() = Some(why);
+                    return;
+                }
+                kept.keep(&parsed, &dir, &dir, "a-run");
+                match ends {
+                    Ends::Returns => {}
+                    Ends::Panics => panic!("the driver panicked mid-run"),
+                    Ends::ParksForRelease => kept.leave_for_release(),
+                }
+            }));
+            let mut expected = Vec::new();
+            if refuses.is_none() {
+                expected.push(format!(
+                    "register {key} {} run --at-login {root}",
+                    standing_executable().display()
+                ));
+            }
+            if removed {
+                expected.push(format!("unregister {key}"));
+            }
+            let refused = refused.into_inner();
+            assert_eq!(
+                (
+                    unwound.is_err(),
+                    asked.calls.borrow().clone(),
+                    refused
+                        .as_deref()
+                        .map(|why| refuses.is_some_and(|reason| why.contains(reason))),
+                ),
+                (ends == Ends::Panics, expected, refuses.map(|_| true)),
+                "{case}; refused: {refused:?}"
+            );
+        }
+    }
+
+    /// A login owes a project its relaunch while the step lock holds the record of a driver
+    /// started with `--relaunch-at-login`, and while a driver holds the lock at all; a store or lock
+    /// that is gone, and a free lock over an emptied, unreadable or unflagged record, owe nothing.
+    #[test]
+    fn a_login_owes_a_relaunch_only_over_a_flagged_record_or_a_held_lock() {
+        let record = |args: &[&str]| {
+            serde_json::to_string(&DriverRecord {
+                dir: PathBuf::from("/home/dev/project/.rigger"),
+                cwd: PathBuf::from("/home/dev/project"),
+                args: args.iter().map(|arg| arg.to_string()).collect(),
+                bin: None,
+                run: "a-run".into(),
+                env: BTreeMap::new(),
+                credentials: BTreeSet::new(),
+                relaunched_at: None,
+                revived_at: None,
+            })
+            .unwrap()
+        };
+        let flagged = record(&["run", "--relaunch-at-login", "--adopt", "a-run"]);
+        let unflagged = record(&["run", "--adopt", "a-run"]);
+        let rows: [(&str, Option<&str>, bool, bool); 7] = [
+            ("no store", None, false, false),
+            ("an emptied record", Some(""), false, false),
+            (
+                "a record that does not parse",
+                Some("not a record"),
+                false,
+                false,
+            ),
+            ("an unflagged record", Some(&unflagged), false, false),
+            ("a flagged record", Some(&flagged), false, true),
+            ("a held lock over an emptied record", Some(""), true, true),
+            (
+                "a held lock over an unflagged record",
+                Some(&unflagged),
+                true,
+                true,
+            ),
+        ];
+        for (case, text, held, owed) in rows {
+            let project = tempfile::tempdir().unwrap();
+            let dir = project.path().join(RIGGER_DIR);
+            if let Some(text) = text {
+                std::fs::create_dir_all(&dir).unwrap();
+                std::fs::write(dir.join("step.lock"), text).unwrap();
+            }
+            let _holder =
+                held.then(|| HeldLock::try_take(&dir.join("step.lock")).unwrap().unwrap());
+            assert_eq!(owed_at_login(&dir), owed, "{case}");
+        }
     }
 }

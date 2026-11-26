@@ -6,19 +6,21 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use super::budget::{self, PROSE_TOP, REPLY_LIMIT, TEXT_TOTAL};
-use super::graph::{Answered, Entity, Site, TermGraph};
+use super::graph::{Answered, Entity, ReferrerSite, Site, TermGraph};
 #[cfg(feature = "symbols")]
 use super::normalise;
 use super::prose::{ProseHit, ProseIndex, Ranked};
 use super::text::{self, TermText, TextHit};
 use super::{words, Lookup, TreeLookup};
 use crate::contextgraph::{
-    CallGraph, CallNode, Candidate, ContextGraph, Direction, Error, Graph, Located, Node,
+    CallGraph, CallNode, Candidate, ContextGraph, Direction, Error, Graph, Located, Node, Referrer,
     KIND_DECISION, REBUILD_OWED,
 };
 #[cfg(feature = "symbols")]
-use crate::contextgraph::{KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_DESIGN_DOC, KIND_FILE};
-use rigger_domain::code_view::Compared;
+use crate::contextgraph::{
+    KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_DESIGN_DOC, KIND_FILE, REFERRER_LABELS,
+};
+use rigger_domain::code_view::{Compared, Tests};
 use rigger_domain::composed::Label;
 
 /// The label [`Held`] answers under: it describes `c1` and withholds nothing.
@@ -42,8 +44,8 @@ fn answered(terms: Vec<TermGraph>) -> Answered {
     }
 }
 
-/// A graph held in memory: its nodes, its calls as (caller, callee) ids, and the ids it locates a
-/// term to.
+/// A graph held in memory: its nodes, its calls as (caller, callee) ids, the ids it locates a
+/// term to, and each id's referrers and doc.
 #[derive(Default)]
 struct Held {
     nodes: Vec<Node>,
@@ -51,6 +53,8 @@ struct Held {
     located: BTreeMap<String, Vec<String>>,
     /// The test entities its filter hides.
     hidden_tests: Vec<Node>,
+    referrers: BTreeMap<String, Vec<Referrer>>,
+    docs: BTreeMap<String, String>,
 }
 
 impl ContextGraph for Held {
@@ -128,6 +132,12 @@ impl ContextGraph for Held {
     fn hidden_tests(&self) -> Result<Vec<Node>, Error> {
         Ok(self.hidden_tests.clone())
     }
+    fn doc(&self, node: &Node) -> Option<String> {
+        self.docs.get(&node.id).cloned()
+    }
+    fn referrers(&self, id: &str, _tests: Tests) -> Vec<Referrer> {
+        self.referrers.get(id).cloned().unwrap_or_default()
+    }
     fn stamp_label(&self) -> Label {
         held_label()
     }
@@ -188,6 +198,16 @@ fn section<'a>(reply: &'a str, section: &str) -> &'a str {
     body.find("\n## ").map_or(body, |end| &body[..end])
 }
 
+/// The graph [`section`] of a reply to the one term `term`, which matched one entity exactly under
+/// [`held_label`]: its block the site line `site`, then `tail`.
+fn one_entity_section(term: &str, site: &str, tail: &str) -> String {
+    format!(
+        "{}\n{}\n\n### {term}\nexact match: 1 entity\n- {site}\n{tail}",
+        held_label(),
+        budget::GRAPH_FILTERED
+    )
+}
+
 // --- the word rule -------------------------------------------------------------------------
 
 fn words_are(term: &str, expected: &[&str]) {
@@ -219,6 +239,9 @@ fn resolves(term: &str, expected: super::names::Resolved) {
         entity("c.rs", "parse_args", 5),
         entity("d.rs", "render", 9),
         entity("e.rs", "go", 2),
+        entity("f.rs", "load_state", 4),
+        entity("g.rs", "LoadState", 6),
+        entity("h.rs", "load_state", 8),
     ];
     let name = |n: &Node| n.attrs["name"].clone();
     let names = Names::build(entities.iter().map(name));
@@ -258,6 +281,7 @@ crate::test_cases! {
     a_longer_misspelling_resolves_fuzzily: resolves("aply_damage", found(super::names::Tier::Fuzzy, &["a.rs::apply_damage"]));
     a_missing_name_names_its_nearest: resolves("apple", super::names::Resolved::Missing { nearest: vec!["apply_damage".into()] });
     a_name_near_nothing_names_none: resolves("zzz", super::names::Resolved::Missing { nearest: vec![] });
+    names_sharing_a_normalised_form_resolve_together_each_entity_once: resolves("load_state", found(super::names::Tier::Exact, &["f.rs::load_state", "g.rs::LoadState", "h.rs::load_state"]));
 }
 
 // --- the text half -------------------------------------------------------------------------
@@ -525,6 +549,7 @@ fn diverged() -> (
         end_line: 1,
         parent: None,
         test: false,
+        doc: None,
     };
     let file = |path: &str, name: &str, mentions: Vec<Mention>| FileFacts {
         path: path.to_string(),
@@ -638,7 +663,9 @@ fn a_file_changed_deleted_or_added_is_answered_from_the_tree_by_both_halves() {
     ];
     for (term, shown, graph_says, text_says) in cases {
         let graph = composed(&records, &view, Compared::Overlaid(3));
-        let reply = lookup.lookup(&terms(&[term]), Ok(&graph)).unwrap();
+        let reply = lookup
+            .lookup(&terms(&[term]), Ok(&graph), Tests::Exclude)
+            .unwrap();
         let graph_part = section(&reply, "graph");
         let label = graph.stamp_label();
         assert!(
@@ -677,6 +704,7 @@ fn a_multi_term_lookup_groups_each_section_per_term() {
         .lookup(
             &terms(&["widget_kept", "widget_added", "widget_kept"]),
             Ok(&graph),
+            Tests::Exclude,
         )
         .unwrap();
     for part in ["graph", "text"] {
@@ -714,6 +742,7 @@ fn named_tree() -> (
         end_line: 1,
         parent: None,
         test: false,
+        doc: None,
     };
     let call = |from: u32, to: &str| Mention {
         enclosing: Some(from),
@@ -831,6 +860,12 @@ impl ContextGraph for Defaults<'_> {
     fn hidden_tests(&self) -> Result<Vec<Node>, Error> {
         self.0.hidden_tests()
     }
+    fn doc(&self, node: &Node) -> Option<String> {
+        self.0.doc(node)
+    }
+    fn referrers(&self, id: &str, tests: Tests) -> Vec<Referrer> {
+        self.0.referrers(id, tests)
+    }
     fn stamp_label(&self) -> Label {
         self.0.stamp_label()
     }
@@ -883,9 +918,9 @@ fn the_graph_half_read_near_its_terms_answers_as_the_whole_graph_does() {
         for tests in [Tests::Exclude, Tests::Include, Tests::Only] {
             let filter = ViewFilter { tests };
             let whole = Composed::new(&records, &view, filter, honesty(compared)).unwrap();
-            let near = Composed::near(&records, &view, filter, honesty(compared)).unwrap();
-            let want = super::graph::answer(&NAMED_TERMS, &Defaults(&whole)).unwrap();
-            let got = super::graph::answer(&NAMED_TERMS, &near).unwrap();
+            let near = Composed::near(&records, &view, filter, honesty(compared), None).unwrap();
+            let want = super::graph::answer(&NAMED_TERMS, &Defaults(&whole), tests).unwrap();
+            let got = super::graph::answer(&NAMED_TERMS, &near, tests).unwrap();
             let at = format!("{tests:?} {compared:?}");
             for (i, term) in NAMED_TERMS.iter().enumerate() {
                 assert_eq!(got.terms[i], want.terms[i], "{at} {term}");
@@ -969,9 +1004,9 @@ fn the_graph_half_reads_no_file_its_terms_do_not_reach() {
             compared: Compared::Overlaid(1),
             behind: None,
         };
-        let near = Composed::near(&records, &view, ViewFilter::default(), honesty).unwrap();
+        let near = Composed::near(&records, &view, ViewFilter::default(), honesty, None).unwrap();
         let graph: &dyn ContextGraph = if defaults { &Defaults(&near) } else { &near };
-        super::graph::answer(&terms, graph).unwrap();
+        super::graph::answer(&terms, graph, Tests::default()).unwrap();
         let read = view.read.lock().unwrap();
         assert_eq!(
             read.iter().any(|f| f == "src/gen.rs"),
@@ -1057,7 +1092,7 @@ fn a_graph_that_cannot_answer_still_returns_text_and_prose() {
     ];
     for (graph, reason) in cases {
         let reply = TreeLookup::new(dir.path())
-            .lookup(&terms(&["gizmo"]), graph)
+            .lookup(&terms(&["gizmo"]), graph, Tests::Exclude)
             .unwrap();
         assert!(
             section(&reply, "graph").contains(&format!("not answered: {reason}")),
@@ -1085,7 +1120,7 @@ fn a_build_without_code_extraction_states_its_graph_holds_no_code() {
         ..Held::default()
     };
     let reply = TreeLookup::new(dir.path())
-        .lookup(&terms(&["gizmo"]), Ok(&graph))
+        .lookup(&terms(&["gizmo"]), Ok(&graph), Tests::Exclude)
         .unwrap();
     assert!(
         section(&reply, "graph").starts_with(
@@ -1108,7 +1143,7 @@ fn a_lookup_ranks_the_graphs_records_as_prose() {
         ..Held::default()
     };
     let reply = TreeLookup::new(dir.path())
-        .lookup(&terms(&["gizmo"]), Ok(&graph))
+        .lookup(&terms(&["gizmo"]), Ok(&graph), Tests::Exclude)
         .unwrap();
     assert!(
         section(&reply, "prose").contains("- prose:decision d1: keep the gizmo in memory\n"),
@@ -1122,16 +1157,17 @@ fn a_lookup_of_no_term_is_refused() {
     let dir = tree(&[]);
     for list in [&[][..], &["", "  "]] {
         assert!(TreeLookup::new(dir.path())
-            .lookup(&terms(list), Err(UNOPENED.to_string()))
+            .lookup(&terms(list), Err(UNOPENED.to_string()), Tests::Exclude)
             .is_err());
     }
 }
 
 // --- the reply budget ----------------------------------------------------------------------
 
-/// The worst case each section can be handed for `n` terms: every term reaching the most entities
-/// with the most callers, the most lines kept of the longest length, and the top prose results
-/// at their longest.
+/// The worst case each section can be handed for `n` terms: every term reaching the most entities,
+/// each with the longest doc, the most callees and the most referrers under two labels, each
+/// marked ambiguous (a block one term's share of the graph section still holds), the most lines
+/// kept of the longest length, and the top prose results at their longest.
 fn worst_case(n: usize) -> (Vec<String>, String) {
     let terms: Vec<String> = (0..n)
         .map(|i| format!("term_{i}_{}", "x".repeat(40)))
@@ -1144,6 +1180,10 @@ fn worst_case(n: usize) -> (Vec<String>, String) {
         file: Some((format!("src/{long}/f{i}.rs"), 12)),
         test: false,
     };
+    let referrer = |i: usize| ReferrerSite {
+        site: site(i),
+        ambiguous: true,
+    };
     let graph = refs
         .iter()
         .map(|_| TermGraph::Found {
@@ -1151,9 +1191,12 @@ fn worst_case(n: usize) -> (Vec<String>, String) {
             entities: (0..super::budget::GRAPH_ENTITIES)
                 .map(|i| Entity {
                     site: site(i),
-                    callers: (0..40).map(site).collect(),
+                    doc: Some(long.clone()),
+                    referrers: vec![
+                        ("called by", (0..40).map(referrer).collect()),
+                        ("reads", (0..40).map(referrer).collect()),
+                    ],
                     callees: (0..40).map(site).collect(),
-                    referenced_in: (0..40).map(|i| format!("src/{long}/r{i}.rs")).collect(),
                 })
                 .collect(),
             reached: 500,
@@ -1216,14 +1259,17 @@ crate::test_cases! {
     ]);
 }
 
-/// `n` sites `<prefix>0 (fn)` .. with no file.
-fn sites(prefix: &str, n: usize) -> Vec<Site> {
+/// `n` referrers at sites `<prefix>0 (fn)` .. with no file, none ambiguous.
+fn sites(prefix: &str, n: usize) -> Vec<ReferrerSite> {
     (0..n)
-        .map(|i| Site {
-            id: format!("{prefix}{i}"),
-            kind: "fn".to_string(),
-            file: None,
-            test: false,
+        .map(|i| ReferrerSite {
+            site: Site {
+                id: format!("{prefix}{i}"),
+                kind: "fn".to_string(),
+                file: None,
+                test: false,
+            },
+            ambiguous: false,
         })
         .collect()
 }
@@ -1259,7 +1305,8 @@ fn a_reply_within_every_bound_is_laid_out_whole() {
                     file: Some(("a.rs".to_string(), 3)),
                     test: false,
                 },
-                callers: sites("c", 12),
+                doc: Some("Hits the mark.\nIts second line.".to_string()),
+                referrers: vec![("called by", sites("c", 12)), ("reads", sites("r", 12))],
                 callees: vec![
                     Site {
                         id: "b.rs::x".to_string(),
@@ -1274,7 +1321,6 @@ fn a_reply_within_every_bound_is_laid_out_whole() {
                         test: false,
                     },
                 ],
-                referenced_in: (0..12).map(|i| format!("r{i}.rs")).collect(),
             }],
             reached: 1,
             unread: 0,
@@ -1339,9 +1385,10 @@ no entity named far; the graph holds no near name
 ### hit
 prefix match: 1 entity
 - a.rs:3 a.rs::hit (function)
+  Hits the mark.
   called by: {callers}
+  reads: {readers}
   calls: b.rs b.rs::x (fn); b.rs b.rs::y (fn)
-  referenced in: {referenced}
 
 ## text
 A literal, smart-case scan of your working tree as it stands, .gitignore honoured.
@@ -1364,7 +1411,7 @@ Prose and the graph's records ranked by relevance to all the terms together.
         label = held_label(),
         filtered = budget::GRAPH_FILTERED,
         callers = listed("c", " (fn)", 12, "; "),
-        referenced = listed("r", ".rs", 12, ", "),
+        readers = listed("r", " (fn)", 12, "; "),
     );
     assert_eq!(reply, expected);
 }
@@ -1383,9 +1430,9 @@ fn graph_blocks_kept(lengths: &[usize], shown: usize, cut: Option<&str>) {
                 file: None,
                 test: false,
             },
-            callers: vec![],
+            doc: None,
+            referrers: vec![],
             callees: vec![],
-            referenced_in: vec![],
         })
         .collect();
     let graph = vec![TermGraph::Found {
@@ -1502,28 +1549,133 @@ crate::test_cases! {
         held_under(REPLY_LIMIT / 100 + 1, (REPLY_LIMIT - budget::NOTE_ROOM) / 100);
 }
 
-/// A term the graph locates but no name reaches is answered by what it locates, with each
-/// entity's direct callers and none of the walk's seed among them.
+/// The referrer at `site`, of `kind`, listed under `label` for a mention at `line`.
+#[cfg(feature = "symbols")]
+fn referrer(
+    site: &str,
+    kind: &str,
+    label: &'static str,
+    line: u32,
+    test: bool,
+    ambiguous: bool,
+) -> Referrer {
+    Referrer {
+        site: site.to_string(),
+        kind: kind.to_string(),
+        label,
+        line,
+        test,
+        ambiguous,
+    }
+}
+
+/// A term the graph locates but no name reaches is answered by what it locates: each entity's
+/// doc, its referrers under each label in the labels' order, whatever order the graph lists them
+/// in, each at its mention's line, marked `[test]` when it is test code and then `?` when it is
+/// ambiguous, a file referrer by its file, and its direct callees with none of the walk's seed
+/// among them.
 #[cfg(feature = "symbols")]
 #[test]
-fn a_located_term_is_answered_with_its_direct_callers() {
+fn a_located_term_is_answered_with_its_doc_referrers_and_callees() {
     let (dir, graph) = (
-        tree(&[
-            ("a.rs", "fn target() {}\n"),
-            ("b.rs", "fn caller() { target() }\n"),
-        ]),
+        tree(&[("a.rs", "fn target() { callee() }\n")]),
         Held {
-            nodes: vec![entity("a.rs", "target", 1), entity("b.rs", "caller", 1)],
-            calls: vec![("b.rs::caller".to_string(), "a.rs::target".to_string())],
+            nodes: vec![entity("a.rs", "target", 1), entity("c.rs", "callee", 1)],
+            calls: vec![("a.rs::target".to_string(), "c.rs::callee".to_string())],
             located: [("the-alias".to_string(), vec!["a.rs::target".to_string()])].into(),
+            referrers: [(
+                "a.rs::target".to_string(),
+                vec![
+                    referrer("b.rs::reader", "function", "reads", 4, false, false),
+                    referrer("b.rs::caller", "function", "called by", 2, false, false),
+                    referrer("b.rs", KIND_FILE, "reads", 9, false, true),
+                    referrer("b.rs::checks", "function", "called by", 6, true, true),
+                ],
+            )]
+            .into(),
+            docs: [("a.rs::target".to_string(), "Aims.\nMore.".to_string())].into(),
             ..Held::default()
         },
     );
     let reply = TreeLookup::new(dir.path())
-        .lookup(&terms(&["the-alias"]), Ok(&graph))
+        .lookup(&terms(&["the-alias"]), Ok(&graph), Tests::Include)
         .unwrap();
-    let expected = "exact match: 1 entity\n- a.rs:1 a.rs::target (function)\n  called by: b.rs:1 b.rs::caller (function)\n";
-    assert!(section(&reply, "graph").contains(expected), "{reply}");
+    let expected = one_entity_section(
+        "the-alias",
+        "a.rs:1 a.rs::target (function)",
+        "  Aims.\n  called by: b.rs:2 b.rs::caller (function); b.rs:6 b.rs::checks (function) \
+         [test] ?\n  reads: b.rs:4 b.rs::reader (function); b.rs:9 b.rs (file) ?\n  calls: c.rs:1 \
+         c.rs::callee (function)\n",
+    );
+    assert_eq!(section(&reply, "graph"), expected);
+}
+
+/// Every tag has its label (spec 117, READERS): an entity whose referrers the graph lists under one
+/// label of the label table lists them on one line under that label, and one with more referrers
+/// under a label than the cap lists the first ten and then `(+N more)`.
+#[cfg(feature = "symbols")]
+#[test]
+fn every_tag_has_its_label() {
+    let one = "b.rs:7 b.rs::r0 (function)";
+    let ten = listed("b.rs:7 b.rs::r", " (function)", 10, "; ");
+    // (the referrers' label, how many there are, the line the entity lists them on)
+    let rows = (REFERRER_LABELS.iter())
+        .map(|&(_, label)| (label, 1, format!("  {label}: {one}\n")))
+        .chain([
+            ("called by", 10, format!("  called by: {ten}\n")),
+            ("called by", 11, format!("  called by: {ten} (+1 more)\n")),
+        ]);
+    for (label, n, printed) in rows {
+        let site = |i| referrer(&format!("b.rs::r{i}"), "function", label, 7, false, false);
+        let graph = Held {
+            nodes: vec![entity("a.rs", "target", 1)],
+            located: [("target".to_string(), vec!["a.rs::target".to_string()])].into(),
+            referrers: [("a.rs::target".to_string(), (0..n).map(site).collect())].into(),
+            ..Held::default()
+        };
+        let answered = super::graph::answer(&["target"], &graph, Tests::Exclude);
+        let reply = budget::reply(&["target"], answered, Err("x".into()), Err("x".into()));
+        let expected = one_entity_section("target", "a.rs:1 a.rs::target (function)", &printed);
+        assert_eq!(section(&reply, "graph"), expected, "{label}, {n} referrers");
+    }
+}
+
+/// An entity's doc is shown by its first line alone, under its site line, and only when that line
+/// holds text.
+fn doc_line_shown(doc: Option<&str>, shown: &str) {
+    let entity = Entity {
+        site: Site {
+            id: "a.rs::hit".to_string(),
+            kind: "function".to_string(),
+            file: Some(("a.rs".to_string(), 3)),
+            test: false,
+        },
+        doc: doc.map(str::to_string),
+        referrers: vec![],
+        callees: vec![],
+    };
+    let graph = vec![TermGraph::Found {
+        tier: "exact",
+        entities: vec![entity],
+        reached: 1,
+        unread: 0,
+    }];
+    let reply = budget::reply(
+        &["hit"],
+        Ok(answered(graph)),
+        Err("x".into()),
+        Err("x".into()),
+    );
+    let expected = one_entity_section("hit", "a.rs:3 a.rs::hit (function)", shown);
+    assert_eq!(section(&reply, "graph"), expected, "{doc:?}");
+}
+
+crate::test_cases! {
+    a_doc_shows_its_first_line_alone: doc_line_shown(Some("Holds it.\nMore of it."), "  Holds it.\n");
+    an_empty_doc_shows_no_line: doc_line_shown(Some(""), "");
+    a_doc_whose_first_line_is_empty_shows_no_line: doc_line_shown(Some("\nMore."), "");
+    a_doc_whose_first_line_is_blank_shows_no_line: doc_line_shown(Some("   \nMore."), "");
+    no_doc_shows_no_line: doc_line_shown(None, "");
 }
 
 /// A term the graph locates to a node that is not a code entity - a file, a community, a design
@@ -1559,7 +1711,7 @@ fn a_located_node_is_answered_under_its_own_kind() {
         };
         let dir = tree(&[("a.rs", "fn a() {}\n")]);
         let reply = TreeLookup::new(dir.path())
-            .lookup(&terms(&[id]), Ok(&graph))
+            .lookup(&terms(&[id]), Ok(&graph), Tests::Exclude)
             .unwrap();
         let expected = format!("exact match: 1 entity\n{line}");
         assert!(
@@ -1621,7 +1773,7 @@ fn lookup_reports_test_hits_as_a_separate_count() {
         };
         let dir = tree(&[("w.rs", "fn widget() {}\n")]);
         let reply = TreeLookup::new(dir.path())
-            .lookup(&terms(&[term]), Ok(&graph))
+            .lookup(&terms(&[term]), Ok(&graph), Tests::Exclude)
             .unwrap();
         let part = section(&reply, "graph");
         for line in expected {
@@ -1658,7 +1810,7 @@ fn a_term_reaching_more_entities_than_are_read_says_how_many_were_not() {
         },
     );
     let reply = TreeLookup::new(dir.path())
-        .lookup(&terms(&["dup"]), Ok(&graph))
+        .lookup(&terms(&["dup"]), Ok(&graph), Tests::Exclude)
         .unwrap();
     let part = section(&reply, "graph");
     for line in [

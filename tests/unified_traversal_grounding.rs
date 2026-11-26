@@ -29,7 +29,7 @@ use crate::source_audit;
 use common::git::temp_git_project_with_commit;
 use source_audit::gate_name_in;
 
-use rigger::code_facts::{Def, FileFacts};
+use rigger::code_facts::FileFacts;
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts};
 use rigger::config::{AgentDef, Config, Gate, Stage};
 use rigger::contextgraph::sqlite::Projector;
@@ -53,7 +53,7 @@ use common::fixtures::assert_task_prompt_carries_only_the_reviewer_contract;
 use common::fixtures::declare_test_author;
 use common::fixtures::language_marker_hits;
 use common::fixtures::test_spawn_host;
-use common::fixtures::{file_half, NESTED_METHOD, RANGE_ARTIFACT};
+use common::fixtures::{define_member, file_half, NESTED_METHOD, RANGE_ARTIFACT};
 use common::fixtures::{
     CHECK_THE_PEERS, GROUNDING_METHOD, LOOKUP_METHOD, LOOKUP_POINTER, RECORD_EACH_DECISION,
     RECORD_EACH_FINDING, SUPERSEDE_A_PEER, WHEN_YOU_REVIEW,
@@ -253,6 +253,7 @@ fn capture_prompts(cfg: &Config, tree: &Tree, grounder: &dyn Grounder) -> Vec<St
         store: &store,
         driver: &driver,
         gates: &ExecRunner,
+        run_branch: None,
         repo: String::new(),
         grounder: Some(grounder),
         graph: Some(graph),
@@ -696,6 +697,7 @@ fn run_and_capture_sdet_author_prompts(tree: &Tree) -> Vec<String> {
         store: &store,
         driver: &driver,
         gates: &ExecRunner,
+        run_branch: common::fixtures::branch_of(repo.path().to_str().unwrap()),
         repo: repo.path().to_str().unwrap().to_string(),
         grounder: Some(&grounder),
         graph: Some(graph),
@@ -780,6 +782,7 @@ fn run_and_capture_review_spawns(
         // repo). This mirrors the lib lens-finding test's setup (both drive the public `run` path);
         // only the DRIVER differs.
         repo: String::new(),
+        run_branch: None,
         grounder: Some(&grounder),
         graph: Some(graph),
         criteria: Vec::new(),
@@ -1814,15 +1817,7 @@ fn code_neighborhood_section(prompt: &str) -> Vec<&str> {
 fn a_spawn_prompt_lists_a_nested_method_of_the_touched_file_with_no_contains() {
     let mut tree = Tree::new();
     tree.define(file_half(NESTED_METHOD), "T", "struct", 1);
-    tree.file(file_half(NESTED_METHOD)).defs.push(Def {
-        local: "T::new".to_string(),
-        leaf: "new".to_string(),
-        kind: "method".to_string(),
-        line: 2,
-        end_line: 2,
-        parent: Some(0),
-        test: false,
-    });
+    define_member(tree.file(file_half(NESTED_METHOD)), "T", "new", "method", 2);
     tree.define(file_half(NESTED_METHOD), "mate", "function", 3);
     tree.record(
         TYPE_REVIEW_FINDING,

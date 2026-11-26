@@ -1,12 +1,14 @@
 //! The graph half: each term resolved against the code graph ([`ContextGraph::locate`] first,
 //! then the name index's exact, prefix and fuzzy tiers) and answered with each entity's definition
-//! site and the sites of its direct callers and callees. The graph describes the caller's tree:
-//! the files it differs in are read from the tree over the store's stamp. When the tree cannot be
-//! compared, the graph withholds every code hit and counts it in its label
+//! site, its doc, its referrers under each label (test ones only under the include and only tests
+//! modes) and the sites of its direct callees. The graph describes the caller's tree: the files it
+//! differs in are read from the tree over the store's stamp. When the tree cannot be compared, the
+//! graph withholds every code hit and counts it in its label
 //! ([`ContextGraph::stamp_label`]), which heads the half, so the graph half never answers from
 //! bytes the caller no longer holds; the text half answers from the tree's bytes.
 
 use crate::contextgraph::ContextGraph;
+use rigger_domain::code_view::Tests;
 use rigger_domain::composed::Label;
 
 #[cfg(feature = "symbols")]
@@ -16,10 +18,11 @@ use super::names::{Held, Names, Resolved, Tier, NEAREST};
 #[cfg(feature = "symbols")]
 use super::normalise;
 #[cfg(feature = "symbols")]
-use crate::contextgraph::query::{node_file, node_name};
+use crate::contextgraph::query::{node_file, node_name, split_id};
 #[cfg(feature = "symbols")]
 use crate::contextgraph::{
-    entity_site, CallGraph, Direction, Located, Node, KIND_CODE_ENTITY, TIER_INFERRED,
+    entity_site, CallGraph, Direction, Located, Node, Referrer, KIND_CODE_ENTITY, REFERRER_LABELS,
+    TIER_INFERRED,
 };
 
 /// Where a graph hit is defined.
@@ -37,12 +40,23 @@ pub(crate) struct Site {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Entity {
     pub site: Site,
-    /// Its direct callers' definition sites.
-    pub callers: Vec<Site>,
+    /// Its doc comment, when the graph reads one ([`ContextGraph::doc`]).
+    pub doc: Option<String>,
+    /// Its referrers the lookup's tests mode shows ([`ContextGraph::referrers`]) under each label,
+    /// in label order: each a referrer's enclosing site at the mention's own line, with whether
+    /// its mention gave the entity no single edge ([`ReferrerSite`]), in path then mention order
+    /// (the order a file's extraction lists its mentions, which need not be line order).
+    pub referrers: Vec<(&'static str, Vec<ReferrerSite>)>,
     /// Its direct callees' definition sites.
     pub callees: Vec<Site>,
-    /// The files that reference it without calling it.
-    pub referenced_in: Vec<String>,
+}
+
+/// One referrer an entity lists: its site, and whether its mention gave the entity no single edge
+/// ([`crate::contextgraph::Referrer::ambiguous`]), which the lookup marks `?`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ReferrerSite {
+    pub site: Site,
+    pub ambiguous: bool,
 }
 
 /// How a term resolved against the graph. A build without code extraction refuses the graph half
@@ -82,7 +96,11 @@ pub(crate) struct Answered {
 
 /// This build extracts no code, so its graph holds no code entity to answer from.
 #[cfg(not(feature = "symbols"))]
-pub(crate) fn answer(_terms: &[&str], _graph: &dyn ContextGraph) -> Result<Answered, String> {
+pub(crate) fn answer(
+    _terms: &[&str],
+    _graph: &dyn ContextGraph,
+    _tests: Tests,
+) -> Result<Answered, String> {
     Err(
         "this rigger build carries no code extraction (the `symbols` feature), so its graph \
          holds no code entity"
@@ -90,11 +108,16 @@ pub(crate) fn answer(_terms: &[&str], _graph: &dyn ContextGraph) -> Result<Answe
     )
 }
 
-/// Each term of `terms` answered from `graph`, in order. The names are indexed whole; the
-/// entities a name carries are read only when a term's search reaches the name, so the graph is
-/// read near the terms and its label counts only the hits a term reached and the graph withheld.
+/// Each term of `terms` answered from `graph`, in order, each entity's referrers as `tests` shows
+/// them. The names are indexed whole; the entities a name carries are read only when a term's
+/// search reaches the name, so the graph is read near the terms and its label counts only the hits
+/// a term reached and the graph withheld.
 #[cfg(feature = "symbols")]
-pub(crate) fn answer(asked: &[&str], graph: &dyn ContextGraph) -> Result<Answered, String> {
+pub(crate) fn answer(
+    asked: &[&str],
+    graph: &dyn ContextGraph,
+    tests: Tests,
+) -> Result<Answered, String> {
     let read = |e: crate::contextgraph::Error| format!("the context graph could not be read: {e}");
     let names = Names::build(graph.entity_names().map_err(read)?);
     let ids = |nodes: Vec<Node>| -> Vec<String> { nodes.into_iter().map(|n| n.id).collect() };
@@ -115,21 +138,23 @@ pub(crate) fn answer(asked: &[&str], graph: &dyn ContextGraph) -> Result<Answere
         };
         let mut entities = Vec::new();
         for id in ids.iter().take(GRAPH_ENTITIES) {
-            let up = graph
-                .calls(std::slice::from_ref(id), Direction::Up, 1, TIER_INFERRED)
-                .map_err(read)?;
             let down = graph
                 .calls(std::slice::from_ref(id), Direction::Down, 1, TIER_INFERRED)
                 .map_err(read)?;
+            let seed = (down.nodes.iter())
+                .find(|n| n.layer == 0 && n.node.id == *id)
+                .map(|n| &n.node);
+            let referrers = graph.referrers(id, tests);
             entities.push(Entity {
-                site: site_of(&up, id),
-                callers: neighbours(&up),
-                callees: neighbours(&down),
-                referenced_in: up
-                    .referenced_not_called
-                    .iter()
-                    .filter_map(|n| node_file(&n.kind, &n.id).map(str::to_string))
+                site: site_of(seed, id),
+                doc: seed.and_then(|node| graph.doc(node)),
+                referrers: (REFERRER_LABELS.iter())
+                    .map(|(_, label)| {
+                        let listed = referrers.iter().filter(|r| r.label == *label);
+                        (*label, listed.map(referrer_site).collect())
+                    })
                     .collect(),
+                callees: neighbours(&down),
             });
         }
         terms.push(TermGraph::Found {
@@ -192,14 +217,11 @@ fn located(
     })
 }
 
-/// The site of the node `id` the walk `up` seeds: its node, read in the walk, when the node is
-/// a code entity a name indexes; else the bare `id` under the kind the walk read it as (a file, a
+/// The site of the node `id`, `seeded` its node as a walk read it: that node's, when it is a code
+/// entity a name indexes; else the bare `id` under the kind the walk read it as (a file, a
 /// community), a code entity when the walk holds no seed.
 #[cfg(feature = "symbols")]
-fn site_of(up: &CallGraph, id: &str) -> Site {
-    let seeded = (up.nodes.iter())
-        .find(|n| n.layer == 0 && n.node.id == id)
-        .map(|n| &n.node);
+fn site_of(seeded: Option<&Node>, id: &str) -> Site {
     match seeded {
         Some(node)
             if node.kind == KIND_CODE_ENTITY
@@ -216,6 +238,21 @@ fn site_of(up: &CallGraph, id: &str) -> Site {
                 test: false,
             }
         }
+    }
+}
+
+/// The site of `referrer`: its enclosing definition, or its file, at the mention's own line, and
+/// whether it is ambiguous.
+#[cfg(feature = "symbols")]
+fn referrer_site(referrer: &Referrer) -> ReferrerSite {
+    ReferrerSite {
+        site: Site {
+            id: referrer.site.clone(),
+            kind: referrer.kind.clone(),
+            file: Some((split_id(&referrer.site).0.to_string(), referrer.line)),
+            test: referrer.test,
+        },
+        ambiguous: referrer.ambiguous,
     }
 }
 

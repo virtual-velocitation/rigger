@@ -139,6 +139,23 @@ pub fn git_commit_all(dir: impl AsRef<Path>, msg: &str) {
     }
 }
 
+/// Leave a missing but locked worktree registered at `dir`, as a worktree on a removable volume
+/// unplugged mid-run is left: the worktree at `dir` - or, when `dir` holds none, one added there
+/// detached at HEAD of the repository holding `repo` - is locked, then deleted off disk. Nothing
+/// sits at the path for a clear to remove, no prune clears the registration, and git refuses to
+/// add a worktree there. Whether the plant took.
+pub fn strand_worktree_at(repo: impl AsRef<Path>, dir: &str) -> bool {
+    let locked = if Path::new(dir).is_dir() {
+        run_git(dir, &["worktree", "lock", dir])
+    } else {
+        run_git(
+            repo,
+            &["worktree", "add", "--lock", "--detach", dir, "HEAD"],
+        )
+    };
+    locked.status.success() && std::fs::remove_dir_all(dir).is_ok()
+}
+
 /// Install a `pre-commit` hook in the repository at `repo_path` that refuses every commit.
 pub fn install_refusing_hook(repo_path: impl AsRef<Path>) {
     let hooks = repo_path.as_ref().join(".git").join("hooks");

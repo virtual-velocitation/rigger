@@ -133,11 +133,13 @@ pub fn positioned(mut events: Vec<Event>) -> Vec<Event> {
 
 /// The read, subscribe and boundary-lookup methods of an `EventStore` decorator that intercepts only
 /// `append`, each forwarded unchanged to the decorator's `inner` store - expanded inside that
-/// decorator's `impl EventStore` block. `(stream)` expands every one of them but the group lookup,
-/// for a decorator that also intercepts `latest_in_group`; `(append)` expands the append alone,
-/// forwarded the same way, for a decorator that intercepts reads instead; `(typed)` expands the
-/// typed stream read alone, for a decorator that intercepts the boundary lookup ahead of it; and
-/// `(record)` expands the record-id read alone.
+/// decorator's `impl EventStore` block. `(untyped)` expands every one of them but the typed stream
+/// read, for a decorator that intercepts that read; `(stream)` expands every one of them but the
+/// typed stream read and the group lookup, for a decorator that also intercepts
+/// `latest_in_group`; `(append)` expands the append alone, forwarded the same way, for a decorator
+/// that intercepts reads instead; `(typed)` expands the typed stream read alone, for a decorator
+/// that intercepts the boundary lookup ahead of it; and `(record)` expands the record-id read
+/// alone.
 #[macro_export]
 macro_rules! delegate_event_store_reads {
     (append) => {
@@ -151,6 +153,10 @@ macro_rules! delegate_event_store_reads {
         }
     };
     () => {
+        $crate::delegate_event_store_reads!(untyped);
+        $crate::delegate_event_store_reads!(typed);
+    };
+    (untyped) => {
         $crate::delegate_event_store_reads!(stream);
         fn latest_in_group(
             &self,
@@ -231,7 +237,6 @@ macro_rules! delegate_event_store_reads {
         ) -> Result<Option<rigger::eventstore::Revision>, rigger::eventstore::Error> {
             self.inner.last_position(stream, event_type)
         }
-        $crate::delegate_event_store_reads!(typed);
         $crate::delegate_event_store_reads!(record);
         fn read_stream_positions(
             &self,
@@ -888,6 +893,8 @@ pub struct ReadCountingStore<'a> {
     reads: CallLog,
     /// What waits to run against `inner` when a given call returns ([`Self::after_call`]).
     after: std::sync::Mutex<Vec<(usize, AfterCall<'a>)>>,
+    /// The calls answered before every later one fails ([`Self::capped`]); none when unset.
+    cap: Option<usize>,
 }
 
 /// The store a [`ReadCountingStore`] forwards to: one the test holds, or one the double owns, so
@@ -930,7 +937,16 @@ impl<'a> ReadCountingStore<'a> {
             inner,
             reads: CallLog::default(),
             after: std::sync::Mutex::default(),
+            cap: None,
         }
+    }
+
+    /// This double answering the first `calls` calls of its call log and failing every later one
+    /// with a backend error naming the cap, recorded like any other call, so a test of a loop that
+    /// must end sees one that re-reads without end fail instead of spin.
+    pub fn capped(mut self, calls: usize) -> Self {
+        self.cap = Some(calls);
+        self
     }
 
     /// Run `hook` against the inner store once, the moment the call at index `at` of the call log
@@ -963,11 +979,18 @@ impl<'a> ReadCountingStore<'a> {
         self.reads().iter().map(CountedRead::materialized).sum()
     }
 
-    /// Record `read` before it is forwarded, answering its index in the call log.
-    fn record(&self, read: CountedRead) -> usize {
+    /// Record `read` before it is forwarded, answering its index in the call log, or the error
+    /// of a call past the cap ([`Self::capped`]).
+    fn record(&self, read: CountedRead) -> Result<usize, Error> {
         let mut reads = self.reads.lock().unwrap();
         reads.push(read);
-        reads.len() - 1
+        let at = reads.len() - 1;
+        match self.cap {
+            Some(cap) if at >= cap => Err(Error::Backend(format!(
+                "the counting double's cap of {cap} calls is spent"
+            ))),
+            _ => Ok(at),
+        }
     }
 
     /// Count the `events` call `at` handed back, then hand them on.
@@ -1016,7 +1039,7 @@ impl EventStore for ReadCountingStore<'_> {
             from,
             forward: matches!(dir, Direction::Forward),
             materialized: 0,
-        });
+        })?;
         let events = self.inner.read_stream(stream, from, dir)?;
         Ok(self.handed_back(at, events))
     }
@@ -1030,7 +1053,7 @@ impl EventStore for ReadCountingStore<'_> {
             from,
             forward: matches!(dir, Direction::Forward),
             materialized: 0,
-        });
+        })?;
         let events = self.inner.read_all(from, dir, filter)?;
         Ok(self.handed_back(at, events))
     }
@@ -1044,18 +1067,18 @@ impl EventStore for ReadCountingStore<'_> {
             from,
             max,
             materialized: 0,
-        });
+        })?;
         let events = self.inner.read_all_page(from, filter, max)?;
         Ok(self.handed_back(at, events))
     }
     fn log_head(&self) -> Result<Option<Position>, Error> {
-        let at = self.record(CountedRead::LogHead);
+        let at = self.record(CountedRead::LogHead)?;
         let head = self.inner.log_head();
         self.returned(at);
         head
     }
     fn subscribe_all(&self, from: Position, filter: &Filter) -> Result<Subscription, Error> {
-        let at = self.record(CountedRead::SubscribeAll { from, delivered: 0 });
+        let at = self.record(CountedRead::SubscribeAll { from, delivered: 0 })?;
         let sub = self.inner.subscribe_all(from, filter)?;
         Ok(self.counted(at, sub))
     }
@@ -1064,7 +1087,7 @@ impl EventStore for ReadCountingStore<'_> {
             stream: stream.to_string(),
             from,
             delivered: 0,
-        });
+        })?;
         let sub = self.inner.subscribe_stream(stream, from)?;
         Ok(self.counted(at, sub))
     }
@@ -1072,7 +1095,7 @@ impl EventStore for ReadCountingStore<'_> {
         let at = self.record(CountedRead::LastPosition {
             stream: stream.to_string(),
             event_type: event_type.to_string(),
-        });
+        })?;
         let boundary = self.inner.last_position(stream, event_type);
         self.returned(at);
         boundary
@@ -1093,7 +1116,7 @@ impl EventStore for ReadCountingStore<'_> {
             only,
             types: types.iter().map(|t| t.to_string()).collect(),
             materialized: 0,
-        });
+        })?;
         let events = self.inner.read_stream_typed(stream, from, selection)?;
         Ok(self.handed_back(at, events))
     }
@@ -1106,7 +1129,7 @@ impl EventStore for ReadCountingStore<'_> {
         let at = self.record(CountedRead::StreamPositions {
             stream: stream.to_string(),
             handed: 0,
-        });
+        })?;
         self.inner
             .read_stream_positions(stream, batch, &mut |positions| {
                 self.reads.lock().unwrap()[at].add(positions.len());
@@ -1126,7 +1149,7 @@ impl EventStore for ReadCountingStore<'_> {
             stream: stream.to_string(),
             from,
             batches: Vec::new(),
-        });
+        })?;
         self.inner
             .read_stream_batched(stream, from, batch, &mut |events, head| {
                 self.reads.lock().unwrap()[at].add(events.len());
@@ -1139,7 +1162,7 @@ impl EventStore for ReadCountingStore<'_> {
         let at = self.record(CountedRead::LatestInGroup {
             stream: stream.to_string(),
             group: group.to_string(),
-        });
+        })?;
         let head = self.inner.latest_in_group(stream, group);
         self.returned(at);
         head
@@ -1155,7 +1178,7 @@ impl EventStore for ReadCountingStore<'_> {
             types: types.iter().map(|t| t.to_string()).collect(),
             id: id.to_string(),
             materialized: 0,
-        });
+        })?;
         let events = self.inner.read_by_record_id(stream, types, id)?;
         Ok(self.handed_back(at, events))
     }

@@ -4,12 +4,12 @@
 //!
 //! Resolving a view whole folds what every file asserts ([`crate::code_graph`]). What a file
 //! asserts about an id is fixed by the rules: a code id is asserted by its own file, by the files
-//! whose mentions of one of its leaves land on it from elsewhere (a tagged reference, and with
-//! tests shown a test call), by the files declaring it as a module, and by the design and workflow
-//! facts that name it. So an id's node and edges are the whole graph's when exactly those
-//! assertions are folded, in file order, under the same filter; its proofs are the test calls of
-//! its leaves; and its groupings are read from the view's groupings by id. Each file's assertions
-//! are read once and kept for the answer.
+//! whose mentions of one of its leaves land on it from elsewhere (a tagged reference, a qualified
+//! call, and with tests shown a test call), by the files declaring it as a module, and by the
+//! design and workflow facts that name it. So an id's node and edges are the whole graph's when
+//! exactly those assertions are folded, in file order, under the same filter; its proofs are the
+//! test calls of its leaves; and its groupings are read from the view's groupings by id. Each
+//! file's assertions are read once and kept for the answer.
 
 use rustc_hash::FxHashMap;
 use std::borrow::Cow;
@@ -18,18 +18,23 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use crate::code_facts::{Bound, FileFacts, Half, MentionKind, Recorded};
 use crate::code_graph::{Asserts, Builder, CodeGraph};
-use crate::code_view::{Cluster, CodeView, FileRef, Groupings, Tests, ViewFilter};
+use crate::code_view::{
+    Cluster, CodeView, FileRef, Groupings, SettledHalf, Tests, ViewFilter, SETTLED_FILTER,
+};
 use crate::composed::{
-    attachments, binds_leaf, cluster_files, id_binds_leaf, joined, ordered, provers_of, CodeHalf,
-    Indexed,
+    binds_leaf, cluster_files, id_binds_leaf, ordered, provers_of, CodeHalf, Indexed,
 };
-use crate::contextgraph::query::{entity_id, leaf_of, member_file, placeholder_id, split_id};
+use crate::contextgraph::query::{
+    entity_id, leaf_of, member_file, path_leaf, placeholder_cut, placeholder_id, split_id,
+};
 use crate::contextgraph::{
-    holds_attachment, Edge, Error, Graph, Neighbors, Node, KIND_ARTIFACT, KIND_CODE_ENTITY,
-    KIND_COMMUNITY, KIND_CONCEPT, KIND_FILE, PLACEHOLDER_SIGIL, REL_IN_COMMUNITY, REL_REALIZES,
-    REL_TESTS, TIER_INFERRED,
+    holds_attachment, Edge, Error, Graph, Neighbors, Node, Referrer, KIND_ARTIFACT,
+    KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, KIND_FILE, PLACEHOLDER_SIGIL, REL_IN_COMMUNITY,
+    REL_REALIZES, REL_TESTS, TIER_INFERRED,
 };
-use crate::resolve::{def_leaves, local_leaves, IntentLink, IntentNode, INTENT_KINDS};
+use crate::resolve::{
+    def_leaves, local_leaves, IntentLink, IntentNode, ProofCall, Resolver, INTENT_KINDS,
+};
 use crate::test_view::TESTS_ATTR;
 
 /// The groupings' two arms, in the order they are joined: each cluster's node kind and the
@@ -318,6 +323,9 @@ struct State<'v> {
     view: &'v dyn CodeView,
     graph: CodeGraph<'v>,
     tests: Tests,
+    /// The code half the view settles whole, read in place of resolving near an id: offered
+    /// under [`SETTLED_FILTER`] alone, the one it is settled under.
+    half: Option<&'v dyn SettledHalf>,
     files: Vec<FileRef<'v>>,
     places: FxHashMap<&'v str, u32>,
     intent: Option<Intent>,
@@ -348,9 +356,10 @@ struct State<'v> {
     proof_passes: Vec<u32>,
 }
 
-/// The code half of a view under one filter, resolved only near the ids it is asked about. Its
-/// answers are the whole graph's ([`crate::composed::Indexed`] over [`joined`]): the reads that
-/// need every node (`of_kind`, `whole`) resolve the view whole once.
+/// The code half of a view under one filter, resolved only near the ids it is asked about, or
+/// read from the half the view settles whole when the filter is the default. Its answers are the
+/// whole graph's ([`Indexed::resolved`]): the reads that need every node (`of_kind`, `whole`)
+/// resolve the view whole once.
 pub(crate) struct Near<'v> {
     state: Mutex<State<'v>>,
     whole: OnceLock<Indexed>,
@@ -367,6 +376,9 @@ impl<'v> Near<'v> {
                 view,
                 graph: CodeGraph::new(view, filter),
                 tests: filter.tests,
+                half: (filter == SETTLED_FILTER)
+                    .then(|| view.settled()?.half())
+                    .flatten(),
                 files,
                 places,
                 intent: None,
@@ -397,18 +409,7 @@ impl<'v> Near<'v> {
     fn resolved_whole(&self) -> &Indexed {
         self.whole.get_or_init(|| {
             let state = self.state();
-            let resolved = state.graph.resolved();
-            let groupings = state.view.groupings();
-            let proofs = state.graph.resolver().proof_calls();
-            Indexed::new(
-                joined(
-                    resolved.graph,
-                    groupings,
-                    &attachments(proofs, groupings),
-                    state.tests,
-                ),
-                Vec::new(),
-            )
+            Indexed::resolved(&state.graph, state.view.groupings())
         })
     }
 }
@@ -437,10 +438,7 @@ impl<'v> State<'v> {
                 for id in fragment.touching.keys() {
                     at.entry(id.clone()).or_default().push(place as u32);
                     if let Some(rest) = split_id(id).1 {
-                        for leaf in [Some(rest), rest.strip_prefix(PLACEHOLDER_SIGIL)]
-                            .into_iter()
-                            .flatten()
-                        {
+                        for leaf in [Some(rest), leaf_of(id)].into_iter().flatten() {
                             let held = leaves.entry(leaf.to_string()).or_default();
                             held.insert(id.clone());
                         }
@@ -546,7 +544,7 @@ impl<'v> State<'v> {
                 };
                 let resolver = self.graph.resolver();
                 for decl in declared.iter() {
-                    if let Some(target) = resolver.module_target(decl) {
+                    if let Some(target) = resolver.module_target(f.path, decl) {
                         let held = modules.entry(target.to_string()).or_default();
                         if held.last() != Some(&(place as u32)) {
                             held.push(place as u32);
@@ -572,14 +570,16 @@ impl<'v> State<'v> {
     }
 
     /// The places of the code files whose mentions of one of `leaves`, the leaves of `id`, can land
-    /// on a definition in another file: those holding a tagged reference to one, and, with tests
-    /// shown, a test call of one the proof rule credits to `id`, the one definition such a call
-    /// lands on in another file ([`crate::resolve::Resolver::proving_calls`]).
+    /// on a definition in another file: those holding a tagged reference to one or a qualified
+    /// call of one (`Q::leaf`, `Q.leaf`, which lands on the one candidate its qualifier keeps in
+    /// whatever file defines it, [`Resolver::lands_elsewhere`]), and, with tests shown, a test
+    /// call of one the proof rule credits to `id`, the one definition such a call lands on in
+    /// another file ([`Resolver::proving_calls`]).
     fn landing(&self, id: &str, leaves: &[String]) -> Vec<u32> {
         let mut places = Vec::new();
         for leaf in leaves {
             for m in self.view.mentions_named(leaf) {
-                if m.file.half == Half::Code && matches!(m.kind, MentionKind::Tagged(_)) {
+                if m.file.half == Half::Code && Resolver::lands_elsewhere(&m) {
                     places.extend(self.code_place(m.file.path));
                 }
             }
@@ -618,7 +618,9 @@ impl<'v> State<'v> {
     /// `id` resolved from the assertions of `sources`, as the whole graph holds it.
     fn resolve(&mut self, id: &str, sources: &[(u32, Part)], leaves: &[String]) -> Resolved {
         let mut named: Vec<&str> = leaves.iter().map(String::as_str).collect();
+        // A placeholder is asserted by the calls to the leaf of the name it is keyed by.
         named.extend(leaf_of(id));
+        named.extend(placeholder_cut(id).map(|(_, leaf)| leaf));
         let mut b = Builder::default();
         for &(place, part) in sources {
             match part {
@@ -818,6 +820,9 @@ impl<'v> State<'v> {
     /// The node `id`: the last cluster with that id, carrying its attached test count, else the
     /// code node.
     fn node(&mut self, id: &str) -> Option<Node> {
+        if let Some(half) = self.half {
+            return half.node(id);
+        }
         let clusters = self.clusters();
         let Some(&(arm, at)) = clusters.with_id(id).last() else {
             return self.code_node(id);
@@ -843,11 +848,17 @@ impl<'v> State<'v> {
 
     /// Whether the half holds a node `id`.
     fn holds(&mut self, id: &str) -> bool {
+        if let Some(half) = self.half {
+            return half.node(id).is_some();
+        }
         !self.clusters().with_id(id).is_empty() || self.code_node(id).is_some()
     }
 
     /// The edges from `id`: its code edges, its memberships and its tests' attachments.
     fn out(&mut self, id: &str) -> Vec<Edge> {
+        if let Some(half) = self.half {
+            return half.out(id);
+        }
         let mut edges = self.code_out(id).out.clone();
         if let Some(node) = self.code_node(id) {
             let clusters = self.clusters();
@@ -870,6 +881,9 @@ impl<'v> State<'v> {
 
     /// The edges into `id`: its code edges, and into a cluster its members' and its tests'.
     fn incoming(&mut self, id: &str) -> Vec<Edge> {
+        if let Some(half) = self.half {
+            return half.incoming(id);
+        }
         let mut edges = self.code_incoming(id).incoming.clone();
         let clusters = self.clusters();
         for (arm, (_, rel)) in ARMS.into_iter().enumerate() {
@@ -903,20 +917,18 @@ impl<'v> State<'v> {
 
     /// The named code entities of the file `file`, in id order.
     fn members(&mut self, file: &str) -> Vec<Node> {
+        if let Some(half) = self.half {
+            return half.members(file);
+        }
         let Some(place) = self.code_place(file) else {
             return Vec::new();
         };
         let Some(facts) = self.facts(place) else {
             return Vec::new();
         };
-        // A file's named entities are its definitions' ids and the placeholders of its calls.
+        // A file's named entities are its definitions': a placeholder carries no name.
         let mut ids: Vec<String> = (facts.defs.iter())
             .map(|d| entity_id(file, &d.local))
-            .chain(
-                (facts.mentions.iter())
-                    .filter(|m| m.kind == MentionKind::Call)
-                    .map(|m| placeholder_id(file, &m.leaf)),
-            )
             .collect();
         ids.sort_unstable();
         ids.dedup();
@@ -928,21 +940,25 @@ impl<'v> State<'v> {
     }
 
     /// The nodes bound by `leaf` ([`binds_leaf`]), in id order: the definitions named `leaf`,
-    /// the placeholders of calls to it, the entities whose id ends in it, and the design and
-    /// workflow ids and cluster ids it binds.
+    /// the placeholders of calls to it, keyed by it or by the qualified name a call writes, the
+    /// entities whose id ends in it, and the design and workflow ids and cluster ids it binds.
     fn leaf_nodes(&mut self, leaf: &str) -> Vec<Node> {
+        if let Some(half) = self.half {
+            return half.leaf_nodes(leaf);
+        }
         let mut ids: BTreeSet<String> = BTreeSet::new();
         for d in self.view.defs_named(leaf) {
             if d.file.half == Half::Code {
                 ids.insert(entity_id(d.file.path, d.local));
             }
         }
-        // An entity's id rest is its local path, its parent chain then its leaf joined by `::`:
-        // the definitions whose local is `leaf` (or `leaf` behind the sigil) are named by one of
-        // its `::` suffixes.
+        // An entity's id rest is its local path, its parent chain then its leaf joined by `::`, or
+        // by `.` for a dotted member (`Base.area`): the definitions whose local is `leaf` (or
+        // `leaf` behind the sigil) are named by one of its `::` suffixes or by its path leaf.
         let sigiled = format!("{PLACEHOLDER_SIGIL}{leaf}");
         for local in [leaf, sigiled.as_str()] {
-            for name in local_leaves(local) {
+            let names: BTreeSet<&str> = local_leaves(local).chain([path_leaf(local)]).collect();
+            for name in names {
                 for d in self.view.defs_named(name) {
                     if d.file.half == Half::Code && d.local == local {
                         ids.insert(entity_id(d.file.path, d.local));
@@ -950,12 +966,23 @@ impl<'v> State<'v> {
                 }
             }
         }
-        // A placeholder binds the leaf it calls, and the leaf behind the sigil binds its id's rest.
+        // A placeholder is keyed by the leaf a call writes or by its qualified name, and binds
+        // both and the leaf of the qualified one; the text behind the sigil binds its id's rest.
         let called = [Some(leaf), leaf.strip_prefix(PLACEHOLDER_SIGIL)];
         for called in called.into_iter().flatten() {
-            for m in self.view.mentions_named(called) {
-                if m.file.half == Half::Code && m.kind == MentionKind::Call {
-                    ids.insert(placeholder_id(m.file.path, called));
+            for named in BTreeSet::from([called, path_leaf(called)]) {
+                for m in self.view.mentions_named(named) {
+                    if m.file.half != Half::Code || m.kind != MentionKind::Call {
+                        continue;
+                    }
+                    for key in [
+                        placeholder_id(m.file.path, named),
+                        placeholder_id(m.file.path, m.name),
+                    ] {
+                        if id_binds_leaf(&key, leaf) {
+                            ids.insert(key);
+                        }
+                    }
                 }
             }
         }
@@ -1117,36 +1144,59 @@ impl CodeHalf for Near<'_> {
         let facts = state.facts(place)?;
         recorded.widest_end(facts.defs.iter().map(Bound::from))
     }
-    /// Read from the proofs read resolving `ids`, or, once the view is resolved whole, from the
-    /// proof calls that read.
+    /// Read from the file's facts, the ones its nodes are resolved from.
+    fn doc_span(&self, file: &str, recorded: Option<Recorded>) -> Option<(String, (u32, u32))> {
+        let mut state = self.state();
+        let place = state.code_place(file)?;
+        let facts = state.facts(place)?;
+        let span = match recorded {
+            None => facts.doc,
+            Some(recorded) => recorded.widest(&facts.defs)?.doc,
+        }?;
+        Some((facts.lang.clone(), span))
+    }
+    /// Read from the proofs read resolving `ids`; once the view is resolved whole, from the proof
+    /// calls that read; and over a settled half, which resolves no id, from each id's proofs.
     fn hidden_provers(&self, ids: &[String]) -> Vec<String> {
         let state = self.state();
         if state.tests != Tests::Exclude {
             return Vec::new();
         }
-        match self.whole.get() {
-            Some(_) => {
-                let proofs = state.graph.resolver().proof_calls().iter();
-                provers_of(
-                    proofs.filter_map(|c| Some((c.target.as_str(), c.caller.as_deref()?))),
-                    ids,
-                )
+        let resolver = state.graph.resolver();
+        let proofs: Cow<[ProofCall]> = match (self.whole.get(), state.half) {
+            (Some(_), _) => Cow::Borrowed(resolver.proof_calls()),
+            (None, Some(_)) => {
+                Cow::Owned(ids.iter().flat_map(|id| resolver.proofs_of(id)).collect())
             }
-            None => {
+            (None, None) => {
                 let proofs = (state.provers.iter()).flat_map(|(id, provers)| {
                     provers.iter().map(move |p| (id.as_str(), p.as_str()))
                 });
-                provers_of(proofs, ids)
+                return provers_of(proofs, ids);
             }
-        }
+        };
+        provers_of(
+            proofs
+                .iter()
+                .filter_map(|c| Some((c.target.as_str(), c.caller.as_deref()?))),
+            ids,
+        )
     }
     /// Read from the mentions of `leaf` alone.
-    fn placeholder_callers(&self, leaf: &str) -> Vec<String> {
+    fn placeholder_callers(&self, id: &str, leaf: &str) -> Vec<String> {
         let state = self.state();
         match state.tests {
-            Tests::Exclude => state.graph.resolver().placeholder_callers(leaf),
+            Tests::Exclude => state.graph.resolver().placeholder_callers(id, leaf),
             Tests::Include | Tests::Only => Vec::new(),
         }
+    }
+    /// Asked of the resolver when walked, never read ahead.
+    fn down_hop(&self, id: &str) -> Option<Vec<String>> {
+        self.state().graph.down_hop(id)
+    }
+    /// Read from the mentions of the id's leaves alone.
+    fn referrers(&self, id: &str) -> Vec<Referrer> {
+        self.state().graph.resolver().referrers(id)
     }
     fn summarised_files(&self, id: &str) -> Vec<String> {
         let (members, tests) = {
@@ -1172,13 +1222,13 @@ impl CodeHalf for Near<'_> {
 mod tests {
     use super::*;
     use crate::code_facts::{FileFacts, ModuleDecl};
-    use crate::code_view::{Compared, DefRef, FactsView, MentionRef, Proofs, Settled};
+    use crate::code_view::{Compared, DefRef, FactsView, MentionRef, Proofs, Settled, SettledHalf};
     use crate::composed::{Composed, Honesty, Whole};
     use crate::contextgraph::query::node_name;
     use crate::contextgraph::{ContextGraph, Direction, TIER_AMBIGUOUS};
-    use crate::resolve::tests::{fixture, stamp};
+    use crate::resolve::tests::{fixture, narrowing_fixture, settled_rows, stamp};
     use crate::resolve::ProofCall;
-    use crate::resolve::Resolver;
+    use crate::test_support::matching_honesty;
     use std::borrow::Cow;
 
     /// Asserts two answers are the same, by their debug text: nodes and edges are compared
@@ -1213,7 +1263,9 @@ mod tests {
             name: "it".into(),
             def: 0,
             test: false,
-            candidates: vec!["tests/missing.rs".into(), "tests/it.rs".into()],
+            as_root: vec!["tests/missing.rs".into(), "tests/it.rs".into()],
+            as_child: vec!["tests/missing.rs".into(), "tests/it.rs".into()],
+            path_attr: false,
         });
         let groupings = Groupings {
             communities: vec![
@@ -1262,29 +1314,51 @@ mod tests {
     const FILTERS: [Tests; 3] = [Tests::Exclude, Tests::Include, Tests::Only];
 
     /// `view` holding what a store settles at advance as rows, as a resolver computes them over
-    /// it: a read of it takes the rows and computes neither.
+    /// it: a read of it takes the rows and computes neither. It offers a settled code half only
+    /// when one is given ([`Settles::with_half`]).
     struct Settles {
         view: FactsView,
         test_files: Vec<String>,
         proofs: Vec<ProofCall>,
+        half: Option<Indexed>,
     }
 
     impl Settles {
         fn of(view: FactsView) -> Self {
-            let resolver = Resolver::new(&view);
-            let test_files = (view.files())
-                .filter(|f| resolver.is_test_file(f.path))
-                .map(|f| f.path.to_string())
-                .collect();
-            let proofs = resolver.proof_calls().to_vec();
+            let (test_files, proofs) = settled_rows(&view);
             assert!(!proofs.is_empty(), "the fixture holds proofs");
-            drop(resolver);
             Settles {
                 view,
                 test_files,
                 proofs,
+                half: None,
             }
         }
+
+        /// These rows, offering `half` as the code half settled whole.
+        fn with_half(self, half: Indexed) -> Self {
+            Settles {
+                half: Some(half),
+                ..self
+            }
+        }
+
+        /// The code half offered.
+        fn offered(&self) -> &Indexed {
+            self.half
+                .as_ref()
+                .expect("a half is read only when offered")
+        }
+    }
+
+    /// `view`'s rows with its code half settled whole as a store settles it: resolved under the
+    /// default filter, its groupings joined on.
+    fn halved(view: FactsView) -> Settles {
+        let half = Indexed::resolved(
+            &CodeGraph::new(&view, ViewFilter::default()),
+            view.groupings(),
+        );
+        Settles::of(view).with_half(half)
     }
 
     impl CodeView for Settles {
@@ -1324,6 +1398,27 @@ mod tests {
                 })
                 .cloned()
                 .collect()
+        }
+        fn half(&self) -> Option<&dyn SettledHalf> {
+            self.half.as_ref().map(|_| self as &dyn SettledHalf)
+        }
+    }
+
+    impl SettledHalf for Settles {
+        fn node(&self, id: &str) -> Option<Node> {
+            self.offered().node(id).unwrap()
+        }
+        fn out(&self, id: &str) -> Vec<Edge> {
+            self.offered().out(id).unwrap()
+        }
+        fn incoming(&self, id: &str) -> Vec<Edge> {
+            self.offered().incoming(id).unwrap()
+        }
+        fn members(&self, file: &str) -> Vec<Node> {
+            self.offered().members(file).unwrap()
+        }
+        fn leaf_nodes(&self, leaf: &str) -> Vec<Node> {
+            self.offered().leaf_nodes(leaf).unwrap()
         }
     }
 
@@ -1372,81 +1467,99 @@ mod tests {
     /// ambiguous placeholders, frontiers, tagged references, CONTAINS, module declarations,
     /// proofs, design and workflow links) and the groupings' memberships and test attachments.
     /// Each id is read once from a neighbourhood shared across reads and once from a fresh one,
-    /// so no answer depends on what was read before it.
+    /// so no answer depends on what was read before it. The view is read from its facts, from its
+    /// settled rows, and from its settled rows with the code half settled whole. The same sweep
+    /// runs over the resolver's tree of qualified mentions, whose callers a neighbourhood folds.
     #[test]
     fn a_neighbourhood_answers_what_the_whole_graph_answers_under_every_filter() {
-        let view = view();
-        let ids = ids(&view);
-        let leaves = leaves(&view, &ids);
-        let whole_graph = Whole::new(&view, ViewFilter::default()).whole().unwrap();
+        let whole_graph = Whole::new(&view(), ViewFilter::default()).whole().unwrap();
         let tiers: BTreeSet<&str> = whole_graph.edges.iter().map(|e| e.tier.as_str()).collect();
         assert!(tiers.contains(TIER_AMBIGUOUS) && tiers.contains(TIER_INFERRED));
-        let settles = Settles::of(self::view());
-        for (tests, (held, read)) in FILTERS.into_iter().flat_map(|t| {
-            [
-                (t, ("facts", &view as &dyn CodeView)),
-                (t, ("settled", &settles)),
-            ]
-        }) {
-            let filter = ViewFilter { tests };
-            let whole = Whole::new(&view, filter);
-            same!(
-                Whole::new(read, filter).whole().unwrap(),
-                whole.whole().unwrap()
-            );
-            let shared = Near::new(read, filter);
-            let one = |near: &Near, id: &str, when: &str| {
-                let at = format!("{tests:?} {held} {when} {id}");
-                same!(near.node(id).unwrap(), whole.node(id).unwrap(), "node {at}");
-                same!(near.out(id).unwrap(), whole.out(id).unwrap(), "out {at}");
-                let (got, want) = (near.incoming(id).unwrap(), whole.incoming(id).unwrap());
-                same!(got, want, "incoming {at}");
-                let (got, want) = (near.members(id).unwrap(), whole.members(id).unwrap());
-                same!(got, want, "members {at}");
-                same!(near.holds(id), whole.holds(id), "holds {at}");
-                same!(near.concepts_of(id), whole.concepts_of(id), "concepts {at}");
-                let (got, want) = (near.concept_members(id), whole.concept_members(id));
-                same!(got, want, "concept members {at}");
-            };
-            for id in &ids {
-                one(&shared, id, "shared");
-                one(&Near::new(read, filter), id, "fresh");
-            }
-            for leaf in &leaves {
-                let (got, want) = (shared.leaf_nodes(leaf).unwrap(), whole.leaf_nodes(leaf));
-                same!(got, want.unwrap(), "{tests:?} leaf {leaf}");
-            }
-            for kind in [
-                KIND_CODE_ENTITY,
-                KIND_FILE,
-                KIND_COMMUNITY,
-                "decision",
-                "nothing",
-            ] {
-                let (got, want) = (shared.of_kind(kind).unwrap(), whole.of_kind(kind));
-                same!(got, want.unwrap(), "{tests:?} kind {kind}");
-            }
-            same!(shared.whole().unwrap(), whole.whole().unwrap());
-            same!(shared.hidden_tests(), whole.hidden_tests(), "{tests:?}");
-            // Resolved whole by the reads above, the neighbourhood answers from the whole.
-            for id in &ids {
-                one(&shared, id, "settled");
+        // (the tree, how it is made)
+        let trees = [
+            ("rules", view as fn() -> FactsView),
+            ("qualified", narrowing_fixture),
+        ];
+        for (tree, make) in trees {
+            let view = make();
+            let ids = ids(&view);
+            let leaves = leaves(&view, &ids);
+            let (settles, halved) = (Settles::of(make()), halved(make()));
+            for (tests, (held, read)) in FILTERS.into_iter().flat_map(|t| {
+                [
+                    (t, ("facts", &view as &dyn CodeView)),
+                    (t, ("settled", &settles)),
+                    (t, ("settled half", &halved)),
+                ]
+            }) {
+                let filter = ViewFilter { tests };
+                let whole = Whole::new(&view, filter);
+                same!(
+                    Whole::new(read, filter).whole().unwrap(),
+                    whole.whole().unwrap()
+                );
+                let shared = Near::new(read, filter);
+                let one = |near: &Near, id: &str, when: &str| {
+                    let at = format!("{tree} {tests:?} {held} {when} {id}");
+                    same!(near.node(id).unwrap(), whole.node(id).unwrap(), "node {at}");
+                    same!(near.out(id).unwrap(), whole.out(id).unwrap(), "out {at}");
+                    let (got, want) = (near.incoming(id).unwrap(), whole.incoming(id).unwrap());
+                    same!(got, want, "incoming {at}");
+                    let (got, want) = (near.members(id).unwrap(), whole.members(id).unwrap());
+                    same!(got, want, "members {at}");
+                    same!(near.holds(id), whole.holds(id), "holds {at}");
+                    same!(near.concepts_of(id), whole.concepts_of(id), "concepts {at}");
+                    let (got, want) = (near.concept_members(id), whole.concept_members(id));
+                    same!(got, want, "concept members {at}");
+                };
+                for id in &ids {
+                    one(&shared, id, "shared");
+                    one(&Near::new(read, filter), id, "fresh");
+                }
+                for leaf in &leaves {
+                    let (got, want) = (shared.leaf_nodes(leaf).unwrap(), whole.leaf_nodes(leaf));
+                    same!(got, want.unwrap(), "{tree} {tests:?} leaf {leaf}");
+                }
+                for kind in [
+                    KIND_CODE_ENTITY,
+                    KIND_FILE,
+                    KIND_COMMUNITY,
+                    "decision",
+                    "nothing",
+                ] {
+                    let (got, want) = (shared.of_kind(kind).unwrap(), whole.of_kind(kind));
+                    same!(got, want.unwrap(), "{tree} {tests:?} kind {kind}");
+                }
+                same!(shared.whole().unwrap(), whole.whole().unwrap());
+                same!(
+                    shared.hidden_tests(),
+                    whole.hidden_tests(),
+                    "{tree} {tests:?}"
+                );
+                // Resolved whole by the reads above, the neighbourhood answers from the whole.
+                for id in &ids {
+                    one(&shared, id, "settled");
+                }
             }
         }
     }
 
+    /// What a reader knows of a worktree its view compares with as `compared`.
+    fn honesty(compared: Compared) -> Honesty {
+        Honesty {
+            compared,
+            ..matching_honesty()
+        }
+    }
+
     /// Composed over a neighbourhood answers every search as composed over the whole graph: the
-    /// subgraph, the walks both ways, the lookup of a definition, the hidden tests and the hidden
-    /// tests proving what a subgraph shows.
+    /// subgraph, the walks both ways, the referrers, the lookup of a definition, the hidden tests
+    /// and the hidden tests proving what a subgraph shows, the view read from its facts, its
+    /// settled rows, and its settled rows with the code half settled whole.
     #[test]
     fn composed_near_answers_every_search_as_composed_whole() {
         let view = view();
         let records = Indexed::default();
-        let honesty = || Honesty {
-            worktree: "wt".into(),
-            compared: crate::code_view::Compared::Overlaid(0),
-            behind: None,
-        };
         let seeds = [
             "src/a.rs::run",
             "src/a.rs",
@@ -1456,17 +1569,24 @@ mod tests {
             "docs/d.md",
             "tests/it.rs",
         ];
-        let settles = Settles::of(self::view());
+        let (settles, halved) = (Settles::of(self::view()), halved(self::view()));
         for (tests, (held, read)) in FILTERS.into_iter().flat_map(|t| {
             [
                 (t, ("facts", &view as &dyn CodeView)),
                 (t, ("settled", &settles)),
+                (t, ("settled half", &halved)),
             ]
         }) {
             let filter = ViewFilter { tests };
-            let whole = Composed::new(&records, &view, filter, honesty()).unwrap();
-            let near = Composed::near(&records, read, filter, honesty()).unwrap();
+            let whole = Composed::new(&records, &view, filter, matching_honesty()).unwrap();
+            let near = Composed::near(&records, read, filter, matching_honesty(), None).unwrap();
             for seed in seeds {
+                let at = format!("{tests:?} {held} {seed}");
+                same!(
+                    near.referrers(seed, tests),
+                    whole.referrers(seed, tests),
+                    "referrers {at}"
+                );
                 let seed = [seed.to_string()];
                 for depth in [1, 2, 3] {
                     let at = format!("{tests:?} {held} {seed:?} {depth}");
@@ -1527,6 +1647,49 @@ mod tests {
         }
     }
 
+    /// A NEIGHBOURHOOD READS THE SETTLED HALF UNDER THE DEFAULT FILTER ALONE: over rows offering a
+    /// code half settled whole, here an empty one, a read of a node, its edges both ways, a file's
+    /// members and a leaf's nodes answers from the half while tests are hidden, so it answers
+    /// nothing; under a filter that shows tests the half is passed over and the view is resolved
+    /// as the whole graph answers.
+    #[test]
+    fn a_neighbourhood_reads_the_settled_half_under_the_default_filter_alone() {
+        let settles = Settles::of(view()).with_half(Indexed::default());
+        let (id, file, leaf) = ("src/a.rs::run", "src/a.rs", "run");
+        let read = |half: &dyn CodeHalf| {
+            let read = (
+                half.node(id).unwrap(),
+                half.out(id).unwrap(),
+                half.incoming(id).unwrap(),
+                half.members(file).unwrap(),
+                half.leaf_nodes(leaf).unwrap(),
+                half.holds(id),
+            );
+            format!("{read:#?}")
+        };
+        type Read = (
+            Option<Node>,
+            Vec<Edge>,
+            Vec<Edge>,
+            Vec<Node>,
+            Vec<Node>,
+            bool,
+        );
+        let none = format!("{:#?}", Read::default());
+        for tests in FILTERS {
+            let filter = ViewFilter { tests };
+            let want = match tests {
+                Tests::Exclude => none.clone(),
+                Tests::Include | Tests::Only => {
+                    let whole = read(&Whole::new(&view(), filter));
+                    assert_ne!(whole, none, "{tests:?}: the whole graph holds the reads");
+                    whole
+                }
+            };
+            assert_eq!(read(&Near::new(&settles, filter)), want, "{tests:?}");
+        }
+    }
+
     /// HIDDEN PROVERS ARE COUNTED FROM THE PROOFS READ: under exclude, the distinct test entities
     /// proving the nodes asked about, a test proving two counted once; none when tests are shown
     /// or the worktree cannot be compared. The whole graph and a neighbourhood count alike, a
@@ -1535,11 +1698,6 @@ mod tests {
     #[test]
     fn hidden_provers_are_the_distinct_tests_proving_the_nodes_shown_while_tests_are_hidden() {
         let records = Indexed::default();
-        let honesty = |compared| Honesty {
-            worktree: "wt".into(),
-            compared,
-            behind: None,
-        };
         let (run, helper) = ("src/a.rs::run", "src/a.rs::helper");
         let (compared, uncomparable) = (Compared::Overlaid(0), Compared::Uncomparable);
         let cases: &[(Tests, Compared, &[&str], usize)] = &[
@@ -1574,7 +1732,7 @@ mod tests {
                     want,
                     "whole {at}"
                 );
-                let near = Composed::near(&records, read, filter, honesty(compared)).unwrap();
+                let near = Composed::near(&records, read, filter, honesty(compared), None).unwrap();
                 near.subgraph(&ids, 1).unwrap();
                 counting.taken();
                 assert_eq!(near.hidden_provers(&ids).unwrap().len(), want, "near {at}");
@@ -1609,11 +1767,6 @@ mod tests {
     #[test]
     fn hidden_placeholder_callers_are_the_tests_calling_through_a_placeholder() {
         let records = Indexed::default();
-        let honesty = |compared| Honesty {
-            worktree: "wt".into(),
-            compared,
-            behind: None,
-        };
         let (run, draw, other) = ("src/a.rs::run", "src/b.rs::draw", "src/c.rs::draw");
         let (compared, uncomparable) = (Compared::Overlaid(0), Compared::Uncomparable);
         let cases: &[(Tests, Compared, &[&str], usize)] = &[
@@ -1644,7 +1797,7 @@ mod tests {
                     want,
                     "whole {at}"
                 );
-                let near = Composed::near(&records, read, filter, honesty(compared)).unwrap();
+                let near = Composed::near(&records, read, filter, honesty(compared), None).unwrap();
                 near.subgraph(&ids, 1).unwrap();
                 assert_eq!(
                     near.hidden_placeholder_callers(&ids).unwrap().len(),
@@ -1713,10 +1866,10 @@ mod tests {
     /// Each row: an id, and every file, definition and mention a read of its node and edges
     /// makes, counted from before the resolver is built: building it reads the files declaring a
     /// module held elsewhere. A definition reads its own file, the design and workflow facts, the
-    /// files holding a tagged reference to its leaf, and the mentions of that leaf; it resolves
-    /// only the mentions it encloses and those of its leaf, so the definitions read are those of
-    /// the leaves it names and its own. A file reads itself, the design files and the files
-    /// declaring modules, and resolves the mentions it holds alone.
+    /// files holding a tagged reference to or a qualified call of its leaf, and the mentions of
+    /// that leaf; it resolves only the mentions it encloses and those of its leaf, so the
+    /// definitions read are those of the leaves it names and its own. A file reads itself, the
+    /// design files and the files declaring modules, and resolves the mentions it holds alone.
     #[test]
     fn a_neighbourhood_reads_one_ids_file_and_its_leaf_only() {
         let opened = [
@@ -1782,10 +1935,11 @@ mod tests {
         }
     }
 
-    /// Each row, with tests shown: an id, a file holding a test call of one of its leaves, and
-    /// whether a read of the id's node and edges reads that file's facts. A test call lands on a
-    /// definition in another file only where the proof rule credits it with the call, so a file
-    /// whose test call the rule credits elsewhere, or to none, is never read for the id.
+    /// Each row, with tests shown: an id, a file holding an unqualified test call of one of its
+    /// leaves, and whether a read of the id's node and edges reads that file's facts. An
+    /// unqualified test call lands on a definition in another file only where the proof rule
+    /// credits it with the call, so a file whose such call the rule credits elsewhere, or to none,
+    /// is never read for the id.
     #[test]
     fn a_test_call_is_read_for_the_definition_its_proof_credits_alone() {
         let cases = [
@@ -1823,9 +1977,9 @@ mod tests {
         }
     }
 
-    /// An id whose reaches fold the same files is resolved once: `run` is tagged nowhere and is no
-    /// file a module declaration reaches, so its edges in fold the files its node and edges out
-    /// fold, and reading them reads no file's assertions again.
+    /// An id whose reaches fold the same files is resolved once: `run` is tagged and called
+    /// qualified nowhere and is no file a module declaration reaches, so its edges in fold the
+    /// files its node and edges out fold, and reading them reads no file's assertions again.
     #[test]
     fn an_id_its_reaches_fold_alike_is_resolved_once() {
         let view = view();
@@ -1903,6 +2057,368 @@ mod tests {
             once.dedup();
             assert_eq!(passes.len(), once.len(), "settled {settled}: {passes:?}");
             assert!(passes.contains(&place), "settled {settled}: {passes:?}");
+        }
+    }
+
+    /// A read of a code half and its whole answer.
+    enum Read {
+        /// [`Neighbors::incoming`] at the id: its edges, in order.
+        Incoming(&'static str, Vec<Edge>),
+        /// [`Neighbors::out`] at the id: its edges, in order.
+        Out(&'static str, Vec<Edge>),
+        /// [`Neighbors::leaf_nodes`] of the leaf: its nodes' ids, in order.
+        Leaf(&'static str, &'static [&'static str]),
+        /// [`CodeHalf::placeholder_callers`] of the id and its leaf: the hidden test callers, in
+        /// order.
+        Callers(&'static str, &'static str, &'static [&'static str]),
+    }
+
+    /// A QUALIFIER NAMING NO DEFINITION reaches the reads of both code halves (spec 117, RESOLVER
+    /// AT READ): over the resolver's qualifier fixture, the whole graph and a neighbourhood
+    /// answer each read with no node or edge of a path-qualified mention whose qualifier names
+    /// no definition (`AtomicU64::new` beside the project's `Cursor::new`,
+    /// `AtomicU64::fetch_add`, `ErrorKind::NotFound`), from product and test code alike, and
+    /// with what the unqualified rule gives a member qualifier
+    /// (`Request.GetClientIp`, `Request.Missing`, `Models.Shape`) and a path qualifier naming a
+    /// product type (`Gauge::load`). A path qualifier that keeps a candidate links it whatever
+    /// it names (the test call `FakeStore::open`). Both halves hide the same test caller behind
+    /// the placeholder of a test call whose path qualifier names a product type
+    /// (`Gauge::unload`), and none behind one naming only another language's type
+    /// (`Atomic::unload`).
+    #[test]
+    fn a_qualifier_naming_no_definition_reaches_neither_half_and_a_member_one_falls_back() {
+        use crate::contextgraph::{REL_CALLS, REL_CONTAINS, REL_REFERENCES, TIER_EXTRACTED};
+        use crate::resolve::tests::qualifier_fixture;
+        use crate::test_support::edge;
+        let view = qualifier_fixture();
+        let handle = "src/handler.cs::Handler.Handle";
+        let get_client_ip = "src/handler.cs::%GetClientIp";
+        // (what the answer shows, the filter, the read and its whole answer)
+        let cases: [(&str, Tests, Read); 11] = [
+            (
+                "no call lands on the project definition of a path qualifier's leaf",
+                Tests::Exclude,
+                Read::Incoming(
+                    "src/cursor.rs::Cursor::new",
+                    vec![edge(
+                        "src/cursor.rs::Cursor",
+                        "src/cursor.rs::Cursor::new",
+                        REL_CONTAINS,
+                        TIER_EXTRACTED,
+                    )],
+                ),
+            ),
+            (
+                "a leaf binds no placeholder of a path qualifier naming none",
+                Tests::Exclude,
+                Read::Leaf("new", &["src/cursor.rs::Cursor::new"]),
+            ),
+            (
+                "a path qualifier naming none past a leaf nothing defines makes no edge",
+                Tests::Exclude,
+                Read::Out("src/seq.rs::next", vec![]),
+            ),
+            (
+                "a leaf nothing defines binds no placeholder, from product or test code",
+                Tests::Include,
+                Read::Leaf("fetch_add", &[]),
+            ),
+            (
+                "a path qualifier naming a product type keeps the unqualified rule, and a \
+                 variant reference whose qualifier names none makes no edge",
+                Tests::Exclude,
+                Read::Out(
+                    "src/app.rs::main",
+                    vec![edge(
+                        "src/app.rs::main",
+                        "src/app.rs::%load",
+                        REL_CALLS,
+                        TIER_INFERRED,
+                    )],
+                ),
+            ),
+            (
+                "a test call whose path qualifier, a test type, keeps that type's own method",
+                Tests::Include,
+                Read::Out(
+                    "tests/store.rs::opens",
+                    vec![edge(
+                        "tests/store.rs::opens",
+                        "tests/support.rs::FakeStore::open",
+                        REL_CALLS,
+                        TIER_EXTRACTED,
+                    )],
+                ),
+            ),
+            (
+                "a test call whose path qualifier names a product type hides its caller behind a \
+                 placeholder, one whose qualifier names only another language's type none",
+                Tests::Exclude,
+                Read::Callers(
+                    "tests/gauge.rs::%unload",
+                    "unload",
+                    &["tests/gauge.rs::drains"],
+                ),
+            ),
+            (
+                "a member qualifier naming none binds its leaf's placeholder",
+                Tests::Exclude,
+                Read::Leaf(
+                    "GetClientIp",
+                    &[
+                        "src/handler.cs::%GetClientIp",
+                        "src/http.cs::HttpExtensions.GetClientIp",
+                    ],
+                ),
+            ),
+            (
+                "a member qualifier naming none calls its leaf's placeholder",
+                Tests::Exclude,
+                Read::Incoming(
+                    get_client_ip,
+                    vec![
+                        edge(
+                            "src/handler.cs",
+                            get_client_ip,
+                            REL_REFERENCES,
+                            TIER_INFERRED,
+                        ),
+                        edge(handle, get_client_ip, REL_CALLS, TIER_INFERRED),
+                    ],
+                ),
+            ),
+            (
+                "member qualifiers naming none keep the unqualified rule, a call or a reference",
+                Tests::Exclude,
+                Read::Out(
+                    handle,
+                    vec![
+                        edge(handle, get_client_ip, REL_CALLS, TIER_INFERRED),
+                        edge(
+                            handle,
+                            "src/handler.cs::%Missing",
+                            REL_CALLS,
+                            TIER_AMBIGUOUS,
+                        ),
+                        edge(handle, "src/http.cs::Shape", REL_REFERENCES, TIER_INFERRED),
+                    ],
+                ),
+            ),
+            (
+                "a member-qualified type reference naming none lands on its one type",
+                Tests::Exclude,
+                Read::Incoming(
+                    "src/http.cs::Shape",
+                    vec![
+                        edge(handle, "src/http.cs::Shape", REL_REFERENCES, TIER_INFERRED),
+                        edge(
+                            "src/http.cs",
+                            "src/http.cs::Shape",
+                            REL_CONTAINS,
+                            TIER_EXTRACTED,
+                        ),
+                    ],
+                ),
+            ),
+        ];
+        let ids = |nodes: Vec<Node>| nodes.into_iter().map(|n| n.id).collect::<Vec<_>>();
+        for (shows, tests, read) in &cases {
+            let filter = ViewFilter { tests: *tests };
+            let (whole, near) = (Whole::new(&view, filter), Near::new(&view, filter));
+            for (half, graph) in [("whole", &whole as &dyn CodeHalf), ("near", &near)] {
+                let at = format!("{half} {tests:?}: {shows}");
+                match read {
+                    Read::Incoming(id, want) => same!(graph.incoming(id).unwrap(), want, "{at}"),
+                    Read::Out(id, want) => same!(graph.out(id).unwrap(), want, "{at}"),
+                    Read::Leaf(leaf, want) => {
+                        assert_eq!(ids(graph.leaf_nodes(leaf).unwrap()), *want, "{at}")
+                    }
+                    Read::Callers(id, leaf, want) => {
+                        assert_eq!(graph.placeholder_callers(id, leaf), *want, "{at}")
+                    }
+                }
+            }
+        }
+    }
+
+    /// NEAR FOLDS QUALIFIED CALLERS (spec 117, RESOLVER AT READ): a call written `Q::leaf` whose
+    /// qualifier keeps one candidate lands on it EXTRACTED from any file, so `--around` that
+    /// candidate ([`crate::contextgraph::around`]) over a neighbourhood ([`Composed::near`])
+    /// answers what it answers over the whole graph ([`Composed::new`]), the caller in another
+    /// file included. Each row, over the resolver's narrowing fixture: what the answer shows, the
+    /// filter, the seed and the `CALLS` edges into it the whole graph draws, the product caller
+    /// `Composed::open` of `FactsView::new` and the test caller `opens` of `FactsView::files`,
+    /// beside `Composed::open`, whose `CodeView::files` keeps it among several candidates and is
+    /// walked up through their placeholder.
+    #[test]
+    fn near_folds_qualified_callers() {
+        use crate::contextgraph::{around, REL_CALLS, TIER_EXTRACTED};
+        use crate::test_support::{edge, halves};
+        let view = narrowing_fixture();
+        let records = Indexed::default();
+        let (new, open) = (
+            "src/code_view.rs::FactsView::new",
+            "src/composed.rs::Composed::open",
+        );
+        let (files, opens) = ("src/code_view.rs::FactsView::files", "tests/open.rs::opens");
+        let cases = [
+            (
+                "a product caller in another file",
+                Tests::Exclude,
+                new,
+                vec![edge(open, new, REL_CALLS, TIER_EXTRACTED)],
+            ),
+            (
+                "a product caller in another file, tests shown",
+                Tests::Include,
+                new,
+                vec![edge(open, new, REL_CALLS, TIER_EXTRACTED)],
+            ),
+            (
+                "a product caller of a product definition, neither shown with tests alone",
+                Tests::Only,
+                new,
+                vec![],
+            ),
+            (
+                "a test caller in another file hidden, a caller through a placeholder shown",
+                Tests::Exclude,
+                files,
+                vec![edge(open, files, REL_CALLS, TIER_INFERRED)],
+            ),
+            (
+                "a test caller in another file, tests shown",
+                Tests::Include,
+                files,
+                vec![
+                    edge(opens, files, REL_CALLS, TIER_EXTRACTED),
+                    edge(open, files, REL_CALLS, TIER_INFERRED),
+                ],
+            ),
+            (
+                "a test caller in another file, tests alone",
+                Tests::Only,
+                files,
+                vec![edge(opens, files, REL_CALLS, TIER_EXTRACTED)],
+            ),
+        ];
+        for (shows, tests, seed, want) in cases {
+            let [(_, whole), (_, near)] = halves(&records, &view, tests);
+            let seed = [seed.to_string()];
+            let at = format!("{tests:?} {}: {shows}", seed[0]);
+            let drawn = around(&*whole, &seed, 2).unwrap();
+            let callers: Vec<Edge> = (drawn.graph.edges.iter())
+                .filter(|e| e.rel == REL_CALLS && e.to == seed[0])
+                .cloned()
+                .collect();
+            same!(callers, want, "whole {at}");
+            let got = around(&*near, &seed, 2).unwrap();
+            same!(got.graph, drawn.graph, "near {at}");
+            assert_eq!(got.tests_hidden, drawn.tests_hidden, "near {at}");
+        }
+    }
+
+    /// A MODULE ROOT IS DECIDED AT READ in both code halves (spec 117): over the resolver's
+    /// module-root fixture, the edges into a file, from the whole graph and from a neighbourhood
+    /// folding the files declaring it, are the `CONTAINS` edges of the declarations reaching it
+    /// through the list their declaring file's place picks ([`crate::resolve::Resolver::module_target`]); a file
+    /// only a declaration's other list names has none.
+    #[test]
+    fn a_module_is_folded_from_the_files_whose_place_reaches_it() {
+        use crate::contextgraph::{REL_CONTAINS, TIER_EXTRACTED};
+        use crate::resolve::tests::module_root_fixture;
+        use crate::test_support::edge;
+        let view = module_root_fixture();
+        let contains = |from: &str, to: &str| edge(from, to, REL_CONTAINS, TIER_EXTRACTED);
+        // (what the answer shows, the filter, the file and the edges into it)
+        let cases: [(&str, Tests, &str, Vec<Edge>); 12] = [
+            (
+                "a root's declaration reaches its `as_root` file",
+                Tests::Exclude,
+                "src/bin/x.rs",
+                vec![contains("src/bin/tool.rs", "src/bin/x.rs")],
+            ),
+            (
+                "a root's declaration reaches no file at its `as_child` path",
+                Tests::Exclude,
+                "src/bin/tool/x.rs",
+                vec![],
+            ),
+            (
+                "a root's test-only declaration reaches its `as_root` file, tests shown",
+                Tests::Include,
+                "src/bin/tests.rs",
+                vec![contains("src/bin/tool.rs", "src/bin/tests.rs")],
+            ),
+            (
+                "a file a `#[path]` declaration reaches declares as a root",
+                Tests::Exclude,
+                "src/p/z.rs",
+                vec![contains("src/p/y.rs", "src/p/z.rs")],
+            ),
+            (
+                "a file a plain declaration reaches declares as a child",
+                Tests::Exclude,
+                "src/p/z/w.rs",
+                vec![contains("src/p/z.rs", "src/p/z/w.rs")],
+            ),
+            (
+                "a child's declaration reaches no file at its `as_root` path",
+                Tests::Exclude,
+                "src/p/w.rs",
+                vec![],
+            ),
+            (
+                "a reached `mod.rs` file declares as a child",
+                Tests::Exclude,
+                "src/code/advance.rs",
+                vec![contains("src/code/mod.rs", "src/code/advance.rs")],
+            ),
+            (
+                "a file two roots reach plain and by `#[path]` is folded from both",
+                Tests::Exclude,
+                "src/m.rs",
+                vec![
+                    contains("src/lib.rs", "src/m.rs"),
+                    contains("src/main.rs", "src/m.rs"),
+                ],
+            ),
+            (
+                "a file the first root in path order reaches by `#[path]` declares as a root",
+                Tests::Exclude,
+                "src/n.rs",
+                vec![contains("src/m.rs", "src/n.rs")],
+            ),
+            (
+                "a file the first root in path order reaches plain declares as a child",
+                Tests::Exclude,
+                "src/bin/shared/k.rs",
+                vec![contains("src/bin/shared.rs", "src/bin/shared/k.rs")],
+            ),
+            (
+                "a file a deeper `#[path]` declaration reaches after a root's plain one declares \
+                 as a child",
+                Tests::Exclude,
+                "src/deep/leaf.rs",
+                vec![contains("src/deep.rs", "src/deep/leaf.rs")],
+            ),
+            (
+                "a cycle no root reaches starts at its first file in path order, as a root",
+                Tests::Exclude,
+                "src/s.rs",
+                vec![contains("src/r.rs", "src/s.rs")],
+            ),
+        ];
+        for (shows, tests, file, want) in &cases {
+            let filter = ViewFilter { tests: *tests };
+            let (whole, near) = (Whole::new(&view, filter), Near::new(&view, filter));
+            for (half, graph) in [("whole", &whole as &dyn CodeHalf), ("near", &near)] {
+                same!(
+                    graph.incoming(file).unwrap(),
+                    want,
+                    "{half} {file}: {shows}"
+                );
+            }
         }
     }
 }

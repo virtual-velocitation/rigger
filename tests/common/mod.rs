@@ -3,7 +3,7 @@
 //! declares `mod common;`, so each suite uses the subset it needs (hence the module-wide `dead_code`
 //! allowance: an item used by one suite is genuinely unused in the next).
 //!
-//! Its first, still-largest concern is WHERE the product binary is: a shared home because it
+//! Its first, still-largest concern is WHERE the product binary is ([`product_binary`]): a shared home because it
 //! has sixteen readers and one correct answer, and because the obvious per-suite spelling is
 //! wrong in a way no suite can see on its own (see [`product_binary_from`]). Each later
 //! addition below earns its place here the same way - a helper two or more suites would
@@ -20,12 +20,15 @@ pub mod fixtures;
 pub mod git;
 pub mod lens;
 pub mod mcp;
+pub mod product_binary;
 pub mod repo;
 pub mod served;
 pub mod workflow_probe;
 
 #[allow(unused_imports)]
 pub use fixtures::wait_until;
+#[allow(unused_imports)]
+pub use product_binary::{product_binary_from, rigger_bin, suite_profile_dir};
 
 /// A step run against a directory: a fixture seeding it, or a concurrent writer acting on it.
 pub type DirStep = fn(&Path);
@@ -43,95 +46,6 @@ pub fn shell_outcome(out: &std::process::Output) -> (bool, String) {
         String::from_utf8_lossy(&out.stderr)
     );
     (out.status.success(), text)
-}
-
-/// The profile dir (`<target>/<profile>`) a cargo-run integration suite is running out of, read
-/// from where its executable sits, or `None` when `test_exe` sits in neither place cargo runs an
-/// integration suite from.
-///
-/// Cargo before 1.100 runs a suite from `<target>/<profile>/deps/<suite>-<hash>`. Cargo 1.100
-/// made its build-unit layout the default: a suite runs from its own unit's output dir,
-/// `<target>/<profile>/build/<package>/<hash>/out/<suite>-<hash>` (cargo's private opt-out still
-/// gives the old shape). Each shape is matched whole, by structure; nothing is searched for
-/// upward, and anything else is declined.
-pub fn suite_profile_dir(test_exe: &Path) -> Option<&Path> {
-    let dir = test_exe.parent()?;
-    let name = dir.file_name()?;
-    if name == "deps" {
-        return dir.parent();
-    }
-    if name == "out" {
-        let build = dir.parent()?.parent()?.parent()?;
-        if build.file_name()? == "build" {
-            return build.parent();
-        }
-    }
-    None
-}
-
-/// The product binary that belongs to the target dir a test executable is running out of, or
-/// `None` when `test_exe` is not a cargo-run integration suite.
-///
-/// Under either layout [`suite_profile_dir`] recognises, cargo uplifts the package's binaries to
-/// the profile dir itself, `<target>/<profile>/`. Deriving the product from the RUNNING
-/// executable therefore always names the target dir the test is actually in. (Cargo keeps suites
-/// in its build dir and uplifts binaries to its target dir; the two are the same `target/` unless
-/// a build dir is configured apart from it, and then the derived path names nothing and
-/// [`rigger_bin`] falls back.)
-///
-/// WHY THIS EXISTS RATHER THAN `CARGO_BIN_EXE_rigger` ALONE. That macro expands at COMPILE time
-/// to an absolute path into the target dir the suite was COMPILED under. Cargo's fingerprints do
-/// not include the target-dir path, so a target dir that has MOVED - copied, restored, or
-/// relocated by a build-cache lifecycle - is still judged fresh: nothing recompiles, the baked
-/// path no longer exists, and every suite that spawns the product dies with
-/// `Os { code: 2, kind: NotFound }` before asserting anything. That is not hypothetical here: a
-/// workflow declaring `CARGO_TARGET_DIR` over `{build_cache}` gives each unit's gates a per-unit
-/// one, and a relocated one turned a suite that is green cold into 0 passed / 3 failed with
-/// exactly that error, while the recorded gate evidence never named it. Runtime derivation cannot
-/// drift that way, because the answer is read from the same directory tree the test itself was
-/// just loaded from.
-///
-/// It DECLINES (returns `None`) rather than guessing when the executable sits in neither layout -
-/// a hand-run binary, a copied artifact - so [`rigger_bin`] can fall back honestly instead of
-/// handing back a path nobody built.
-pub fn product_binary_from(test_exe: &Path) -> Option<PathBuf> {
-    suite_profile_dir(test_exe)
-        .map(|profile| profile.join(format!("rigger{}", std::env::consts::EXE_SUFFIX)))
-}
-
-/// The compiled `rigger` binary this suite drives - THE one authority every integration suite
-/// calls, so the location rule is stated once and cannot drift per suite.
-///
-/// Resolution order, and why: [`product_binary_from`] over the running test executable first,
-/// because it follows a moved target dir; the compile-time `CARGO_BIN_EXE_rigger` second, which
-/// is the correct answer whenever nothing moved and covers a runner that stages test executables
-/// outside both cargo layouts, or a build dir cargo keeps apart from its target dir. This is the
-/// SINGLE site in `tests/` allowed to spell that macro, pinned by
-/// `tests/product_binary_location.rs`. When neither path exists, it panics naming BOTH candidates
-/// rather than letting the spawn fail with a bare `NotFound` that names nothing.
-pub fn rigger_bin() -> PathBuf {
-    let baked = PathBuf::from(env!("CARGO_BIN_EXE_rigger"));
-    let derived = std::env::current_exe()
-        .ok()
-        .as_deref()
-        .and_then(product_binary_from);
-    match derived {
-        Some(path) if path.exists() => path,
-        derived => {
-            if baked.exists() {
-                return baked;
-            }
-            panic!(
-                "no `rigger` binary to drive: derived {} / compiled-beside {}",
-                derived.map(|p| p.display().to_string()).unwrap_or_else(|| {
-                    "<none: the test executable is in neither cargo layout, \
-                         <profile>/deps/ nor <profile>/build/<package>/<hash>/out/>"
-                        .into()
-                }),
-                baked.display()
-            )
-        }
-    }
 }
 
 /// A `Command` for the compiled `rigger` binary this suite drives, defensively UNFENCED
@@ -206,6 +120,11 @@ pub fn rigger_bin() -> PathBuf {
 /// facility, so no test outside the adapter's own rows depends on the host's power facility. A
 /// test that drives the knob re-sets it with `.env(...)` or clears it with `.env_remove(...)`,
 /// either of which wins.
+///
+/// Also pins [`RELAUNCH_ENV`] and [`LOGIN_START_ENV`] to recording fakes under
+/// [`test_cache_home`], so no rigger a test runs starts a detached driver or registers a
+/// relaunch with the host's login facility; a test that drives either knob re-sets it with
+/// `.env(...)`, which wins.
 pub fn rigger_courier() -> Command {
     let mut cmd = Command::new(rigger_bin());
     unfenced(&mut cmd);
@@ -213,7 +132,8 @@ pub fn rigger_courier() -> Command {
 }
 
 /// Applies [`rigger_courier`]'s own env hygiene (the `STORE_FENCE_ENV`/`KURRENTDB_CONN`/
-/// `SPAWN_ENV`/`GATE_SOCKET_ENV` strip and the `XDG_CACHE_HOME` and keep-awake pins - see that function's doc
+/// `SPAWN_ENV`/`GATE_SOCKET_ENV` strip and the `XDG_CACHE_HOME`, keep-awake, relaunch and
+/// login-start pins - see that function's doc
 /// comment for the full WHY)
 /// to an ALREADY-CONSTRUCTED `Command`, for the one class of call site `rigger_courier`
 /// itself cannot cover: a suite that drives the product binary through an intermediate
@@ -245,7 +165,23 @@ pub fn unfenced(cmd: &mut Command) -> &mut Command {
         RELAUNCH_ENV,
         format!("record:{}", relaunch_record().display()),
     );
+    cmd.env(
+        LOGIN_START_ENV,
+        format!("record:{}", login_start_record().display()),
+    );
     cmd
+}
+
+/// The variable that selects how a rigger invocation registers a run's relaunch at login: its
+/// `record:<path>` value appends a `register <key> <program> <args...>` or `unregister <key>`
+/// line to `<path>` in place of writing the host's login-start entry, and lists the entries
+/// those lines leave standing in place of the host's.
+pub use rigger::login_start::LOGIN_START_ENV;
+
+/// The file the login-start registrations of this test's rigger invocations are recorded in
+/// ([`unfenced`]), so no rigger a test runs registers with, or sweeps, the host's login facility.
+pub fn login_start_record() -> PathBuf {
+    test_cache_home().join("login-start")
 }
 
 /// The variable that selects how a rigger invocation relaunches a run whose driver died: its

@@ -229,7 +229,7 @@ pub(crate) fn cmd_critique(args: &[String]) -> Res {
             identity: &identity,
             scratch_root: &scratch_root,
             root: &root,
-            spawn_host: rigger::hooks::resolve_spawn_host(&cfg.workflow.defaults, &root)?,
+            spawn_host: super::spawn_host(&cfg.workflow.defaults, &root)?,
         };
         let mut union = union;
         loop {
@@ -392,9 +392,9 @@ struct CriticHost<'a> {
     scratch_root: &'a str,
     /// The root the spec path is relative to: the critic's working directory.
     root: &'a Path,
-    /// The host values every pass's spawn carries, resolved once from the workflow's defaults
-    /// and the helper copies at `root` when the critique starts
-    /// ([`rigger::hooks::resolve_spawn_host`]).
+    /// The host values every pass's spawn carries, resolved once from the workflow's defaults,
+    /// the helper copies and the declared specs location at `root` when the critique starts
+    /// ([`super::spawn_host`]).
     spawn_host: SpawnHost,
 }
 
@@ -448,7 +448,7 @@ impl CriticHost<'_> {
         let progress_backend = open_progress_backend(self.store)?;
         let progress = Namespaced::new(&progress_backend, self.identity);
         let host = claude_code::Driver {
-            bin: String::new(),
+            host: rigger::claude_auth::SessionHost::default(),
             rigger_bin: running_executable(),
             progress_store: &progress,
             run_store: self.critiques,

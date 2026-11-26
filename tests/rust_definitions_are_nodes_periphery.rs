@@ -15,8 +15,8 @@ rigger::test_cases! {
     /// WHEN the operator runs `rigger graph build`,
     /// THEN the graph's code entities are exactly one node per production definition, at its
     /// `<file>::<path>` id (spec 119, IDS FOLLOW THE LANGUAGE'S PATH), each carrying exactly its
-    /// leaf, kind and line, and one placeholder per name a reference reaches that no definition
-    /// gives (`X`, `build`, `compute`, `seed`):
+    /// leaf, kind and line, and one placeholder per name a call reaches that no definition gives
+    /// (`build`, `compute`, `seed`):
     ///
     ///  - an item const and a fn-local one are a `constant`, an item static and a fn-local one a
     ///    `static`, each variant a `variant`, each named field a `field`, the trait a `trait`, its
@@ -35,8 +35,9 @@ rigger::test_cases! {
     ///    are.
     ///
     /// Its `CALLS` edges are exactly: the call in the item static's initializer from the static,
-    /// the one in the const inside the proc-macro fn from the macro, the one in the fn-local const
-    /// from its fn, and each impl header's self type from the impl.
+    /// the one in the const inside the proc-macro fn from the macro and the one in the fn-local
+    /// const from its fn; an impl header's self type is an `impl` mention, no call (spec 117, RUST
+    /// TAGS IMPL HEADERS).
     #[cfg(feature = "symbols")]
     graph_build_makes_each_rust_definition_a_node_of_its_kind_and_none_of_a_test_member:
         common::cli::assert_built_graph_holds(
@@ -85,15 +86,13 @@ rigger::test_cases! {
                 ("shout", "shout", "macro", 11),
                 ("size", "size", "function", 16),
             ],
-            &["X", "build", "compute", "seed"],
+            &["build", "compute", "seed"],
             &[
                 ("f.rs::TABLE", "f.rs::%build"),
                 ("f.rs::derive", "f.rs::%seed"),
                 ("f.rs::host", "f.rs::%compute"),
-                ("f.rs::impl Pair", "f.rs::Pair"),
-                ("f.rs::impl X", "f.rs::%X"),
             ],
             "every code entity of the built graph: one per production definition at its path, none \
-             for a test-attributed member, one placeholder per undefined name a reference reaches",
+             for a test-attributed member, one placeholder per undefined name a call reaches",
         );
 }

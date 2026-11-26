@@ -2,8 +2,11 @@
 //! its [`FileFacts`]. They re-shape what the per-language symbol extractors, the design-document
 //! extractor and the workflow-definition extractor already find, and what an extractor the
 //! project's workflow declares answers over THE EXTRACTOR PROTOCOL (spec 125), whose client is
-//! [`extractor_protocol`]; this module is no extractor of its own, and holds no language
-//! knowledge. Every name is kept as written and
+//! [`extractor_protocol`]; this module is no extractor of its own, and its one language knowledge
+//! is the doc rules [`FactsExtractor`]'s [`Extract::doc_text`] reads a doc span's text by: Rust's,
+//! which strips its lines to their comment text, C#'s, which reads its `///` lines with their XML
+//! tags removed, and Python's, which reads its docstring's body, its parts joined, dedented.
+//! Every name is kept as written and
 //! nothing is resolved across files, so a file's facts are a function of its path and bytes alone
 //! under the extractor's fingerprint, a declared extractor being trusted, as a grammar is, to
 //! answer the same request the same way. The store's openers compose [`ProjectExtractor`], the
@@ -13,16 +16,17 @@
 
 mod extractor_protocol;
 
-use std::collections::{btree_map, BTreeMap, HashMap};
+use std::collections::{btree_map, hash_map, BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use rigger_domain::code_facts::{
     Def, DocConcept, DocLink, FileFacts, Half, Mention, MentionKind, ModuleDecl, Scope, WfNode,
     WfRelation,
 };
-use rigger_domain::code_view::{Entry, Extract, Head, OpenCodeView, TreeSource};
+use rigger_domain::code_view::{trimmed_lines, Entry, Extract, Head, OpenCodeView, TreeSource};
 use rigger_domain::contextgraph::definition_precedence;
+use rigger_domain::contextgraph::query::qualified_name;
 use rigger_domain::groupings::ProductionGroupings;
 use rigger_domain::playbooks::fnv1a_64;
 use rigger_process::whole_line;
@@ -33,20 +37,22 @@ use crate::config::{check_extractors, ExtractorDecl, RIGGER_DIR, WORKFLOW_FILE};
 use crate::config_store;
 use crate::grounder::design::extract::{extract_concepts, extract_links};
 use crate::grounder::symbols::extract::{kind_str, lang_str};
-use crate::grounder::symbols::model::{self, SymRef, GRAMMAR_TAGS_VERSION};
+use crate::grounder::symbols::model::{self, Lang, SymRef, GRAMMAR_TAGS_VERSION};
 use crate::grounder::symbols::paths::{is_dev_only, module_candidates};
 use crate::grounder::symbols::{content_hash, extracted, registry};
 use crate::grounder::workflowdef;
 
 /// The generation of everything this module adds to the extractors it re-shapes: the design and
 /// workflow extractors, which carry no generation of their own, and the shape of the facts. Bump
-/// it whenever any of them can give a file other facts than before, as the symbol extractors'
-/// [`GRAMMAR_TAGS_VERSION`] is bumped for theirs; the two together make the extractor's fingerprint,
-/// with the digest of the project's declared extractors when it declares any ([`ProjectExtractor`]),
-/// which the store's fingerprint ([`store_fingerprint`]) folds with the grouper's generation. A golden
-/// test pins it beside the digest of the facts read over a fixture set, so a change that is not
-/// bumped fails there.
-const FACTS_GENERATION: &str = "facts-v2";
+/// it whenever any of them can give a file other facts than before, as each symbol extractor's
+/// tags generation, joined in [`GRAMMAR_TAGS_VERSION`], is bumped for its own; the two together make
+/// the extractor's fingerprint, with the digest of the project's declared extractors when it
+/// declares any ([`ProjectExtractor`]), which the store's fingerprint ([`store_fingerprint`]) folds
+/// with the grouper's generation. A golden test pins it beside the digest of the facts read over a
+/// design, a rationale and a workflow fixture, so a change that is not bumped fails there; a
+/// conversion change that moves a language's facts re-pins that language's row of the same golden
+/// with the bump.
+const FACTS_GENERATION: &str = "facts-v6";
 
 /// The fingerprint of an extractor built from these generations: a stable hash, since a snapshot
 /// stores it and a later process compares against it.
@@ -77,20 +83,26 @@ pub fn open_store(root: &Path, source: &dyn TreeSource, mode: Mode) -> Result<Op
 /// The head of the code store at `root` read for a reader in `worktree`, overlaid with the files
 /// the worktree differs in ([`open_head`]), composed as [`open_store`] composes it, its
 /// differing files' facts memoised for the life of the process and on disk under the store
-/// ([`Memo::process`]).
+/// ([`Memo::process`]). The head keeps the project's extractor, which a doc read takes a span's
+/// text from with no session; every declared extractor's session the read started is closed and
+/// waited for before the head is given ([`ProjectExtractor::close_sessions`]), so none outlives a
+/// read that ends by exiting.
 pub fn read_head(
     root: &Path,
     source: &(dyn TreeSource + Sync),
     worktree: &Path,
 ) -> Result<Head, String> {
-    open_head(
+    let extract = Arc::new(ProjectExtractor::of(root));
+    let head = open_head(
         root,
         source,
-        &ProjectExtractor::of(root),
+        extract.clone(),
         &ProductionGroupings,
         worktree,
         Memo::process(),
-    )
+    );
+    extract.close_sessions();
+    head
 }
 
 /// The extractors the workflow of the project at `root` declares (spec 125, THE EXTRACTORS KEY):
@@ -216,18 +228,22 @@ impl ProjectExtractor {
             }
         }
     }
+
+    /// Closes, and waits for, every session the extractor holds, so none outlives the read that
+    /// started it; a later file of a declared extractor's extensions starts a new one.
+    fn close_sessions(&self) {
+        let sessions =
+            std::mem::take(&mut *self.sessions.lock().unwrap_or_else(PoisonError::into_inner));
+        for session in sessions.into_values() {
+            session.close();
+        }
+    }
 }
 
 impl Drop for ProjectExtractor {
-    /// Closes every session the extractor still holds.
+    /// Closes every session the extractor still holds ([`ProjectExtractor::close_sessions`]).
     fn drop(&mut self) {
-        let sessions = self
-            .sessions
-            .get_mut()
-            .unwrap_or_else(PoisonError::into_inner);
-        for session in std::mem::take(sessions).into_values() {
-            session.close();
-        }
+        self.close_sessions();
     }
 }
 
@@ -255,6 +271,13 @@ impl Extract for ProjectExtractor {
     /// its grammar for the extensions it lists.
     fn extract(&self, entry: &Entry, bytes: &[u8]) -> FileFacts {
         file_facts(entry, bytes, |path, text| self.code(path, text))
+    }
+
+    /// [`FactsExtractor`]'s: a declared file's language is its declaration's name, so a
+    /// declaration named as a bundled language (`rust`) reads that language's doc rule and any
+    /// other name the lines trimmed.
+    fn doc_text(&self, lang: &str, raw: &str) -> String {
+        FactsExtractor.doc_text(lang, raw)
     }
 }
 
@@ -291,15 +314,345 @@ impl Extract for FactsExtractor {
     fn extract(&self, entry: &Entry, bytes: &[u8]) -> FileFacts {
         file_facts(entry, bytes, bundled_code)
     }
+
+    /// The doc rule of the language `lang` names: C#'s ([`csharp_doc_text`]), Rust's
+    /// ([`rust_doc_text`]), Python's ([`python_doc_text`]), and the lines trimmed
+    /// ([`trimmed_lines`]) for a language with no rule.
+    fn doc_text(&self, lang: &str, raw: &str) -> String {
+        if lang == lang_str(Lang::CSharp) {
+            csharp_doc_text(raw)
+        } else if lang == lang_str(Lang::Rust) {
+            rust_doc_text(raw)
+        } else if lang == lang_str(Lang::Python) {
+            python_doc_text(raw)
+        } else {
+            trimmed_lines(raw)
+        }
+    }
+}
+
+/// The comment text of a Rust doc span's `raw` lines, read as Rust lexes them from the span's start
+/// to its end, a trailing newline adding no line. A `//` comment runs to its line's end, and `///`
+/// (not `////`) and `//!` give the text after their marker, trimmed. A `/*` comment runs to the
+/// `*/` that closes it ([`until_block_closer`]). `/**` (not `/***` nor `/**/`) and `/*!` open a doc
+/// block ([`opens_doc_block`]) that gives its lines ([`doc_block_lines`]); any other block comment
+/// is dropped whole, a `///` inside it included. A name-value `#[doc = ..]` or `#![doc = ..]` gives
+/// each line of its string literal's body, trimmed ([`doc_attribute_text`]), when only whitespace
+/// separates its tokens; one with a comment between them, documentation to Rust, gives no text.
+/// Every other token is dropped ([`after_token`]): another attribute, `#[doc(..)]` included, code
+/// and every other literal, read whole so that no comment marker or quote inside a literal is
+/// read. Whatever follows a comment or a literal is read on, and the kept lines join by `\n`.
+fn rust_doc_text(raw: &str) -> String {
+    let mut text = Vec::new();
+    let mut rest = raw.strip_suffix('\n').unwrap_or(raw);
+    while !rest.is_empty() {
+        rest = if let Some(comment) = rest.strip_prefix("//") {
+            let (comment, after) = comment.split_once('\n').unwrap_or((comment, ""));
+            if let Some(doc) = after_doc_slash(comment).or_else(|| comment.strip_prefix('!')) {
+                text.push(doc.trim());
+            }
+            after
+        } else if let Some(comment) = rest.strip_prefix("/*") {
+            let (body, after) = until_block_closer(comment);
+            if opens_doc_block(comment) {
+                // The body past the `*` or `!` that marks a doc block.
+                text.extend(doc_block_lines(&body[1..], after.is_some()));
+            }
+            after.unwrap_or_default()
+        } else if let Some((body, after)) = doc_attribute_text(rest) {
+            text.extend(body.split('\n').map(str::trim));
+            after
+        } else {
+            after_token(rest)
+        };
+    }
+    text.join("\n")
+}
+
+/// The text after the third `/` of a `///` line comment, not `////`, `comment` being the text
+/// after its first two: the doc marker a Rust and a C# line comment share.
+fn after_doc_slash(comment: &str) -> Option<&str> {
+    comment
+        .strip_prefix('/')
+        .filter(|doc| !doc.starts_with('/'))
+}
+
+/// The text of a C# doc span's `raw` lines, split on `\n` with a trailing `\r` dropped: a `///`
+/// line (not `////`), leading whitespace aside, gives the text after its marker
+/// ([`after_doc_slash`]) with its XML tags removed ([`without_xml_tags`]), trimmed. A line with no
+/// such marker, and one left empty, is dropped, and the kept lines join by `\n`.
+fn csharp_doc_text(raw: &str) -> String {
+    raw.lines()
+        .filter_map(|line| after_doc_slash(line.trim_start().strip_prefix("//")?))
+        .map(|doc| without_xml_tags(doc).trim().to_string())
+        .filter(|doc| !doc.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// `line` with every XML tag removed: a `<` that an ASCII letter or a `/` follows, up to the first
+/// `>` after it. A `<` that opens no tag, or that no `>` on the line closes, stays as written.
+fn without_xml_tags(line: &str) -> String {
+    let mut kept = String::new();
+    let mut rest = line;
+    while let Some(open) = rest.find('<') {
+        let tag = &rest[open + 1..];
+        let close = tag
+            .starts_with(|c: char| c.is_ascii_alphabetic() || c == '/')
+            .then(|| tag.find('>'))
+            .flatten();
+        match close {
+            Some(close) => {
+                kept.push_str(&rest[..open]);
+                rest = &tag[close + 1..];
+            }
+            None => {
+                kept.push_str(&rest[..=open]);
+                rest = tag;
+            }
+        }
+    }
+    kept.push_str(rest);
+    kept
+}
+
+/// Whether the Rust block comment whose opening `/*` ends just before `comment` is a doc block:
+/// `/**`, but not `/***` nor the empty plain comment `/**/`, or `/*!`.
+fn opens_doc_block(comment: &str) -> bool {
+    comment.starts_with('!')
+        || comment
+            .strip_prefix('*')
+            .is_some_and(|rest| !rest.starts_with(['*', '/']))
+}
+
+/// The text of the Rust block comment whose opening `/*` ends just before `text`, up to the `*/`
+/// that closes it, and the text after that closer: block comments nest, each `/*` inside opening
+/// a level and each `*/` closing one, so the closer is the `*/` that returns the depth to zero,
+/// however many lines on. The comment's text runs to `text`'s end, with none after it, when it is
+/// unclosed.
+fn until_block_closer(text: &str) -> (&str, Option<&str>) {
+    let bytes = text.as_bytes();
+    let mut depth = 1_usize;
+    let mut at = 0;
+    while at + 1 < bytes.len() {
+        match (bytes[at], bytes[at + 1]) {
+            (b'/', b'*') => depth += 1,
+            (b'*', b'/') => depth -= 1,
+            _ => {
+                at += 1;
+                continue;
+            }
+        }
+        if depth == 0 {
+            return (&text[..at], Some(&text[at + 2..]));
+        }
+        at += 2;
+    }
+    (text, None)
+}
+
+/// The lines of a Rust doc block's `body`, its text between the opener and the closer (or the
+/// span's end when it is not `closed`), each trimmed. The opener's line is kept when it is not
+/// blank. Every later line has one leading `*` stripped and is trimmed again, and is kept even
+/// when blank, except the closer's line, which is kept only when it is not blank.
+fn doc_block_lines(body: &str, closed: bool) -> impl Iterator<Item = &str> + '_ {
+    let last = body.matches('\n').count();
+    body.split('\n').enumerate().filter_map(move |(at, line)| {
+        let line = line.trim();
+        if at == 0 {
+            return (!line.is_empty()).then_some(line);
+        }
+        let line = line.strip_prefix('*').unwrap_or(line).trim();
+        (at < last || !closed || !line.is_empty()).then_some(line)
+    })
+}
+
+/// The text after the Rust token `text` starts with. A string literal is read whole, to its own
+/// closer: a plain `".."`, `b".."` or `c".."` ([`plain_literal`]), or a raw `r".."`, `br#".."#` or
+/// `cr#".."#` ([`raw_literal`]). So is a char literal: `'x'`, `'"'`, or an escaped `'\''` or
+/// `'\u{..}'` up to the next quote. A word is read to its last letter, digit or `_`, and any other
+/// character, the quote of a lifetime or a label (`'a`) included, alone.
+fn after_token(text: &str) -> &str {
+    let word_char = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let mut chars = text.chars();
+    match chars.next() {
+        Some('"') => plain_literal(chars.as_str(), "\"").1,
+        Some('\'') => {
+            let quoted = chars.as_str();
+            match (chars.next(), chars.next()) {
+                (Some('\\'), Some(_)) => {
+                    let escaped = chars.as_str();
+                    escaped.find('\'').map_or("", |end| &escaped[end + 1..])
+                }
+                (Some(_), Some('\'')) => chars.as_str(),
+                _ => quoted,
+            }
+        }
+        Some(c) if word_char(c) => {
+            let (word, after) = text.split_at(text.find(|c| !word_char(c)).unwrap_or(text.len()));
+            match word {
+                "r" | "br" | "cr" => raw_literal(after).map_or(after, |(_, after)| after),
+                _ => after,
+            }
+        }
+        _ => chars.as_str(),
+    }
+}
+
+/// The body of the string literal whose opener ends just before `text`, as written, up to its own
+/// `closer` - the first that no `\` escapes, a Rust plain literal's `"` or a Python string's quote
+/// or three - and the text after that closer. The body runs to `text`'s end, with nothing after
+/// it, when the literal is unclosed.
+fn plain_literal<'t>(text: &'t str, closer: &str) -> (&'t str, &'t str) {
+    let mut chars = text.char_indices();
+    while let Some((at, c)) = chars.next() {
+        if c == '\\' {
+            chars.next();
+        } else if text[at..].starts_with(closer) {
+            return (&text[..at], &text[at + closer.len()..]);
+        }
+    }
+    (text, "")
+}
+
+/// The text of a Python docstring span's `raw` lines: the body of the string literal the span's
+/// first quote opens - three of that quote when it opens three, else the one - up to its own
+/// closer ([`plain_literal`]), joined with the body of each literal that continues it as an
+/// implicit concatenation ([`next_python_part`]), as Python joins `"a" "b"` into `ab`, each
+/// prefix (`r`, `u`) and whatever follows the last closer dropped and the escapes not decoded;
+/// empty when the span holds no quote. The joined body is dedented as PEP 257 trims a docstring:
+/// its first line trimmed; every later line stripped of the least indent of the later lines that
+/// are not blank, a tab counting as one column, and its end trimmed; the blank lines before the
+/// first line of text and after the last dropped; the lines joined by `\n`. The span's first
+/// quote is read as the docstring's opener, so a docstring on its header's line after a quote of
+/// the header's own (`def f(x="a"): """Doc."""`) is read from that quote.
+fn python_doc_text(raw: &str) -> String {
+    let Some(open) = raw.find(['"', '\'']) else {
+        return String::new();
+    };
+    let mut body = String::new();
+    let mut part = Some(&raw[open..]);
+    while let Some(quoted) = part {
+        let triple = quoted[..1].repeat(3);
+        let closer = if quoted.starts_with(&triple) {
+            triple.as_str()
+        } else {
+            &quoted[..1]
+        };
+        let (text, after) = plain_literal(&quoted[closer.len()..], closer);
+        body.push_str(text);
+        part = next_python_part(after);
+    }
+    let indent = |line: &str| line.chars().take_while(|c| c.is_whitespace()).count();
+    let margin = body
+        .split('\n')
+        .skip(1)
+        .filter(|line| !line.trim().is_empty())
+        .map(indent)
+        .min()
+        .unwrap_or(0);
+    let lines: Vec<&str> = body
+        .split('\n')
+        .enumerate()
+        .map(|(at, line)| {
+            if at == 0 {
+                return line.trim();
+            }
+            let line = line.trim_end();
+            line.char_indices()
+                .nth(margin)
+                .map_or("", |(cut, _)| &line[cut..])
+        })
+        .collect();
+    let text = |line: &&str| !line.is_empty();
+    match (lines.iter().position(text), lines.iter().rposition(text)) {
+        (Some(first), Some(last)) => lines[first..=last].join("\n"),
+        _ => String::new(),
+    }
+}
+
+/// The text from the opening quote of the Python string literal that continues an implicit
+/// concatenation after `text`, the text after a part's closer: the whitespace and line breaks, a
+/// `\` that continues a line and each `#` comment to its line's end before it are passed over,
+/// then its prefix's letters (`r`, `u`). None when anything else comes first: a `)`, a `;`, other
+/// code or the span's end.
+fn next_python_part(text: &str) -> Option<&str> {
+    let mut rest = text;
+    loop {
+        rest = rest.trim_start();
+        if let Some(comment) = rest.strip_prefix('#') {
+            rest = comment.split_once('\n').map_or("", |(_, after)| after);
+        } else if let Some(continued) = rest.strip_prefix('\\') {
+            rest = continued;
+        } else {
+            break;
+        }
+    }
+    let quoted = rest.trim_start_matches(|c: char| c.is_ascii_alphabetic());
+    quoted.starts_with(['"', '\'']).then_some(quoted)
+}
+
+/// The body of the raw Rust string literal whose `r` ends just before `text` (`r".."`,
+/// `r#".."#`), up to its own closer - the first `"` followed by as many `#` as its opener holds -
+/// and the text after that closer; none when `text` opens no raw literal (`r#type`). The body runs
+/// to `text`'s end, with nothing after it, when the literal is unclosed.
+fn raw_literal(text: &str) -> Option<(&str, &str)> {
+    let quoted = text.trim_start_matches('#');
+    let hashes = &text[..text.len() - quoted.len()];
+    let body = quoted.strip_prefix('"')?;
+    let closer = body
+        .match_indices('"')
+        .map(|(at, _)| at)
+        .find(|&at| body[at + 1..].starts_with(hashes));
+    Some(closer.map_or((body, ""), |at| {
+        (&body[..at], &body[at + 1 + hashes.len()..])
+    }))
+}
+
+/// The body of the string literal of the Rust name-value doc attribute `text` starts with -
+/// `#[doc = ".."]`, `#![doc = r#".."#]`, whitespace allowed between its tokens - as written, up to
+/// the literal's own closer ([`plain_literal`], [`raw_literal`]), its escapes not decoded, and the
+/// text after that closer; none for another attribute, `#[doc(..)]` included, and for a value that
+/// is no string literal (`include_str!(..)`).
+fn doc_attribute_text(text: &str) -> Option<(&str, &str)> {
+    let attribute = text.strip_prefix('#')?.trim_start();
+    let value = attribute
+        .strip_prefix('!')
+        .unwrap_or(attribute)
+        .trim_start()
+        .strip_prefix('[')?
+        .trim_start()
+        .strip_prefix("doc")?
+        .trim_start()
+        .strip_prefix('=')?
+        .trim_start();
+    match value.strip_prefix('"') {
+        Some(plain) => Some(plain_literal(plain, "\"")),
+        None => raw_literal(value.strip_prefix('r')?),
+    }
 }
 
 /// The symbols an extraction gives one code file, the bundled grammars' and a declared
-/// extractor's alike: its definitions, its references and whether they cover only part of it.
+/// extractor's alike: its definitions, its references, whether they cover only part of it and
+/// the file's doc span (spec 117, DOC FACTS).
 #[derive(Debug, PartialEq, Eq)]
 struct CodeSymbols {
     defs: Vec<model::Def>,
     refs: Vec<SymRef>,
     partial: bool,
+    doc: Option<(u32, u32)>,
+}
+
+/// The symbols the bundled grammars' extraction gives a file, field for field.
+impl From<model::FileSymbols> for CodeSymbols {
+    fn from(symbols: model::FileSymbols) -> Self {
+        CodeSymbols {
+            defs: symbols.defs,
+            refs: symbols.refs,
+            partial: symbols.partial,
+            doc: symbols.doc,
+        }
+    }
 }
 
 /// A code file as an extraction reads it: the language it is read as and its symbols, none when
@@ -346,13 +699,7 @@ fn file_facts(
             facts.half = Half::Code;
             facts.lang = file.lang;
             if let Some(Ok(symbols)) = file.symbols {
-                code_facts(
-                    path,
-                    &symbols.defs,
-                    &symbols.refs,
-                    symbols.partial,
-                    &mut facts,
-                );
+                code_facts(path, &symbols, &mut facts);
             }
         }
         None => facts.half = Half::Design,
@@ -372,27 +719,23 @@ fn bundled_code(path: &str, text: Option<&str>) -> Option<CodeFile> {
         lang: lang_str(grammar.lang).to_string(),
         symbols: extracted(path, || text, None)
             .flatten()
-            .map(|(_, symbols)| {
-                symbols.map(|symbols| CodeSymbols {
-                    defs: symbols.defs,
-                    refs: symbols.refs,
-                    partial: symbols.partial,
-                })
-            }),
+            .map(|(_, symbols)| symbols.map(CodeSymbols::from)),
     })
 }
 
-/// Fills the definitions, mentions, module declarations and parse-error marker of `facts` from
-/// the definitions `defs`, the references `refs` and the `partial` flag an extraction gave the
-/// file at `path`.
-fn code_facts(
-    path: &str,
-    defs: &[model::Def],
-    refs: &[SymRef],
-    partial: bool,
-    facts: &mut FileFacts,
-) {
-    facts.partial = partial;
+/// Fills the definitions, mentions, module declarations, parse-error marker and doc span of
+/// `facts` from the `symbols` an extraction gave the file at `path`, each definition keeping its
+/// own doc span and each reference becoming a mention, a tagged one kept once per site kind
+/// ([`one_tagged_mention_per_site_kind`]).
+fn code_facts(path: &str, symbols: &CodeSymbols, facts: &mut FileFacts) {
+    let CodeSymbols {
+        defs,
+        refs,
+        partial,
+        doc,
+    } = symbols;
+    facts.partial = *partial;
+    facts.doc = *doc;
     let by_path = def_indices_by_path(defs);
     let index_of = |def_path: &str| by_path.get(def_path).copied();
     facts.defs = defs
@@ -405,34 +748,76 @@ fn code_facts(
             end_line: d.end_line,
             parent: d.parent.as_deref().and_then(index_of),
             test: d.is_test,
+            doc: d.doc,
         })
         .collect();
-    facts.mentions = refs
-        .iter()
-        .map(|r| Mention {
-            enclosing: r.enclosing.as_deref().and_then(index_of),
-            name: r.name.clone(),
-            // The extractor names a reference by its identifier alone, and a definition's leaf is
-            // its name whole, so the reference's name is the leaf the resolver finds it by.
-            leaf: r.name.clone(),
-            kind: match &r.ref_kind {
-                None => MentionKind::Call,
-                Some(kind) => MentionKind::Tagged(kind.clone()),
-            },
-            line: r.line,
-            test: r.is_test,
-        })
-        .collect();
+    facts.mentions = one_tagged_mention_per_site_kind(refs.iter().map(|r| Mention {
+        enclosing: r.enclosing.as_deref().and_then(index_of),
+        // Spec 117 (CAPTURES): the name as written, its qualifier joined to its leaf by `::`
+        // for a path and `.` for a member access, the leaf alone with no qualifier.
+        name: match &r.qualifier {
+            Some(q) => qualified_name(&q.name, q.path, &r.name),
+            None => r.name.clone(),
+        },
+        // The extractor names a reference by its bare leaf, as a definition's leaf is its name
+        // whole, so the leaf is what the resolver finds the mention by, qualified or not.
+        leaf: r.name.clone(),
+        kind: MentionKind::from_tag(r.ref_kind.as_deref()),
+        line: r.line,
+        test: r.is_test,
+    }));
     facts.modules = defs
         .iter()
         .filter(|d| d.is_out_of_line_module)
-        .map(|d| ModuleDecl {
-            name: d.name.clone(),
-            def: by_path[d.path.as_str()],
-            test: d.is_test,
-            candidates: module_candidates(path, d),
+        .map(|d| {
+            // Spec 117, MODULE ROOTS AT READ: both lists, off the declaring file alone, and the
+            // `#[path]` mark the resolver reads to place the file this declaration reaches.
+            let (as_root, as_child) = module_candidates(path, d);
+            ModuleDecl {
+                name: d.name.clone(),
+                def: by_path[d.path.as_str()],
+                test: d.is_test,
+                as_root,
+                as_child,
+                path_attr: d.path_override.is_some(),
+            }
         })
         .collect();
+}
+
+/// The `mentions` of one file in their order, every call kept, one per site, since a proof's
+/// evidence lists each call's line, and one tagged mention kept per enclosing definition, name,
+/// leaf, tag and test flag (spec 117, ONE TAGGED MENTION PER SITE KIND). It sits in the first
+/// one's place and takes the lowest of their lines, since an extraction need not give a file's
+/// tagged references in line order. The leaf keeps apart the two a declared extractor may write
+/// alike: an unqualified `a.b` and `b` under the member `a`.
+fn one_tagged_mention_per_site_kind(mentions: impl Iterator<Item = Mention>) -> Vec<Mention> {
+    let mut kept: Vec<Mention> = Vec::new();
+    let mut at: HashMap<_, usize> = HashMap::new();
+    for mention in mentions {
+        let MentionKind::Tagged(tag) = &mention.kind else {
+            kept.push(mention);
+            continue;
+        };
+        let site_kind = (
+            mention.enclosing,
+            mention.name.clone(),
+            mention.leaf.clone(),
+            tag.clone(),
+            mention.test,
+        );
+        match at.entry(site_kind) {
+            hash_map::Entry::Occupied(first) => {
+                let first = &mut kept[*first.get()];
+                first.line = first.line.min(mention.line);
+            }
+            hash_map::Entry::Vacant(none) => {
+                none.insert(kept.len());
+                kept.push(mention);
+            }
+        }
+    }
+    kept
 }
 
 /// The index in `defs` of the definition a path names, for the paths an extraction gives a parent
@@ -519,7 +904,7 @@ fn text_of(bytes: Option<&[u8]>) -> Option<&str> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::csharp_definition_sources::CSHARP_DEFINITIONS_SOURCE;
     use crate::extractor_stub::{
@@ -528,12 +913,15 @@ mod tests {
     use crate::extractors_fixtures::{workflow_declaring_extractors, EXTRACTOR_REFUSALS};
     use crate::go_definition_sources::GO_DEFINITIONS_SOURCE;
     use crate::grounder::symbols::content_hash;
+    use crate::grounder::symbols::extract::tests::compiled;
+    use crate::grounder::symbols::extract::{extract, CompiledTags};
     use crate::js_ts_definition_sources::{
         JS_DEFINITIONS_SOURCE, TSX_DEFINITIONS_SOURCE, TS_DEFINITIONS_SOURCE,
     };
     use crate::python_definition_sources::PYTHON_DEFINITIONS_SOURCE;
     use crate::rust_definition_sources::RUST_DEFINITIONS_SOURCE;
-    use rigger_domain::code_view::CodeView;
+    use crate::symbol_index::{mention_in, THREE_READS_AND_THREE_CALLS_SOURCE};
+    use rigger_domain::code_view::{CodeView, SourceLines};
     use rigger_domain::config::ExtractorDecl;
     use rigger_domain::contextgraph::{
         KIND_AGENT, KIND_DESIGN_DOC, KIND_GATE, KIND_RATIONALE, KIND_STAGE, REL_EXPLAINS, REL_RUNS,
@@ -542,12 +930,34 @@ mod tests {
     use rigger_store::code::Store;
     use std::collections::BTreeMap;
 
-    fn facts_of(path: &str, bytes: &[u8]) -> FileFacts {
-        let entry = Entry {
+    /// The entry of the file at `path`, its blob named for the path.
+    fn entry_of(path: &str) -> Entry {
+        Entry {
             path: path.to_string(),
             blob: format!("blob-of-{path}"),
-        };
-        FactsExtractor.extract(&entry, bytes)
+        }
+    }
+
+    fn facts_of(path: &str, bytes: &[u8]) -> FileFacts {
+        FactsExtractor.extract(&entry_of(path), bytes)
+    }
+
+    /// The facts of the code file at `path` holding `source`, read as `lang` with its symbols
+    /// extracted under the fixture query `tags` in place of the language's bundled one, through
+    /// the one skeleton every extraction reads a file through.
+    pub(crate) fn facts_under(
+        path: &str,
+        source: &str,
+        lang: Lang,
+        tags: &CompiledTags,
+    ) -> FileFacts {
+        let symbols = extract(source, lang, tags).expect("the fixture source extracts");
+        file_facts(&entry_of(path), source.as_bytes(), |_, _| {
+            Some(CodeFile {
+                lang: lang_str(lang).to_string(),
+                symbols: Some(Ok(CodeSymbols::from(symbols))),
+            })
+        })
     }
 
     /// A definition kind's name as the facts spell it, written here rather than taken from the
@@ -556,8 +966,12 @@ mod tests {
         format!("{kind:?}").to_lowercase()
     }
 
+    /// Every definition and every call the symbol extractor finds in each language's fixture is
+    /// held, and its tagged references one per site kind (spec 117, ONE TAGGED MENTION PER SITE
+    /// KIND): a tagged reference repeating an earlier one's enclosing definition, leaf, tag and
+    /// test flag is held once, in the earlier one's place at the lower of their lines.
     #[test]
-    fn facts_hold_every_def_and_mention_the_symbol_extractor_finds() {
+    fn facts_hold_every_def_and_call_and_one_tagged_mention_per_site_kind() {
         let table = [
             ("src/lib.rs", "rust", RUST_DEFINITIONS_SOURCE),
             ("pkg/main.go", "go", GO_DEFINITIONS_SOURCE),
@@ -617,28 +1031,38 @@ mod tests {
                 .collect();
             assert_eq!(held_defs, found_defs, "{path}: definitions");
 
-            let found_refs: Vec<_> = symbols
-                .refs
-                .iter()
-                .map(|r| {
-                    let kind = match &r.ref_kind {
-                        None => "call".to_string(),
-                        Some(kind) => format!("tagged:{kind}"),
-                    };
-                    (r.name.clone(), kind, r.line, r.is_test, r.enclosing.clone())
-                })
-                .collect();
+            let mut found_refs: Vec<(String, String, u32, bool, Option<String>)> = Vec::new();
+            for r in &symbols.refs {
+                let kind = match &r.ref_kind {
+                    None => "call".to_string(),
+                    Some(kind) => format!("tagged:{kind}"),
+                };
+                let row = (r.name.clone(), kind, r.line, r.is_test, r.enclosing.clone());
+                let repeated = r.ref_kind.as_ref().and_then(|_| {
+                    found_refs.iter_mut().find(|held| {
+                        (&held.0, &held.1, held.3, &held.4) == (&row.0, &row.1, row.3, &row.4)
+                    })
+                });
+                match repeated {
+                    Some(held) => held.2 = held.2.min(row.2),
+                    None => found_refs.push(row),
+                }
+            }
             let held_refs: Vec<_> = facts
                 .mentions
                 .iter()
                 .map(|m| {
-                    assert_eq!(m.leaf, m.name, "{path}: a reference is named by its leaf");
+                    assert_eq!(
+                        m.name, m.leaf,
+                        "{path}: the fixture writes no reference with a qualifier, so each is \
+                         named by its leaf"
+                    );
                     let kind = match &m.kind {
                         MentionKind::Call => "call".to_string(),
                         MentionKind::Tagged(kind) => format!("tagged:{kind}"),
                     };
                     (
-                        m.name.clone(),
+                        m.leaf.clone(),
                         kind,
                         m.line,
                         m.test,
@@ -648,6 +1072,427 @@ mod tests {
                 .collect();
             assert_eq!(held_refs, found_refs, "{path}: mentions");
         }
+    }
+
+    /// Spec 117 (CAPTURES): each `@reference.<suffix>` capture of one fixture query keeps its
+    /// suffix in the mention it yields: `class`, `type` and `interface` a `type` mention,
+    /// `implementation` an `impl`, `constant` a `const`, `field` a `field` and `import` a `use`,
+    /// while `call`, `send` and a suffix the design does not list yield a call.
+    #[test]
+    fn every_capture_keeps_its_suffix() {
+        let tagged = |kind: &str| MentionKind::Tagged(kind.to_string());
+        // (the capture's suffix, the kind of the mention it yields)
+        let table = [
+            ("class", tagged("type")),
+            ("type", tagged("type")),
+            ("interface", tagged("type")),
+            ("implementation", tagged("impl")),
+            ("constant", tagged("const")),
+            ("field", tagged("field")),
+            ("import", tagged("use")),
+            ("call", MentionKind::Call),
+            ("send", MentionKind::Call),
+            ("unlisted", MentionKind::Call),
+        ];
+        // One call per row, `of_<suffix>()` on its own line, and one query pattern per row
+        // capturing that call alone under the row's suffix.
+        let leaf = |suffix: &str| format!("of_{suffix}");
+        let source: String = table
+            .iter()
+            .map(|(suffix, _)| format!("{}()\n", leaf(suffix)))
+            .collect();
+        let query: String = table
+            .iter()
+            .map(|(suffix, _)| {
+                format!(
+                    "((call function: (identifier) @name) @reference.{suffix} \
+                     (#eq? @name \"{}\"))\n",
+                    leaf(suffix)
+                )
+            })
+            .collect();
+        let fixture = compiled(&tree_sitter_python::LANGUAGE.into(), &query);
+        let facts = facts_under("tool/run.py", &source, Lang::Python, &fixture);
+        let expected: Vec<Mention> = table
+            .into_iter()
+            .zip(1..)
+            .map(|((suffix, kind), line)| Mention {
+                enclosing: None,
+                name: leaf(suffix),
+                leaf: leaf(suffix),
+                kind,
+                line,
+                test: false,
+            })
+            .collect();
+        assert_eq!(facts.mentions, expected);
+    }
+
+    /// A CONSTRUCTOR STAYS A CALL (spec 117, CAPTURES): a `@reference.class` capture on one of
+    /// its registry entry's `constructors` node kinds yields a call mention, so a TypeScript, a
+    /// TSX, a JavaScript and a C# `new Square()` each credit `Square` as called, while the C#
+    /// local's declared type, a `@reference.class` capture on no constructor, stays a `type`
+    /// mention.
+    #[test]
+    fn a_constructor_stays_a_call() {
+        let square = |kind: MentionKind| Mention {
+            enclosing: None,
+            name: "Square".to_string(),
+            leaf: "Square".to_string(),
+            kind,
+            line: 1,
+            test: false,
+        };
+        let call = || square(MentionKind::Call);
+        // (path, source, the mentions its facts hold)
+        let table = [
+            ("web/shape.ts", "new Square();\n", vec![call()]),
+            ("web/shape.tsx", "new Square();\n", vec![call()]),
+            ("web/shape.js", "new Square();\n", vec![call()]),
+            (
+                "App/Shape.cs",
+                "Square s = new Square();\n",
+                vec![square(MentionKind::Tagged("type".to_string())), call()],
+            ),
+        ];
+        let (found, expected): (Vec<_>, Vec<_>) = table
+            .into_iter()
+            .map(|(path, source, mentions)| {
+                (
+                    (path, facts_of(path, source.as_bytes()).mentions),
+                    (path, mentions),
+                )
+            })
+            .unzip();
+        assert_eq!(found, expected);
+    }
+
+    /// A QUALIFIER CAPTURE NAMES THE MENTION (spec 117, CAPTURES): a mention is named
+    /// `<qualifier>::<leaf>` under a path qualifier and `<qualifier>.<leaf>` under a member one,
+    /// its leaf always the bare leaf. A fixture query's `@qualifier.path` and `@qualifier.member`
+    /// captures name a Python `Shape.area` call and field read `Shape::area` and `Shape.area`,
+    /// the capture deciding the qualifier over the text a `@name` holding it reads. A `@name`
+    /// with named children is split: its named leaves outside the type arguments, joined by `.`
+    /// or `::`, give the last as the leaf and the text before its separator as the qualifier, so
+    /// a C# base type `Ns.IShape` yields the leaf `IShape`, `global::IShape` the leaf `IShape`
+    /// under a path, `List<IShape>` the leaf `List`, its type argument `IShape` a mention of its
+    /// own, and a JavaScript `new Ns.Kit.Box()` a call of `Box`, its inner `Ns.Kit` a field use
+    /// of `Kit`; a `@name` that is no such chain (`new arr[0]()`, `new a[0].b()`, `new (Box)()`)
+    /// stages no mention.
+    #[test]
+    fn a_qualifier_capture_names_the_mention() {
+        let mention = |name: &str, leaf: &str, kind: MentionKind, enclosing: Option<u32>| Mention {
+            enclosing,
+            name: name.to_string(),
+            leaf: leaf.to_string(),
+            kind,
+            line: 1,
+            test: false,
+        };
+        let tagged = |kind: &str| MentionKind::Tagged(kind.to_string());
+        // (path, source, the Python fixture query its symbols are extracted under, or none for
+        // the bundled grammar, the mentions its facts hold)
+        let table = [
+            (
+                "tool/run.py",
+                "Shape.area()\n",
+                Some(
+                    "(call function: (attribute object: (_) @qualifier.path \
+                     attribute: (identifier) @name)) @reference.call",
+                ),
+                vec![mention("Shape::area", "area", MentionKind::Call, None)],
+            ),
+            (
+                "tool/run.py",
+                "Shape.area\n",
+                Some(
+                    "(expression_statement (attribute object: (_) @qualifier.member \
+                     attribute: (identifier) @name)) @reference.field",
+                ),
+                vec![mention("Shape.area", "area", tagged("field"), None)],
+            ),
+            (
+                "tool/run.py",
+                "Shape.area()\n",
+                Some(
+                    "(call function: (attribute object: (_) @qualifier.path) @name) \
+                     @reference.call",
+                ),
+                vec![mention("Shape::area", "area", MentionKind::Call, None)],
+            ),
+            (
+                "App/Shape.cs",
+                "class A : Ns.IShape { }\n",
+                None,
+                vec![mention("Ns.IShape", "IShape", tagged("impl"), Some(0))],
+            ),
+            (
+                "App/Shape.cs",
+                "class A : global::IShape { }\n",
+                None,
+                vec![mention("global::IShape", "IShape", tagged("impl"), Some(0))],
+            ),
+            (
+                "App/Shape.cs",
+                "class A : List<IShape> { }\n",
+                None,
+                vec![
+                    mention("IShape", "IShape", tagged("type"), Some(0)),
+                    mention("List", "List", tagged("impl"), Some(0)),
+                ],
+            ),
+            (
+                "web/make.js",
+                "new Ns.Kit.Box();\n",
+                None,
+                vec![
+                    mention("Ns.Kit", "Kit", tagged("field"), None),
+                    mention("Ns.Kit.Box", "Box", MentionKind::Call, None),
+                ],
+            ),
+            ("web/make.js", "new arr[0]();\n", None, vec![]),
+            ("web/make.js", "new a[0].b();\n", None, vec![]),
+            ("web/make.js", "new (Box)();\n", None, vec![]),
+        ];
+        let (found, expected): (Vec<_>, Vec<_>) = table
+            .into_iter()
+            .map(|(path, source, fixture, mentions)| {
+                let facts = match fixture {
+                    Some(query) => facts_under(
+                        path,
+                        source,
+                        Lang::Python,
+                        &compiled(&tree_sitter_python::LANGUAGE.into(), query),
+                    ),
+                    None => facts_of(path, source.as_bytes()),
+                };
+                ((source, facts.mentions), (source, mentions))
+            })
+            .unzip();
+        assert_eq!(found, expected);
+    }
+
+    /// ONE TAGGED MENTION PER SITE KIND (spec 117): a Rust function reading one constant three
+    /// times holds one `const` mention, at the first read's line, while its three calls to one
+    /// function stay three call mentions, one per call's line.
+    #[test]
+    fn a_constant_read_three_times_is_one_mention_and_three_calls_are_three() {
+        let facts = facts_of("src/lib.rs", THREE_READS_AND_THREE_CALLS_SOURCE.as_bytes());
+        assert_eq!(
+            facts
+                .defs
+                .iter()
+                .map(|d| d.local.as_str())
+                .collect::<Vec<_>>(),
+            ["LIMIT", "g", "f"],
+            "the definitions, `f` at index 2"
+        );
+        assert_eq!(
+            facts.mentions,
+            [
+                mention_in(Some(2), "g", "g", None, 5, false),
+                mention_in(Some(2), "g", "g", None, 7, false),
+                mention_in(Some(2), "g", "g", None, 9, false),
+                mention_in(Some(2), "LIMIT", "LIMIT", Some("const"), 4, false),
+            ]
+        );
+    }
+
+    /// ONE TAGGED MENTION PER SITE KIND (spec 117), part by part: of an extraction's tagged
+    /// references, one is kept per enclosing definition, name, leaf, tag and test flag, in the
+    /// first one's place at the lowest of their lines, and one differing from it in any single
+    /// part is kept beside it; every call is kept, one per site, two on one line included.
+    #[test]
+    fn a_tagged_mention_is_kept_once_per_enclosing_name_leaf_tag_and_test_flag() {
+        use crate::symbol_index::{def, qualifier, sym_ref_of_kind};
+        let defs = vec![
+            def(model::Kind::Function, "f"),
+            def(model::Kind::Function, "g"),
+        ];
+        let qualified = |q: &str, path: bool, r: SymRef| SymRef {
+            qualifier: Some(qualifier(q, path)),
+            ..r
+        };
+        // (the case, the references the extraction gives, the mentions the facts hold; `f` is
+        // the definition at index 0 and `g` the one at index 1)
+        let table = [
+            ("no reference", vec![], vec![]),
+            (
+                "a repeat in one definition",
+                vec![
+                    sym_ref_of_kind("LIMIT", 3, Some("f"), Some("const"), false),
+                    sym_ref_of_kind("LIMIT", 5, Some("f"), Some("const"), false),
+                    sym_ref_of_kind("LIMIT", 7, Some("f"), Some("const"), false),
+                ],
+                vec![mention_in(
+                    Some(0),
+                    "LIMIT",
+                    "LIMIT",
+                    Some("const"),
+                    3,
+                    false,
+                )],
+            ),
+            (
+                "a repeat at a lower line, after a call",
+                vec![
+                    sym_ref_of_kind("LIMIT", 5, Some("f"), Some("const"), false),
+                    sym_ref_of_kind("h", 6, Some("f"), None, false),
+                    sym_ref_of_kind("LIMIT", 3, Some("f"), Some("const"), false),
+                ],
+                vec![
+                    mention_in(Some(0), "LIMIT", "LIMIT", Some("const"), 3, false),
+                    mention_in(Some(0), "h", "h", None, 6, false),
+                ],
+            ),
+            (
+                "a repeat at file level",
+                vec![
+                    sym_ref_of_kind("LIMIT", 1, None, Some("const"), false),
+                    sym_ref_of_kind("LIMIT", 2, None, Some("const"), false),
+                ],
+                vec![mention_in(None, "LIMIT", "LIMIT", Some("const"), 1, false)],
+            ),
+            (
+                "another enclosing definition, or none",
+                vec![
+                    sym_ref_of_kind("LIMIT", 3, Some("f"), Some("const"), false),
+                    sym_ref_of_kind("LIMIT", 5, Some("g"), Some("const"), false),
+                    sym_ref_of_kind("LIMIT", 7, None, Some("const"), false),
+                ],
+                vec![
+                    mention_in(Some(0), "LIMIT", "LIMIT", Some("const"), 3, false),
+                    mention_in(Some(1), "LIMIT", "LIMIT", Some("const"), 5, false),
+                    mention_in(None, "LIMIT", "LIMIT", Some("const"), 7, false),
+                ],
+            ),
+            (
+                "another tag",
+                vec![
+                    sym_ref_of_kind("LIMIT", 3, Some("f"), Some("const"), false),
+                    sym_ref_of_kind("LIMIT", 4, Some("f"), Some("type"), false),
+                ],
+                vec![
+                    mention_in(Some(0), "LIMIT", "LIMIT", Some("const"), 3, false),
+                    mention_in(Some(0), "LIMIT", "LIMIT", Some("type"), 4, false),
+                ],
+            ),
+            (
+                "another test flag",
+                vec![
+                    sym_ref_of_kind("LIMIT", 3, Some("f"), Some("const"), false),
+                    sym_ref_of_kind("LIMIT", 4, Some("f"), Some("const"), true),
+                ],
+                vec![
+                    mention_in(Some(0), "LIMIT", "LIMIT", Some("const"), 3, false),
+                    mention_in(Some(0), "LIMIT", "LIMIT", Some("const"), 4, true),
+                ],
+            ),
+            (
+                "another name: `x.f` beside `T { f }`",
+                vec![
+                    qualified(
+                        "x",
+                        false,
+                        sym_ref_of_kind("f", 3, Some("f"), Some("field"), false),
+                    ),
+                    sym_ref_of_kind("f", 4, Some("f"), Some("field"), false),
+                ],
+                vec![
+                    mention_in(Some(0), "x.f", "f", Some("field"), 3, false),
+                    mention_in(Some(0), "f", "f", Some("field"), 4, false),
+                ],
+            ),
+            (
+                "another name: `x.f` beside `x::f`",
+                vec![
+                    qualified(
+                        "x",
+                        false,
+                        sym_ref_of_kind("f", 3, Some("f"), Some("field"), false),
+                    ),
+                    qualified(
+                        "x",
+                        true,
+                        sym_ref_of_kind("f", 4, Some("f"), Some("field"), false),
+                    ),
+                ],
+                vec![
+                    mention_in(Some(0), "x.f", "f", Some("field"), 3, false),
+                    mention_in(Some(0), "x::f", "f", Some("field"), 4, false),
+                ],
+            ),
+            (
+                "a repeat under one qualifier",
+                vec![
+                    qualified(
+                        "x",
+                        false,
+                        sym_ref_of_kind("f", 3, Some("f"), Some("field"), false),
+                    ),
+                    qualified(
+                        "x",
+                        false,
+                        sym_ref_of_kind("f", 5, Some("f"), Some("field"), false),
+                    ),
+                ],
+                vec![mention_in(Some(0), "x.f", "f", Some("field"), 3, false)],
+            ),
+            (
+                "another leaf: an unqualified `a.b` beside `b` under the member `a`",
+                vec![
+                    sym_ref_of_kind("a.b", 3, Some("f"), Some("field"), false),
+                    qualified(
+                        "a",
+                        false,
+                        sym_ref_of_kind("b", 4, Some("f"), Some("field"), false),
+                    ),
+                ],
+                vec![
+                    mention_in(Some(0), "a.b", "a.b", Some("field"), 3, false),
+                    mention_in(Some(0), "a.b", "b", Some("field"), 4, false),
+                ],
+            ),
+            (
+                "three calls to one function",
+                vec![
+                    sym_ref_of_kind("g", 5, Some("f"), None, false),
+                    sym_ref_of_kind("g", 7, Some("f"), None, false),
+                    sym_ref_of_kind("g", 9, Some("f"), None, false),
+                ],
+                vec![
+                    mention_in(Some(0), "g", "g", None, 5, false),
+                    mention_in(Some(0), "g", "g", None, 7, false),
+                    mention_in(Some(0), "g", "g", None, 9, false),
+                ],
+            ),
+            (
+                "two calls on one line",
+                vec![
+                    sym_ref_of_kind("g", 5, Some("f"), None, false),
+                    sym_ref_of_kind("g", 5, Some("f"), None, false),
+                ],
+                vec![
+                    mention_in(Some(0), "g", "g", None, 5, false),
+                    mention_in(Some(0), "g", "g", None, 5, false),
+                ],
+            ),
+        ];
+        let (found, expected): (Vec<_>, Vec<_>) = table
+            .into_iter()
+            .map(|(case, refs, mentions)| {
+                let symbols = CodeSymbols {
+                    defs: defs.clone(),
+                    refs,
+                    partial: false,
+                    doc: None,
+                };
+                let mut facts = FileFacts::default();
+                code_facts("src/lib.rs", &symbols, &mut facts);
+                ((case, facts.mentions), (case, mentions))
+            })
+            .unzip();
+        assert_eq!(found, expected);
     }
 
     #[test]
@@ -835,6 +1680,41 @@ mod tests {
         }
     }
 
+    /// Spec 117 (DOC FACTS): the doc spans the bundled extraction gives a code file reach its
+    /// facts, the file's as the file's doc span and each definition's as that definition's: a Rust
+    /// file's by the Rust rule, a Go file's through its query's `@doc` capture, and a file with no
+    /// doc line has none.
+    #[test]
+    fn a_files_doc_spans_reach_its_facts() {
+        // (path, source, the file's doc span, the (leaf, doc span) of each definition)
+        type Spans = &'static [(&'static str, Option<(u32, u32)>)];
+        type Row = (&'static str, &'static str, Option<(u32, u32)>, Spans);
+        let table: [Row; 3] = [
+            (
+                "src/lib.rs",
+                "//! The crate.\n\n/// F.\nfn f() {}\nfn g() {}\n",
+                Some((1, 1)),
+                &[("f", Some((3, 3))), ("g", None)],
+            ),
+            ("src/lib.rs", "fn plain() {}\n", None, &[("plain", None)]),
+            (
+                "p.go",
+                "package p\n\n// F reads.\n// It reads.\nfunc F() {}\n",
+                None,
+                &[("F", Some((3, 4)))],
+            ),
+        ];
+        for (path, source, doc, defs) in table {
+            let facts = facts_of(path, source.as_bytes());
+            let held: Vec<_> = facts
+                .defs
+                .iter()
+                .map(|d| (d.leaf.as_str(), d.doc))
+                .collect();
+            assert_eq!((facts.doc, held.as_slice()), (doc, defs), "{path}");
+        }
+    }
+
     #[test]
     fn a_file_the_parser_cannot_fully_read_is_partial() {
         let table = [
@@ -848,6 +1728,9 @@ mod tests {
                 "fn whole() { helper(); }\nfn broken( {\n",
                 true,
             ),
+            // A token tree neither re-parse reads whole leaves its file whole: the file tree alone
+            // decides.
+            ("src/lib.rs", "fn f() { json!({\"k\": f(x)}); }\n", false),
             ("web/app.ts", "function broken( {\n", true),
             ("docs/a-design.md", "# Design\n", false),
         ];
@@ -944,19 +1827,32 @@ mod tests {
         }
     }
 
+    /// Spec 117, MODULE ROOTS AT READ: each out-of-line declaration's module row holds its name,
+    /// its test mark, the `as_root` and `as_child` lists `module_candidates` names off the
+    /// declaring file alone, and whether it carries a `#[path]` attribute.
     #[test]
     fn module_candidates_come_from_the_declaring_file_alone() {
-        // (declaring path, source, the (name, test, candidates) of each declaration)
-        type Row = (
+        // (name, test, as_root, as_child, path_attr) of one declaration
+        type Module = (
             &'static str,
-            &'static str,
-            &'static [(&'static str, bool, &'static [&'static str])],
+            bool,
+            &'static [&'static str],
+            &'static [&'static str],
+            bool,
         );
+        // (declaring path, source, each declaration's module row)
+        type Row = (&'static str, &'static str, &'static [Module]);
         let table: [Row; 10] = [
             (
                 "src/lib.rs",
                 "mod alpha;\n",
-                &[("alpha", false, &["src/alpha.rs", "src/alpha/mod.rs"])],
+                &[(
+                    "alpha",
+                    false,
+                    &["src/alpha.rs", "src/alpha/mod.rs"],
+                    &["src/alpha.rs", "src/alpha/mod.rs"],
+                    false,
+                )],
             ),
             (
                 "lib/other.rs",
@@ -964,59 +1860,98 @@ mod tests {
                 &[(
                     "alpha",
                     false,
+                    &["lib/alpha.rs", "lib/alpha/mod.rs"],
                     &["lib/other/alpha.rs", "lib/other/alpha/mod.rs"],
+                    false,
                 )],
             ),
             (
                 "src/lib.rs",
                 "#[cfg(test)]\nmod tests;\n",
-                &[("tests", true, &["src/tests.rs", "src/tests/mod.rs"])],
+                &[(
+                    "tests",
+                    true,
+                    &["src/tests.rs", "src/tests/mod.rs"],
+                    &["src/tests.rs", "src/tests/mod.rs"],
+                    false,
+                )],
             ),
             (
                 "src/parent.rs",
                 "#[path = \"other/x.rs\"]\nmod renamed;\n",
-                &[("renamed", false, &["src/other/x.rs"])],
+                &[(
+                    "renamed",
+                    false,
+                    &["src/other/x.rs"],
+                    &["src/other/x.rs"],
+                    true,
+                )],
             ),
             (
                 "src/lib.rs",
                 "mod outer {\n    mod x;\n}\n",
-                &[("x", false, &["src/outer/x.rs", "src/outer/x/mod.rs"])],
+                &[(
+                    "x",
+                    false,
+                    &["src/outer/x.rs", "src/outer/x/mod.rs"],
+                    &["src/outer/x.rs", "src/outer/x/mod.rs"],
+                    false,
+                )],
             ),
             (
                 "src/lib.rs",
                 "#![cfg(test)]\nfn first() {}\nmod x;\n",
-                &[("x", true, &["src/x.rs", "src/x/mod.rs"])],
+                &[(
+                    "x",
+                    true,
+                    &["src/x.rs", "src/x/mod.rs"],
+                    &["src/x.rs", "src/x/mod.rs"],
+                    false,
+                )],
             ),
             (
                 "src/main.rs",
                 "#[cfg(test)]\nuse y;\nfn first() {}\nmod z;\n",
-                &[("z", false, &["src/z.rs", "src/z/mod.rs"])],
+                &[(
+                    "z",
+                    false,
+                    &["src/z.rs", "src/z/mod.rs"],
+                    &["src/z.rs", "src/z/mod.rs"],
+                    false,
+                )],
             ),
             (
                 "src/lib.rs",
                 "mod outer {\n    #[cfg(test)]\n    mod x;\n}\n",
-                &[("x", true, &["src/outer/x.rs", "src/outer/x/mod.rs"])],
+                &[(
+                    "x",
+                    true,
+                    &["src/outer/x.rs", "src/outer/x/mod.rs"],
+                    &["src/outer/x.rs", "src/outer/x/mod.rs"],
+                    false,
+                )],
             ),
             ("src/lib.rs", "mod inline { fn f() {} }\n", &[]),
             ("web/app.ts", "namespace N { function f() {} }\n", &[]),
         ];
         for (path, source, modules) in table {
             let facts = facts_of(path, source.as_bytes());
-            let held: Vec<(&str, bool, Vec<&str>)> = facts
-                .modules
-                .iter()
+            let held = (facts.modules.iter())
                 .map(|m| {
                     (
                         m.name.as_str(),
                         m.test,
-                        m.candidates.iter().map(String::as_str).collect(),
+                        m.as_root.iter().map(String::as_str).collect::<Vec<_>>(),
+                        m.as_child.iter().map(String::as_str).collect::<Vec<_>>(),
+                        m.path_attr,
                     )
                 })
-                .collect();
-            let expected: Vec<(&str, bool, Vec<&str>)> = modules
-                .iter()
-                .map(|(name, test, candidates)| (*name, *test, candidates.to_vec()))
-                .collect();
+                .collect::<Vec<_>>();
+            let expected = (modules.iter())
+                .map(|&(name, test, as_root, as_child, path_attr)| {
+                    (name, test, as_root.to_vec(), as_child.to_vec(), path_attr)
+                })
+                .collect::<Vec<_>>();
             assert_eq!(held, expected, "{path}: {source:?}");
         }
     }
@@ -1213,40 +2148,68 @@ mod tests {
         }
     }
 
-    /// A CHANGE TO THE FACTS SHIPS WITH A BUMP: the golden fixtures - the symbol golden's source
-    /// for each registered grammar, a design document, a source file's rationale and a workflow
-    /// definition - read into facts whose digest is pinned beside the two generations the
-    /// fingerprint is made of, so a change to the design extractor, the workflow extractor or the
-    /// conversion fails here until the generation is bumped and the triple re-pinned.
+    /// A CHANGE TO THE FACTS SHIPS WITH A BUMP, and EACH LANGUAGE PINS ITS OWN ROWS (spec 117):
+    /// the golden fixtures read into facts. Each registry entry's code fixtures - the symbol
+    /// golden's sources keyed by that entry's extension, and for Rust a test file - are digested
+    /// in one row beside that entry's tags generation; a design document, a source file's
+    /// rationale and a workflow definition are digested in one row beside `FACTS_GENERATION`. So
+    /// a change to one language's extraction fails that language's row until its generation is
+    /// bumped, and a change to the design extractor, the workflow extractor or the conversion
+    /// fails until `FACTS_GENERATION` is bumped and every row it moves re-pinned with it.
     #[test]
     fn a_change_to_the_facts_ships_with_a_generation_bump() {
-        use crate::grounder::symbols::registry::tests::GOLDEN_SOURCES;
-        const PINNED: (&str, &str, &str) = ("ts-tags-v5", "facts-v2", "ec3d0eb0685882b8");
-        let mut fixtures: Vec<(String, &str)> = GOLDEN_SOURCES
-            .iter()
-            .enumerate()
-            .map(|(i, (ext, source))| (format!("golden/{i}.{ext}"), *source))
-            .collect();
-        fixtures.extend(
-            [
-                ("tests/it.rs", "fn works() { helper(); }\n"),
-                (
-                    "docs/widget-design.md",
-                    "# Widget design\n\nThe code is `src/widget.rs`, see [notes](docs/notes.md).\n\n## Parts\n",
-                ),
-                ("scripts/build.sh", "# WHY: keep the cache warm\nmake\n"),
-                (
-                    ".rigger/workflow.yml",
-                    "stages:\n  plan:\n    agent: planner\n  implement:\n    needs: [plan]\n    agent: worker\n    gates: [fmt]\n",
-                ),
-            ]
-            .map(|(path, source)| (path.to_string(), source)),
-        );
-        let facts: Vec<FileFacts> = fixtures
-            .iter()
-            .map(|(path, source)| facts_of(path, source.as_bytes()))
-            .collect();
-        let any = |held: &dyn Fn(&FileFacts) -> bool| facts.iter().any(held);
+        use crate::grounder::symbols::registry::tests::{
+            generation_rows, pinned_rows, GOLDEN_SOURCES,
+        };
+        // One row per line with a comment line between rows, so units re-pinning different
+        // languages' rows merge clean.
+        const PINNED: [(&str, &str, &str); 7] = [
+            // Rust
+            ("rs", "rust-tags-v12", "cab0b85c6b9758df"),
+            // C#
+            ("cs", "csharp-tags-v6", "8471781a8d02b1ce"),
+            // TypeScript
+            ("ts", "typescript-tags-v7", "59a7286ef00e8791"),
+            // TSX
+            ("tsx", "tsx-tags-v7", "f99cfdbc67a9dbe4"),
+            // JavaScript
+            ("js", "javascript-tags-v7", "b0392ae368f5f278"),
+            // Go
+            ("go", "go-tags-v4", "dc89c1ebc294684f"),
+            // Python
+            ("py", "python-tags-v2", "ca3c7d0d1a679ab9"),
+        ];
+        const PINNED_FACTS: (&str, &str) = ("facts-v6", "006133eb2aae6c76");
+        fn digest(facts: &impl std::fmt::Debug) -> String {
+            format!("{:016x}", fnv1a_64(format!("{facts:#?}").as_bytes()))
+        }
+        // A code fixture's path counts its index among its own extension's fixtures, so a fixture
+        // added for one language moves no other language's paths.
+        let mut code: Vec<(&str, FileFacts)> = Vec::new();
+        for &(ext, source) in GOLDEN_SOURCES {
+            let i = code.iter().filter(|(keyed, _)| *keyed == ext).count();
+            code.push((
+                ext,
+                facts_of(&format!("golden/{i}.{ext}"), source.as_bytes()),
+            ));
+        }
+        code.push(("rs", facts_of("tests/it.rs", b"fn works() { helper(); }\n")));
+        let rest: Vec<FileFacts> = [
+            (
+                "docs/widget-design.md",
+                "# Widget design\n\nThe code is `src/widget.rs`, see [notes](docs/notes.md).\n\n## Parts\n",
+            ),
+            ("scripts/build.sh", "# WHY: keep the cache warm\nmake\n"),
+            (
+                ".rigger/workflow.yml",
+                "stages:\n  plan:\n    agent: planner\n  implement:\n    needs: [plan]\n    agent: worker\n    gates: [fmt]\n",
+            ),
+        ]
+        .iter()
+        .map(|(path, source)| facts_of(path, source.as_bytes()))
+        .collect();
+        let facts: Vec<&FileFacts> = code.iter().map(|(_, facts)| facts).chain(&rest).collect();
+        let any = |held: &dyn Fn(&FileFacts) -> bool| facts.iter().any(|f| held(f));
         for (part, covered) in [
             (
                 "every half",
@@ -1283,7 +2246,24 @@ mod tests {
                 "a mention's caller",
                 any(&|f| f.mentions.iter().any(|m| m.enclosing.is_some())),
             ),
+            (
+                "a qualified mention",
+                any(&|f| f.mentions.iter().any(|m| m.name != m.leaf)),
+            ),
             ("a module declaration", any(&|f| !f.modules.is_empty())),
+            (
+                "a module's two lists apart",
+                any(&|f| f.modules.iter().any(|m| m.as_root != m.as_child)),
+            ),
+            (
+                "a module's `#[path]` mark",
+                any(&|f| f.modules.iter().any(|m| m.path_attr)),
+            ),
+            (
+                "a definition's doc span",
+                any(&|f| f.defs.iter().any(|d| d.doc.is_some())),
+            ),
+            ("a file's doc span", any(&|f| f.doc.is_some())),
             ("a design concept", any(&|f| !f.doc_concepts.is_empty())),
             ("a design link", any(&|f| !f.doc_links.is_empty())),
             ("a workflow node", any(&|f| !f.wf_nodes.is_empty())),
@@ -1291,14 +2271,24 @@ mod tests {
         ] {
             assert!(covered, "the golden fixtures hold {part}");
         }
-        let digest = format!("{:016x}", fnv1a_64(format!("{facts:#?}").as_bytes()));
         assert_eq!(
-            (GRAMMAR_TAGS_VERSION, FACTS_GENERATION, digest.as_str()),
-            PINNED,
-            "this build's generations and the digest of the golden facts (left) differ from the \
-             pinned triple: a change to what the facts hold ships with a bump, so bump \
-             `FACTS_GENERATION` (or `GRAMMAR_TAGS_VERSION` for a symbol extraction change) and \
-             re-pin the triple to this build's values together"
+            generation_rows(&code, |keyed| digest(&keyed)),
+            pinned_rows(&PINNED),
+            "each entry's tags generation and the digest of its code fixtures' facts (left) differ \
+             from the pinned rows: a change to one language's extraction ships with a bump of \
+             that language's generation macro in model.rs, re-pinning its row here and in the \
+             registry golden; a change to the conversion ships with a bump of \
+             `FACTS_GENERATION`, re-pinning its row below and each language row it moves; either \
+             re-pins to this build's values together"
+        );
+        assert_eq!(
+            (FACTS_GENERATION, digest(&rest).as_str()),
+            PINNED_FACTS,
+            "this build's `FACTS_GENERATION` and the digest of the design, rationale and workflow \
+             facts (left) differ from the pinned row: a change to the design extractor, the \
+             workflow extractor or the conversion ships with a bump of `FACTS_GENERATION`, so \
+             bump it and re-pin this row, and each language row it moves, to this build's values \
+             together"
         );
     }
 
@@ -1595,6 +2585,7 @@ mod tests {
                         end_line: 4,
                         parent: None,
                         test: false,
+                        doc: None,
                     },
                     Def {
                         local: "T::new".into(),
@@ -1604,6 +2595,7 @@ mod tests {
                         end_line: 4,
                         parent: Some(0),
                         test: true,
+                        doc: None,
                     },
                 ],
                 mentions: vec![
@@ -1716,6 +2708,7 @@ mod tests {
                         end_line: 2,
                         parent: None,
                         test: false,
+                        doc: None,
                     }],
                     mentions: vec![Mention {
                         enclosing: Some(0),
@@ -1923,5 +2916,367 @@ mod tests {
             (vec![root_dir_of(project.path())], 2),
             "the `.rs` files were asked of one session, no other file of any"
         );
+    }
+
+    /// A READ HEAD HOLDS NO SESSION: over a project declaring the stub for `zig`, a reader that
+    /// reads the store's head - from the root, which advances the store, and from a worktree
+    /// differing in the declared file, which extracts that file again - holds a head whose every
+    /// session of the stub has already ended, so a read that ends by exiting leaves no extractor
+    /// running, and the head still carries the project's extractor, its doc text read with none.
+    #[cfg(unix)]
+    #[test]
+    fn a_read_head_holds_the_extractor_with_every_session_closed() {
+        let kept = tempfile::tempdir().expect("tempdir");
+        let stub = StubExtractor::new(kept.path());
+        let project = stub_project(&stub, "zig", "[zig]", &[("src/a.zig", "a\n")]);
+        stub.answers("src/a.zig", &answer_defining("src/a.zig", "a"));
+        let root = project.path();
+        let workflow =
+            std::fs::read_to_string(root.join(workflow_doc())).expect("read the workflow");
+        let worktree = project_declaring(Some(&workflow));
+        std::fs::create_dir_all(worktree.path().join("src")).expect("create the source directory");
+        std::fs::write(worktree.path().join("src/a.zig"), "b\n").expect("change the file");
+        // (the case, the reader's worktree, the stub's starts and ends while the head is held)
+        let rows: [(&str, &Path, usize); 2] = [
+            ("the root", root, 1),
+            (
+                "a worktree differing in the declared file",
+                worktree.path(),
+                2,
+            ),
+        ];
+        for (case, reader, sessions) in rows {
+            let head = DirectoryHead::new(root)
+                .head(reader)
+                .expect("read the head");
+            let doc = (head.extract.as_deref()).map(|extract| extract.doc_text("zig", " a \n b"));
+            assert_eq!(
+                (stub.starts().len(), stub.ends().len(), doc.as_deref()),
+                (sessions, sessions, Some("a\nb")),
+                "{case}"
+            );
+        }
+    }
+
+    /// The doc text of a span, each row (the language, the span's raw lines, the doc text): Rust
+    /// spans, `\r\n` endings, `#[doc(hidden)]` lines, nested block comments and literals holding
+    /// a comment marker or a quote among them, C# `///` spans holding XML tags and a `<` that
+    /// opens none, Python docstrings, one joined from parts and one in parentheses among them, and
+    /// the lines of a language with no doc rule.
+    const DOC_TEXT_ROWS: &[(&str, &str, &str)] = &[
+        (
+            "rust",
+            "/// Reads the file.\r\n#[doc(hidden)]\r\n///\r\n/// Then answers it.\r\n",
+            "Reads the file.\n\nThen answers it.",
+        ),
+        (
+            "rust",
+            "    /// First.\n    // a plain comment\n    //// four slashes\n\n    #[must_use]\n    ///tight\n",
+            "First.\ntight",
+        ),
+        (
+            "rust",
+            "//! The module.\n//!\n//! Its parts.",
+            "The module.\n\nIts parts.",
+        ),
+        (
+            "rust",
+            "/**\r\n * Block first.\r\n *\r\n * Block second.\r\n */\r\n",
+            "Block first.\n\nBlock second.",
+        ),
+        ("rust", "/** One line. */", "One line."),
+        (
+            "rust",
+            "/*! Opens here\n   no star\n ** two stars\n closes here */",
+            "Opens here\nno star\n* two stars\ncloses here",
+        ),
+        (
+            "rust",
+            "/*** not a doc ***/\n/**/\n/** Kept. */ fn f() {}\n/// After.",
+            "Kept.\nAfter.",
+        ),
+        ("rust", "/** Open\n * still open", "Open\nstill open"),
+        (
+            "rust",
+            "/**\n * Block.\n */\n// plain after\n/// After.",
+            "Block.\nAfter.",
+        ),
+        (
+            "rust",
+            "#[doc = \"Value doc.\"]\n#![doc = \"Inner doc.\"]\n# [ doc = \"Spaced.\" ]\n#[doc=\"  Tight.  \"]",
+            "Value doc.\nInner doc.\nSpaced.\nTight.",
+        ),
+        (
+            "rust",
+            r##"#[doc = r#"Raw "quoted"."#]
+#[doc = r"Raw plain."]
+#[doc = "Escaped \"as written\"."]
+#[doc = "Unclosed"##,
+            r#"Raw "quoted".
+Raw plain.
+Escaped \"as written\".
+Unclosed"#,
+        ),
+        (
+            "rust",
+            "#[doc = include_str!(\"README.md\")]\n#[doc = raw_text!()]\n#[doc(alias = \"x\")]\n#[docs = \"no\"]\n#[cfg_attr(test, doc = \"conditional\")]\n/// Only this.",
+            "Only this.",
+        ),
+        ("rust", "#doc = \"No bracket.\"\n/// Only this.", "Only this."),
+        ("rust", "/// Last.\r", "Last."),
+        ("rust", "#[doc(hidden)]\n// plain\n", ""),
+        ("rust", "", ""),
+        (
+            "go",
+            "  // A Go doc.\r\n\t// Its second line.  \r\n\n",
+            "// A Go doc.\n// Its second line.\n",
+        ),
+        (
+            "python",
+            "    \"\"\"Area of the shape.\n\n    Computed in units.\n      Indented more.   \n    \"\"\"\n",
+            "Area of the shape.\n\nComputed in units.\n  Indented more.",
+        ),
+        (
+            "python",
+            "    \"\"\"\r\n    Starts below.\r\n\r\n    Then more.\r\n    \"\"\"\r\n",
+            "Starts below.\n\nThen more.",
+        ),
+        (
+            "python",
+            "\t\"\"\"Mixed.\n\tTab in.\n    Four in.\n\t\"\"\"",
+            "Mixed.\nTab in.\n   Four in.",
+        ),
+        ("python", "    \"\"\"One line.\"\"\"\n", "One line."),
+        ("python", "\"\"\"  Spaced.  \"\"\"", "Spaced."),
+        ("python", "'''Single.'''", "Single."),
+        ("python", "    'Plain.'\n", "Plain."),
+        ("python", "r\"\"\"Raw \\d.\"\"\"", "Raw \\d."),
+        ("python", "'It\\'s here.'", "It\\'s here."),
+        (
+            "python",
+            "\"\"\"Say 'hi', \"bye\" and \\\"\"\" too.\"\"\"",
+            "Say 'hi', \"bye\" and \\\"\"\" too.",
+        ),
+        ("python", "'a\"\"\"b'", "a\"\"\"b"),
+        ("python", "    \"\"\"Doc.\"\"\"  # a \"note\"\n", "Doc."),
+        ("python", "\"\"\"\"\"\"", ""),
+        ("python", "''", ""),
+        (
+            "python",
+            "    \"\"\"Unclosed\n    still open\n",
+            "Unclosed\nstill open",
+        ),
+        ("python", "    pass\n", ""),
+        ("python", "def one(): r\"\"\"Raw \\d.\"\"\"\n", "Raw \\d."),
+        ("python", "    \"a\" 'b'\n", "ab"),
+        ("python", "    \"a\" U'b' R\"c\"\n", "abc"),
+        ("python", "    \"a\" \\\n    r\"\\d\"\n", "a\\d"),
+        ("python", "    (\"P.\")\n", "P."),
+        (
+            "python",
+            "    (\"long \"  # it's \"x\"\n     \"doc\")\n",
+            "long doc",
+        ),
+        (
+            "python",
+            "    (\"\"\"First.\n\n        Indented.\n    \"\"\" \"\"\"    Tail.\"\"\")\n",
+            "First.\n\nIndented.\nTail.",
+        ),
+        ("python", "    \"a\"; x = \"q\"\n", "a"),
+        (
+            "zig",
+            "/// Not read as Rust.\n #[doc(hidden)] ",
+            "/// Not read as Rust.\n#[doc(hidden)]",
+        ),
+        (
+            "rust",
+            "/**\n * ```\n * /* set up */\n * let x = 1;\n * ```\n */",
+            "```\n/* set up */\nlet x = 1;\n```",
+        ),
+        ("rust", "/** a /* b */ c */", "a /* b */ c"),
+        ("rust", "/** a /*/ b */ c */", "a /*/ b */ c"),
+        ("rust", "#! [doc = \"Inner.\"]", "Inner."),
+        (
+            "rust",
+            "/// a\n/* commented out\n/// not doc\n*/\n/// b",
+            "a\nb",
+        ),
+        ("rust", "#[doc = \"Doc.\"] // see \"x\"", "Doc."),
+        ("rust", "#[doc = \"a\"] #[cfg(feature = \"y\")]", "a"),
+        (
+            "rust",
+            r###"#[doc = r##"Holds "# inside."##]"###,
+            r##"Holds "# inside."##,
+        ),
+        ("rust", "#[doc = \"a\"] /* x\n/// y\n*/ /// b", "a\nb"),
+        ("rust", "/* a /* b */ /// c */\n/// d", "d"),
+        ("rust", "/// a // b /* c\n/// d", "a // b /* c\nd"),
+        ("rust", "#[cfg(feature = \"/*\")]\n/// After.", "After."),
+        ("rust", "#[attr('\"', '\\\"')]\n/// After.", "After."),
+        ("rust", "#[attr(&'a str)]\n/// After.", "After."),
+        (
+            "rust",
+            "#[attr(r#type, r#\"a\" /*\"#, br#\"b\" /*\"#, cr#\"c\" /*\"#)]\n/// After.",
+            "After.",
+        ),
+        ("rust", "#[doc = r#\"Raw \"open", "Raw \"open"),
+        ("rust", "#[doc = \"a\n  b\"]\n/// c", "a\nb\nc"),
+        ("rust", "/** Unclosed\n", "Unclosed"),
+        ("rust", "/** Open\n *", "Open\n"),
+        (
+            "csharp",
+            "/// <summary>\r\n/// Reads the <c>file</c>.\r\n/// </summary>\r\n",
+            "Reads the file.",
+        ),
+        (
+            "csharp",
+            "    /// Uses <see cref=\"Shape\"/> here.\n\t/// <param name=\"s\">The shape.</param>",
+            "Uses  here.\nThe shape.",
+        ),
+        (
+            "csharp",
+            "/// a < b, 1 <2> 3, a<b\n/// <!-- kept -->",
+            "a < b, 1 <2> 3, a<b\n<!-- kept -->",
+        ),
+        (
+            "csharp",
+            "//// four\n// plain\n/* block */\n///tight\n///\n/// After.",
+            "tight\nAfter.",
+        ),
+        ("csharp", "/// See <see cref=\"X\"/>", "See"),
+        ("csharp", "", ""),
+    ];
+
+    /// `extractor`'s doc text of each [`DOC_TEXT_ROWS`] span is the row's, `name` naming the
+    /// extractor in a failure.
+    fn assert_doc_texts(name: &str, extractor: &dyn Extract) {
+        for &(lang, raw, text) in DOC_TEXT_ROWS {
+            assert_eq!(
+                extractor.doc_text(lang, raw),
+                text,
+                "{name} {lang}: {raw:?}"
+            );
+        }
+    }
+
+    /// THE DOC TEXT IS STRIPPED: `doc_text` turns a Rust span's raw lines, `\r\n` endings and a
+    /// `#[doc(hidden)]` line included, into the comment text alone - the text of each doc comment
+    /// and each doc attribute's literal, every comment and literal bounded as Rust lexes it,
+    /// everything else dropped, a doc block's opener, closer and one leading `*` stripped; turns
+    /// a C# span's raw lines into the text of each `///` line with its XML tags removed, a line
+    /// left empty and every other line dropped; gives a Python span its docstring's body, its
+    /// parts joined, dedented; and gives a language with no rule its lines trimmed. The project's
+    /// extractor with no declaration answers as the bundled one.
+    #[test]
+    fn the_doc_text_is_the_comment_text_alone() {
+        let project = project_declaring(None);
+        let extractors: [(&str, &dyn Extract); 2] = [
+            ("bundled", &FactsExtractor),
+            ("project", &ProjectExtractor::of(project.path())),
+        ];
+        for (name, extractor) in extractors {
+            assert_doc_texts(name, extractor);
+        }
+    }
+
+    /// RUST DOC SPANS ARE EXTRACTED and THE DOC TEXT IS STRIPPED agree: the span the bundled
+    /// extraction gives a Rust file and each of its definitions, read back from the file through
+    /// the worktree's line reader ([`rigger_store::code::WorktreeLines`]), gives the row's doc
+    /// text, so the tree's doc-line rule and the text's lexer count the same lines:
+    /// `#[doc(hidden)]`, `////`, `/**/`, `/***/`, an `include_str!` or `concat!` value and
+    /// `cfg_attr` none, a raw value, a doc block and a doc attribute one, and a doc line above
+    /// another node none.
+    #[test]
+    fn each_rust_doc_span_reads_back_as_its_doc_text() {
+        // (source, the file's doc text, each definition's (leaf, doc text))
+        type Texts = &'static [(&'static str, Option<&'static str>)];
+        let rows: [(&str, Option<&str>, Texts); 7] = [
+            (
+                "/// First.\n#[doc(hidden)]\n/// Last.\npub fn f() {}\n",
+                None,
+                &[("f", Some("First.\nLast."))],
+            ),
+            (
+                "//! The crate.\n//! More.\n\n////\nfn i() {}\n/**/\nfn j() {}\n/***/\nfn k() {}\n",
+                Some("The crate.\nMore."),
+                &[("i", None), ("j", None), ("k", None)],
+            ),
+            (
+                "#![doc = r\"Crate.\"]\n#[doc = r#\"Raw.\"#]\nfn r() {}\n",
+                Some("Crate."),
+                &[("r", Some("Raw."))],
+            ),
+            (
+                "#[doc = include_str!(\"x.md\")]\nfn d() {}\n/// A.\n#[doc = concat!(\"B\", \".\")]\n/// C.\nfn e() {}\n",
+                None,
+                &[("d", None), ("e", Some("A.\nC."))],
+            ),
+            (
+                "#[cfg_attr(test, doc = \"conditional\")]\nfn c() {}\n/**\n * Block.\n */\nfn b() {}\n",
+                None,
+                &[("c", None), ("b", Some("Block."))],
+            ),
+            (
+                "// plain\n/// A.\n// plain\n#[doc = \"B.\"]\n// trail\n#[derive(Debug)]\nstruct S;\n",
+                None,
+                &[("S", Some("A.\nB."))],
+            ),
+            ("/// Use.\nuse x;\nfn u() {}\n", None, &[("u", None)]),
+        ];
+        let worktree = tempfile::tempdir().unwrap();
+        let lines = rigger_store::code::WorktreeLines::new(worktree.path());
+        for (source, doc, defs) in rows {
+            std::fs::write(worktree.path().join("lib.rs"), source).unwrap();
+            let text = |span: Option<(u32, u32)>| {
+                span.map(|span| {
+                    let raw = lines
+                        .lines("lib.rs", span)
+                        .expect("the span is in the file");
+                    FactsExtractor.doc_text("rust", &raw)
+                })
+            };
+            let facts = facts_of("lib.rs", source.as_bytes());
+            let held: Vec<_> = facts
+                .defs
+                .iter()
+                .map(|d| (d.leaf.as_str(), text(d.doc)))
+                .collect();
+            let want: Vec<_> = defs
+                .iter()
+                .map(|&(leaf, doc)| (leaf, doc.map(String::from)))
+                .collect();
+            assert_eq!(
+                (text(facts.doc), held),
+                (doc.map(String::from), want),
+                "{source:?}"
+            );
+        }
+    }
+
+    /// THE DOC TEXT IS STRIPPED, under a declaration: a declared file's language is its
+    /// declaration's name, and the project's extractor under a declaration in force, named `rust`
+    /// or `zig`, gives each row's span the rule of the row's language as the bundled extractor
+    /// does - a `rust` span Rust's doc rule, a `zig` span its lines trimmed.
+    #[test]
+    fn a_declared_language_reads_the_doc_rule_of_its_name() {
+        // (the declaration's name, the `extractors:` mapping declaring it)
+        let rows = [
+            ("rust", "{ rust: { extensions: [rs], run: rust-tags } }"),
+            ("zig", "{ zig: { extensions: [zig], run: zig-tags } }"),
+        ];
+        for (name, mapping) in rows {
+            let project = project_declaring(Some(&workflow_declaring_extractors(mapping)));
+            assert_eq!(
+                declared_extractors(project.path())
+                    .into_keys()
+                    .collect::<Vec<_>>(),
+                [name],
+                "{mapping} is in force"
+            );
+            assert_doc_texts(
+                &format!("declaring {name}"),
+                &ProjectExtractor::of(project.path()),
+            );
+        }
     }
 }

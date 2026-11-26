@@ -4,6 +4,7 @@ use rigger::driver::claude_code;
 use rigger::eventstore::TypeSelection;
 use rigger::held::HeldDriver;
 use rigger::keep_awake::{OsSleepHold, KEEP_AWAKE_ENV};
+use rigger::login_start::{Entry, LoginStart, OsLoginStart, Program, Unlisted, LOGIN_START_ENV};
 use rigger::review;
 use rigger::sleep_hold::{SleepGuard, SleepHold, Unavailable};
 
@@ -353,6 +354,9 @@ fn refuse_outside_a_project(cwd: &Path, command: &'static str) -> Res {
 
 pub(crate) fn cmd_run(args: &[String]) -> Res {
     let parsed = parse_run_args(args)?;
+    if let Some(root) = &parsed.at_login {
+        return relaunch_at_login(root, &*login_start());
+    }
     run_cli(&parsed, &*sleep_hold())
 }
 
@@ -705,24 +709,58 @@ fn tick_until_stopped(
     }
 }
 
-/// The keep-awake adapter [`KEEP_AWAKE_ENV`] selects: unset, the host's [`OsSleepHold`];
-/// `record:<path>`, a [`RecordingSleepHold`] appending to `<path>`; `unavailable:<reason>`, an
-/// adapter answering `<reason>`; any other value, an adapter answering that the value names no
-/// adapter, so a mistyped knob never takes the host's hold unasked.
-fn sleep_hold() -> Box<dyn SleepHold> {
-    let Some(knob) = std::env::var_os(KEEP_AWAKE_ENV) else {
-        return Box::new(OsSleepHold);
+/// Which adapter of an OS facility a knob selects ([`adapter_knob`]).
+enum Knob {
+    /// The host's own.
+    Host,
+    /// The recording fake, appending to the file at this path.
+    Record(PathBuf),
+    /// A fake answering every call unavailable with this reason.
+    Unavailable(String),
+}
+
+/// The adapter of the OS facility `facility` the variable `var` selects: unset, the host's;
+/// `record:<path>`, the recording fake appending to `<path>`; `unavailable:<reason>`, a fake
+/// answering `<reason>`; any other value, a fake answering that the value names no adapter, so a
+/// mistyped knob never takes the host's facility unasked.
+fn adapter_knob(var: &str, facility: &str) -> Knob {
+    let Some(knob) = std::env::var_os(var) else {
+        return Knob::Host;
     };
     let knob = knob.to_string_lossy();
     if let Some(path) = knob.strip_prefix("record:") {
-        return Box::new(RecordingSleepHold(PathBuf::from(path)));
+        return Knob::Record(PathBuf::from(path));
     }
-    Box::new(UnavailableSleepHold(
-        match knob.strip_prefix("unavailable:") {
-            Some(why) => why.to_string(),
-            None => format!("{KEEP_AWAKE_ENV}={knob} names no keep-awake adapter"),
-        },
-    ))
+    Knob::Unavailable(match knob.strip_prefix("unavailable:") {
+        Some(why) => why.to_string(),
+        None => format!("{var}={knob} names no {facility} adapter"),
+    })
+}
+
+/// The keep-awake adapter [`KEEP_AWAKE_ENV`] selects ([`adapter_knob`]): the host's
+/// [`OsSleepHold`], a [`RecordingSleepHold`] or an [`UnavailableSleepHold`].
+fn sleep_hold() -> Box<dyn SleepHold> {
+    match adapter_knob(KEEP_AWAKE_ENV, "keep-awake") {
+        Knob::Host => Box::new(OsSleepHold),
+        Knob::Record(path) => Box::new(RecordingSleepHold(path)),
+        Knob::Unavailable(why) => Box::new(UnavailableSleepHold(why)),
+    }
+}
+
+/// The login-start adapter [`LOGIN_START_ENV`] selects ([`adapter_knob`]): the host's
+/// [`OsLoginStart`], a [`RecordingLoginStart`] or an [`UnavailableLoginStart`].
+pub(super) fn login_start() -> Box<dyn LoginStart> {
+    match adapter_knob(LOGIN_START_ENV, "login-start") {
+        Knob::Host => Box::new(OsLoginStart),
+        Knob::Record(path) => Box::new(RecordingLoginStart(path)),
+        Knob::Unavailable(why) => Box::new(UnavailableLoginStart(why)),
+    }
+}
+
+/// Append `line` to the recording fake's file at `path`, a failure answered unavailable.
+fn record_line(path: &Path, line: &str) -> Result<(), Unavailable> {
+    append_line(path, line)
+        .map_err(|e| Unavailable(format!("cannot record to {}: {e}", path.display())))
 }
 
 /// The keep-awake fake [`KEEP_AWAKE_ENV`]'s `record:<path>` selects: an acquire appends the line
@@ -732,8 +770,7 @@ struct RecordingSleepHold(PathBuf);
 
 impl SleepHold for RecordingSleepHold {
     fn acquire(&self, reason: &str) -> Result<SleepGuard, Unavailable> {
-        append_line(&self.0, &format!("acquire {reason}"))
-            .map_err(|e| Unavailable(format!("cannot record to {}: {e}", self.0.display())))?;
+        record_line(&self.0, &format!("acquire {reason}"))?;
         let record = self.0.clone();
         // A release the record cannot take leaves its acquire standing alone, which a test reads
         // as a hold never released.
@@ -759,6 +796,84 @@ struct UnavailableSleepHold(String);
 impl SleepHold for UnavailableSleepHold {
     fn acquire(&self, _reason: &str) -> Result<SleepGuard, Unavailable> {
         Err(Unavailable(self.0.clone()))
+    }
+}
+
+/// The login-start fake [`LOGIN_START_ENV`]'s `record:<path>` selects: a registration appends the
+/// line `register <key> <program> <args>` to the file at `<path>` and a removal `unregister
+/// <key>`, so a test reads what a run registered with the host's login facility, and its listing
+/// is the entries those lines leave standing. A line `unreadable <key> <why>`, which a test writes
+/// and no call does, stands an entry under `<key>` whose file could not be read for `<why>`. A
+/// call it cannot record answers unavailable.
+struct RecordingLoginStart(PathBuf);
+
+impl LoginStart for RecordingLoginStart {
+    fn register(&self, key: &str, program: &str, args: &[String]) -> Result<(), Unavailable> {
+        record_line(
+            &self.0,
+            &format!("register {key} {program} {}", args.join(" ")),
+        )
+    }
+
+    fn unregister(&self, key: &str) -> Result<(), Unavailable> {
+        record_line(&self.0, &format!("unregister {key}"))
+    }
+
+    /// Each key a `register` or `unreadable` line names until an `unregister` line names it, by
+    /// key: a `register` line's program the text between the key and ` run --at-login `, which a
+    /// program path holding a space keeps whole, and foreign for a line without that text; an
+    /// `unreadable` line's entry unreadable for the rest of its line. Empty when no record is
+    /// made, and unreadable, naming the record and the error, when it cannot be read.
+    fn entries(&self) -> Result<Vec<Entry>, Unlisted> {
+        let text = match std::fs::read_to_string(&self.0) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            text => text.map_err(|e| {
+                Unlisted::Unreadable(Unavailable(format!(
+                    "cannot read {}: {e}",
+                    self.0.display()
+                )))
+            })?,
+        };
+        let separator = format!(" run {AT_LOGIN_FLAG} ");
+        let mut standing = std::collections::BTreeMap::new();
+        for line in text.lines() {
+            if let Some(key) = line.strip_prefix("unregister ") {
+                standing.remove(key);
+            } else if let Some(entry) = line.strip_prefix("register ") {
+                let (key, command) = entry.split_once(' ').unwrap_or((entry, ""));
+                let program = command
+                    .split_once(separator.as_str())
+                    .map_or(Program::Foreign, |(program, _)| {
+                        Program::Read(program.to_string())
+                    });
+                standing.insert(key.to_string(), program);
+            } else if let Some(entry) = line.strip_prefix("unreadable ") {
+                let (key, why) = entry.split_once(' ').unwrap_or((entry, ""));
+                standing.insert(key.to_string(), Program::Unreadable(why.to_string()));
+            }
+        }
+        Ok(standing
+            .into_iter()
+            .map(|(key, program)| Entry { key, program })
+            .collect())
+    }
+}
+
+/// The login-start fake whose every call answers unavailable with its reason: what
+/// [`LOGIN_START_ENV`]'s `unavailable:<reason>` selects, and what a value naming no adapter gets.
+struct UnavailableLoginStart(String);
+
+impl LoginStart for UnavailableLoginStart {
+    fn register(&self, _key: &str, _program: &str, _args: &[String]) -> Result<(), Unavailable> {
+        Err(Unavailable(self.0.clone()))
+    }
+
+    fn unregister(&self, _key: &str) -> Result<(), Unavailable> {
+        Err(Unavailable(self.0.clone()))
+    }
+
+    fn entries(&self) -> Result<Vec<Entry>, Unlisted> {
+        Err(Unlisted::NoFacility(Unavailable(self.0.clone())))
     }
 }
 
@@ -855,6 +970,17 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     // Refuse before starting if a gating persona would stall the integration gate (spec 18,
     // unit 2); `load_run_config` reuses unit 1's lint at this run's config-load seam.
     let cfg = load_run_config(&project.to_string_lossy())?;
+    // THE SESSION HOST RUNS THE HOOKS: the exec-form hooks are written with the hook `args`
+    // field, which the host added at the minimum version, so the run refuses a host below it
+    // here, before any start effect and so before any session starts, with the line `rigger
+    // validate` warns with; a version it cannot read refuses nothing. The host is the one the
+    // run's driver starts every session from, so the version checked is the binary launched.
+    let host = rigger::claude_auth::SessionHost::default();
+    if let Ok(version) = rigger::claude_version::read(&host, rigger::claude_version::READ_BOUND) {
+        if let Some(line) = rigger::claude_version::too_old(&host, version) {
+            return Err(line.into());
+        }
+    }
     // EXACTLY ONE ROOT: this run's teardown reclaims the scratch root and its hosted agents write
     // into it, so it is refused here, before anything is reclaimed, reaped or anchored.
     let scratch = project_scratch_root(&repo, &cfg);
@@ -870,6 +996,12 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     // The lock keeps this driver's record ([`KeptRecord`]), emptied however the driver ends
     // short of a death, so an invocation that finds a record nobody holds relaunches the run.
     let step_record = KeptRecord::hold(acquire_step_lock(&loc.dir)?);
+    // `--relaunch-at-login` registers the run's login entry once the lock is held and before any
+    // start effect, so a launch refused for the busy lock registers nothing, one the facility
+    // refuses refuses here, and the record's keeper removes the entry as it returns.
+    if parsed.relaunch_at_login {
+        step_record.register_at_login(login_start(), &loc.dir)?;
+    }
     // `--adopt <run>` is checked first of all, before any start effect: an adoption this start
     // cannot make refuses here, and the record's keeper clears the record as it returns.
     if let Some(wanted) = &parsed.adopt {
@@ -936,8 +1068,9 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
         base_tip = rigger::worktree::branch_tip(&repo, RUN_BRANCH).unwrap_or_default();
     }
     // The host values every spawn of this run carries, resolved once, after the run-branch
-    // checkout, so the helper copies are the tree's the run drives and its definition pin folds.
-    let spawn_host = rigger::hooks::resolve_spawn_host(&cfg.workflow.defaults, Path::new(&repo))?;
+    // checkout, so the helper copies are the tree's the run drives and its definition pin folds,
+    // and a producer's output is the specs location the project declares.
+    let spawn_host = super::spawn_host(&cfg.workflow.defaults, Path::new(&repo))?;
     // Register this instance in the machine-global discovery registry (spec 50, criterion 2).
     // `rigger run` drives the WHOLE run in-process through a single `conductor::run` below, so the
     // held guard's heartbeat thread (not a one-shot register) is what keeps the entry from aging out
@@ -993,7 +1126,7 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
         reclaim_orphans_at_start(&repo, root, &cfg.workflow, &store);
     }
     let driver = claude_code::Driver {
-        bin: String::new(),
+        host,
         rigger_bin: running_executable(),
         progress_store: &progress,
         run_store: &folding,
@@ -1025,11 +1158,15 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     // The grounding reads compare with the operator checkout the run lands its merges on, named
     // as every reader names its worktree; a unit's read compares with the unit's own worktree.
     let read_graph = ReadGraph::held(&graph, &site)?;
+    // Both starts above leave the checkout on the run branch: the anchor checks it out, and an
+    // adoption is refused anywhere else.
+    let run_branch = (!repo.is_empty()).then(|| RUN_BRANCH.to_string());
     let deps = Deps {
         store: &store,
         driver: &held,
         gates: &ExecRunner,
         repo,
+        run_branch,
         grounder: Some(grounder.as_ref()),
         graph: Some(&graph),
         criteria,
@@ -1074,12 +1211,15 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     let channel = socket
         .as_ref()
         .map(|s| s as &dyn rigger::gate_channel::GateChannel);
-    // A driver that parked a launch on an operator hold drives again once the hold is gone, since
-    // a release while it still runs relaunches nothing; it ends only while the hold stands. Each
-    // drive holds a verdict key of its own, as a relaunched driver would.
+    // A driver that parked a launch on a manual hold drives again once the hold is gone, since a
+    // release while it still runs relaunches nothing; it ends only while the hold stands. A drive
+    // that failed under such a hold, the conductor's own fault hold included, leaves its record
+    // for `rigger release` the same way, and so does a drive whose spawn the API refused, which
+    // the decorator parked on the hold it put on the run: that driver fails, naming the fault.
+    // Each drive holds a verdict key of its own, as a relaunched driver would.
     let rs = loop {
         let verdict_key = rigger::verdict_mac::VerdictKey::generate()?;
-        let rs = beating(
+        let driven = beating(
             &store,
             &progress,
             rigger::progress::SUPERVISOR_BEAT_INTERVAL,
@@ -1088,18 +1228,37 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
                     conductor::run_serving(&cfg, &deps, verdict_key, channel)
                 })
             },
-        )?;
-        if !held.take_parked_on_an_operator_hold() {
+        );
+        let rs = match driven {
+            Ok(rs) => rs,
+            Err(e) => {
+                // Only a hold read leaves a failed driver's record for `rigger release`.
+                if let Ok(Some(hold)) =
+                    runscope::read::read_manual_hold(&folding, conductor::STREAM)
+                {
+                    step_record.leave_for_release();
+                    stderr_line(&ended_held(command, &run, Some(&hold), "ended"));
+                }
+                return Err(e.into());
+            }
+        };
+        let refused = held.take_rejected_spawn();
+        if !held.take_parked() {
             break rs;
         }
-        if !an_operator_hold_stands(&folding) {
-            continue;
-        }
+        // A hold read that fails is read as standing: a run not proved free of one launches
+        // nothing.
+        let hold = match runscope::read::read_manual_hold(&folding, conductor::STREAM) {
+            Ok(None) => continue,
+            read => read.ok().flatten(),
+        };
         step_record.leave_for_release();
-        stderr_line(&format!(
-            "{command}: run {run} is held by the operator, so this driver parked its next launch \
-             and ended; `rigger release` relaunches it"
-        ));
+        if let Some(fault) = refused {
+            stderr_line(&ended_held(command, &run, hold.as_ref(), "ended"));
+            return Err(fault.into());
+        }
+        let parked = "parked its next launch and ended";
+        stderr_line(&ended_held(command, &run, hold.as_ref(), parked));
         break rs;
     };
     // A done run releases its open hold, an operator hold included (spec 105); any other exit
@@ -1132,18 +1291,12 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     if let Some(line) = halted_line(&rs) {
         println!("{line}");
     }
-    // spec 17 criterion 4c: a silently-serializing fleet must WARN during a run, not only when the
-    // operator later runs `rigger stats`. Re-project this run's metrics from the log and, if the
-    // parallelism-retention floor was breached under structural grounding, log the SAME line the
-    // stats row shows (one authority) to stderr. Best-effort: a read hiccup never fails a run that
-    // already succeeded, and on the shipped non-symbols default retention is unmeasured so nothing
-    // prints and the default run output is unchanged.
+    // The run's parallelism retention, the SAME line the `rigger stats` row shows (one
+    // authority), whenever it was measured. Best-effort: a read hiccup never fails a run that
+    // already succeeded, and an unmeasured retention prints nothing.
     if let Ok((events, _)) = runscope::read::read_current_run(&store, conductor::STREAM) {
-        let m = metrics::project(&events);
-        if let Some(line) = parallelism_retention_line(&m) {
-            if m.parallelism_retention_warns() {
-                rigger::whole_line::say(format_args!("rigger: {line}"));
-            }
+        if let Some(line) = parallelism_retention_line(&metrics::project(&events)) {
+            rigger::whole_line::say(format_args!("rigger: {line}"));
         }
     }
     Ok(())
@@ -1224,11 +1377,15 @@ fn reclaim_orphans_at_start(
     }
 }
 
-/// Whether an operator hold stands on the current run in `store`: true when the read fails, since
-/// a run not proved free of one launches nothing.
-fn an_operator_hold_stands(store: &dyn EventStore) -> bool {
-    runscope::read::read_current_hold(store, conductor::STREAM)
-        .map_or(true, |hold| hold.is_some_and(|hold| hold.operator))
+/// The line `command`'s driver says as it ends with `run` held, leaving its record for `rigger
+/// release`: whom `hold` is held for and the hold as they are told it ([`ledger::Hold::told`]:
+/// its cause, its detail's first line and its action), then how the driver `ended`. A hold that
+/// could not be read is named held alone.
+fn ended_held(command: &str, run: &str, hold: Option<&ledger::Hold>, ended: &str) -> String {
+    let held = hold.map_or_else(String::new, |hold| {
+        format!(" for {} ({})", hold.held_for(), hold.told())
+    });
+    format!("{command}: run {run} is held{held}, so this driver {ended}; `rigger release` relaunches it")
 }
 
 /// Begin (or adopt) and definition-PIN the run `rigger run` drives (spec 13, unit 1).
@@ -1331,7 +1488,13 @@ fn refuse_an_adoption_it_cannot_make(
     command: &str,
 ) -> Res {
     if !at.repo.is_empty() {
-        let on = rigger::worktree::current_branch(at.repo);
+        let on = rigger::worktree::current_branch(at.repo).map_err(|e| {
+            format!(
+                "{command}: --adopt {wanted}: read the branch the checkout is on, so it refuses \
+                 and changed nothing: {}",
+                e.0
+            )
+        })?;
         if on.as_deref() != Some(RUN_BRANCH) {
             let on = on.map_or_else(
                 || "a detached HEAD".to_string(),
@@ -2010,11 +2173,10 @@ fn print_run_state(rs: &RunState, base: &str) {
 }
 
 /// The halt line a run entry prints after its run state (spec 115): `halted: <reason>` when the
-/// conductor returned a halt reason (the budget breaker's, else a plan-critique spec-defect
-/// stop's), `None` on any other stop.
+/// run stopped on a plan-critique spec defect ([`RunState::spec_defect_reason`]), `None` on any
+/// other stop.
 fn halted_line(rs: &RunState) -> Option<String> {
-    rs.budget_halt
-        .as_ref()
+    rs.spec_defect_reason()
         .map(|reason| format!("halted: {reason}"))
 }
 
@@ -2247,7 +2409,8 @@ mod tests {
             .truncate(false)
             .open(&guard_path)
             .expect("open guard");
-        fs2::FileExt::lock_shared(&held).expect("simulate a build's own shared hold");
+        held.lock_shared()
+            .expect("simulate a build's own shared hold");
 
         reclaim_run_scratch(base.to_str().unwrap());
 
@@ -2441,5 +2604,52 @@ mod tests {
                  closes interrupted"
             );
         }
+    }
+
+    /// The run-start sweeps, in the order `run_cli` runs them, keep a unit tree git marks
+    /// `prunable` while its dir is still there (its link lost, or a remove git did not finish):
+    /// its files and its registration survive, while a merged tree beside it is still swept.
+    #[test]
+    fn the_run_start_sweeps_keep_a_tree_git_marks_prunable_with_its_dir_there() {
+        use crate::test_support::{git_ok, git_out, init_repo, write_file};
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        init_repo(&root);
+        git_ok(&root, &["checkout", "-q", "-b", RUN_BRANCH]);
+        let repo = root.to_str().unwrap();
+        let tree = |slug: &str| {
+            let dir = root.join(format!("rigger-wt-{slug}"));
+            rigger::worktree::Worktree::create(
+                repo,
+                dir.to_str().unwrap(),
+                &format!("rigger/u/{slug}"),
+                "",
+            )
+            .unwrap();
+            write_file(&dir.join("work.txt"), b"work\n");
+            dir
+        };
+        let merged = tree("merged");
+        let prunable = tree("lost-link");
+        std::fs::remove_file(prunable.join(".git")).unwrap();
+        let store = Store::open(":memory:").unwrap();
+        let workflow = config::Workflow::default();
+        sweep_terminal_at_start(repo, repo, &workflow, &store);
+        reclaim_orphans_at_start(repo, repo, &workflow, &store);
+        let listed = git_out(&root, &["worktree", "list", "--porcelain"]);
+        let registered = |dir: &std::path::Path| {
+            listed
+                .lines()
+                .any(|line| line == format!("worktree {}", dir.display()))
+        };
+        assert_eq!(
+            (
+                merged.exists(),
+                prunable.join("work.txt").exists(),
+                registered(&prunable)
+            ),
+            (false, true, true),
+            "the merged tree is swept; the prunable tree's work and registration survive:\n{listed}"
+        );
     }
 }

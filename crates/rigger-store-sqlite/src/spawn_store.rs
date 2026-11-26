@@ -32,8 +32,7 @@ use crate::spawn::{SpawnRequest, SpawnResult};
 /// re-drive) stamps none.
 ///
 /// This is exactly what a driver does when it reaches an UNRECORDED spawn at the frontier: the
-/// request becomes a durable fact, so a later pass over the log sees the identical call, and
-/// the budget breaker counts spawns from the log rather than an in-memory counter. A
+/// request becomes a durable fact, so a later pass over the log sees the identical call. A
 /// serialization failure is surfaced as a backend error rather than panicking.
 pub fn park_in_run(
     store: &dyn EventStore,
@@ -181,7 +180,7 @@ mod tests {
         park_in_run(&store, &req, "", "").unwrap();
 
         // The parked request is a durable fact on the run stream and reads back
-        // identically - the persistence the replay driver and budget breaker rely on.
+        // identically - the persistence the replay driver relies on.
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
         let recorded = recorded(&events).unwrap();
         assert_eq!(recorded.len(), 1);

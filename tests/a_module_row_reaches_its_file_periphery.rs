@@ -1,13 +1,16 @@
-//! Periphery (CLI / end-to-end) tests for spec 117, A MODULE ROW REACHES ITS FILE, over the built
-//! binary. The crates' own tests pin the module row's emit, its settlement over hand-built rows and
-//! the three consumers that skip its edge one module at a time; these run OUTSIDE the crates, over
-//! a real tree `rigger graph build` walks, and guard the boundary a `mod x;` crosses on its way to
-//! an operator:
+//! Periphery (CLI / end-to-end) tests for spec 117, MODULE ROOTS AT READ, over the built binary. The crates' own tests pin the module row's emit, its candidate
+//! lists, its settlement over hand-built rows and the three consumers that skip its edge one
+//! module at a time; these run OUTSIDE the crates, over a real tree `rigger graph build` walks, and
+//! guard the boundary a `mod x;` crosses on its way to an operator:
 //!
 //!  - the graph `rigger graph build` folds: a `mod x;` lands one `extracted` `CONTAINS` from its
 //!    `mod` node onto the first of `x.rs` and `x/mod.rs` the tree holds, none while it holds
 //!    neither and no file node for either, the edge moving to `x.rs` when a later build adds it,
 //!    retiring with the declaration and landing again on its return;
+//!  - where that build places a declaration's file: under the declaring file's own directory when
+//!    no declaration reaches that file or a `#[path]` one does, under its stem when a plain one
+//!    does, for a bin root's `mod x;`, a `#[path]`-loaded file's `mod z;` and the `#[path]`
+//!    declaration `src/m.rs` nests in its inline `mod a`;
 //!  - `rigger graph --around` on the `mod` node prints that edge;
 //!  - `rigger graph communities` couples no `mod` node to its module's file, so a module file whose
 //!    one structural edge is its declaration's joins no community.
@@ -19,10 +22,10 @@ use crate::symbol_index;
 
 #[cfg(feature = "symbols")]
 use common::fixtures::{
-    declared, module_edges, DECLARING_FILE, DIR_MODULE_FILE, MODULE_FILE, MOD_NODE,
+    declared, declared_edges, module_edges, DECLARING_FILE, DIR_MODULE_FILE, MODULE_FILE, MOD_NODE,
 };
 #[cfg(feature = "symbols")]
-use symbol_index::{FN_Y, MOD_X};
+use symbol_index::{FN_Y, INLINE_PATH_MOD_B, MOD_X, MOD_Z, PATH_MOD_X};
 
 /// GIVEN a project whose `src/lib.rs` declares `mod x;` and which holds `src/x.rs`, `src/x/mod.rs`
 /// or both, each defining `fn y`,
@@ -45,6 +48,91 @@ fn graph_build_lands_a_mod_declaration_on_the_first_candidate_the_tree_holds() {
         let (_project, graph) = common::cli::built_graph(&tree);
         assert_eq!(module_edges(&graph), declared(reached), "{held:?}");
     }
+}
+
+/// GIVEN, one project per row, a bin root `src/bin/tool.rs` declaring `mod x;`; `src/gen/real.rs`
+/// declaring `mod z;`, loaded through `src/lib.rs`'s `#[path = "gen/real.rs"] mod x;` or reached
+/// plainly through `src/gen/mod.rs`'s `mod real;`; and `src/m.rs` nesting `#[path = "b.rs"] mod b;`
+/// in its inline `mod a`, alone or declared by `src/lib.rs`'s `mod m;`; each project holding a
+/// file defining `fn y` at both the root and the child placement of the declaration,
+/// WHEN the operator runs `rigger graph build`,
+/// THEN a declaration in a file no declaration reaches, or a `#[path]` one reaches, lands on the
+/// file under its declaring file's own directory (`src/bin/x.rs`, `src/gen/z.rs`, `src/a/b.rs`),
+/// and one in a file a plain declaration reaches lands on the file under its declaring file's stem
+/// (`src/gen/real/z.rs`, `src/m/a/b.rs`).
+#[cfg(feature = "symbols")]
+#[test]
+fn graph_build_places_a_declared_file_by_how_its_declaring_file_is_reached() {
+    /// A tree's `(path, source)` files, or the module edges a build lands as `(mod node, file)`.
+    type Pairs = &'static [(&'static str, &'static str)];
+    // (row, tree, the module edges the build lands)
+    let cases: [(&str, Pairs, Pairs); 5] = [
+        (
+            "bin root",
+            &[
+                ("src/bin/tool.rs", MOD_X),
+                ("src/bin/x.rs", FN_Y),
+                ("src/bin/tool/x.rs", FN_Y),
+            ],
+            &[("src/bin/tool.rs::x", "src/bin/x.rs")],
+        ),
+        (
+            "#[path]-loaded file",
+            &[
+                (DECLARING_FILE, PATH_MOD_X),
+                ("src/gen/real.rs", MOD_Z),
+                ("src/gen/z.rs", FN_Y),
+                ("src/gen/real/z.rs", FN_Y),
+            ],
+            &[
+                (MOD_NODE, "src/gen/real.rs"),
+                ("src/gen/real.rs::z", "src/gen/z.rs"),
+            ],
+        ),
+        (
+            "plainly reached file",
+            &[
+                ("src/gen/mod.rs", "mod real;\n"),
+                ("src/gen/real.rs", MOD_Z),
+                ("src/gen/z.rs", FN_Y),
+                ("src/gen/real/z.rs", FN_Y),
+            ],
+            &[
+                ("src/gen/mod.rs::real", "src/gen/real.rs"),
+                ("src/gen/real.rs::z", "src/gen/real/z.rs"),
+            ],
+        ),
+        (
+            "inline #[path] in a root",
+            &[
+                ("src/m.rs", INLINE_PATH_MOD_B),
+                ("src/a/b.rs", FN_Y),
+                ("src/m/a/b.rs", FN_Y),
+            ],
+            &[("src/m.rs::a::b", "src/a/b.rs")],
+        ),
+        (
+            "inline #[path] in a child",
+            &[
+                (DECLARING_FILE, "mod m;\n"),
+                ("src/m.rs", INLINE_PATH_MOD_B),
+                ("src/a/b.rs", FN_Y),
+                ("src/m/a/b.rs", FN_Y),
+            ],
+            &[
+                ("src/lib.rs::m", "src/m.rs"),
+                ("src/m.rs::a::b", "src/m/a/b.rs"),
+            ],
+        ),
+    ];
+    let built = cases.map(|(row, tree, _)| {
+        let (_project, graph) = common::cli::built_graph(tree);
+        (row, module_edges(&graph))
+    });
+    assert_eq!(
+        built,
+        cases.map(|(row, _, edges)| (row, declared_edges(edges)))
+    );
 }
 
 /// GIVEN a project whose `src/lib.rs` declares `mod x;` and which holds neither candidate file,

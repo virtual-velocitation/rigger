@@ -1434,7 +1434,7 @@ mod tests {
         let grep = Grep {
             root: repo.path().to_string_lossy().into_owned(),
         };
-        let br = grep.blast_radius("apply_damage", 8);
+        let br = grep.blast_radius("apply_damage");
         assert!(
             br.safe.iter().any(|f| f == "combat.rs"),
             "the safe radius covers the file that DEFINES apply_damage; got {:?}",

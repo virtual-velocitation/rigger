@@ -71,7 +71,7 @@ only.
 Design and Global constraints only - criteria checkboxes are the run's identity (editing one
 orphans the live run). Commit when no step is mid-flight, then `rigger emit DecisionMade` naming
 the spec file so in-flight reviewers see the change through the graph immediately. Still
-escalates? Restart fresh: durable branches carry the work, the budget resets.
+escalates? Restart fresh: durable branches carry the work.
 
 ## Quick reference: churn signature -> planning defect
 

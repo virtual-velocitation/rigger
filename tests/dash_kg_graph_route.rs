@@ -1342,17 +1342,17 @@ fn the_served_graph_route_reads_the_lazy_provider_only_and_never_on_the_state_po
         let listener = TcpListener::bind(("127.0.0.1", 0)).ok()?;
         let addr = listener.local_addr().ok()?;
 
-        // The polled provider: the cheap run-scoped inputs the state poll / events feed ride. Its
-        // graph slot is a DECOY (`polled-neighbor`) the `/api/graph` route must NOT read.
-        let polled_graph = build("polled-neighbor");
-        let provider = move |_instance: Option<&str>| -> Result<DashInputs, String> {
-            Ok((
-                Vec::new(),
-                polled_graph.clone().into(),
-                Vec::new(),
-                HashMap::new(),
-            ))
+        // The polled provider: the cheap run-scoped inputs the state poll / events feed ride. The
+        // state poll's run-seeded graph is a DECOY (`polled-neighbor`) the `/api/graph` route must
+        // NOT read.
+        let provider = |_instance: Option<&str>| -> Result<DashInputs, String> {
+            Ok((Vec::new(), Vec::new(), HashMap::new()))
         };
+        let polled_graph = build("polled-neighbor");
+        let state_graph_provider =
+            move |_instance: Option<&str>, _events: &[rigger::eventstore::Event]| {
+                dash::GraphRead::from(polled_graph.clone())
+            };
 
         // The SEPARATE lazy provider: it counts every consultation and yields the REAL neighbor
         // (`lazy-neighbor`) the served neighborhood must carry.
@@ -1378,6 +1378,7 @@ fn the_served_graph_route_reads_the_lazy_provider_only_and_never_on_the_state_po
             let _ = dash::serve_on(
                 listener,
                 provider,
+                state_graph_provider,
                 graph_provider,
                 calls_provider,
                 instances_provider,

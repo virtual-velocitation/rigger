@@ -6,8 +6,9 @@
 use std::fmt::Write as _;
 
 use rigger_domain::code_view::tests_hidden_line;
+use rigger_domain::contextgraph::{capped, site_text};
 
-use super::graph::{Answered, Entity, Site, TermGraph};
+use super::graph::{Answered, Entity, ReferrerSite, Site, TermGraph};
 use super::prose::Ranked;
 use super::text::TermText;
 
@@ -17,7 +18,7 @@ pub(crate) const REPLY_LIMIT: usize = 48_000;
 pub(crate) const GRAPH_CHARS: usize = 24_000;
 /// The most entities one term's graph answer reads.
 pub(crate) const GRAPH_ENTITIES: usize = 8;
-/// The most callers, or callees, one entity lists.
+/// The most referrers under one label, or callees, one entity lists.
 pub(crate) const EDGES_SHOWN: usize = 10;
 /// The most matching lines the text section keeps from one file for one term.
 pub(crate) const TEXT_PER_FILE: usize = 5;
@@ -139,51 +140,51 @@ fn entities_counted(n: usize) -> String {
     format!("{n} {noun}")
 }
 
-/// One entity's lines: its site, then its callers, callees and referencing files.
+/// One entity's lines: its site, its doc's first line when that line holds any text, one line per
+/// label its referrers are listed under, then its callees.
 fn entity_block(entity: &Entity) -> String {
     let mut block = format!("- {}\n", site_line(&entity.site));
-    edge_line(&mut block, "called by", &entity.callers);
-    edge_line(&mut block, "calls", &entity.callees);
-    if !entity.referenced_in.is_empty() {
-        let shown = entity.referenced_in.len().min(EDGES_SHOWN);
-        let _ = write!(
-            block,
-            "  referenced in: {}",
-            entity.referenced_in[..shown].join(", ")
-        );
-        more(&mut block, entity.referenced_in.len() - shown);
+    if let Some(first) = (entity.doc.as_deref())
+        .and_then(|doc| doc.lines().next())
+        .filter(|line| !line.trim().is_empty())
+    {
+        let _ = writeln!(block, "  {first}");
     }
+    for (label, referrers) in &entity.referrers {
+        edge_line(&mut block, label, referrers, referrer_line);
+    }
+    edge_line(&mut block, "calls", &entity.callees, site_line);
     block
 }
 
-/// `  <label>: <site>; <site> (+N more)` when `sites` holds any.
-fn edge_line(block: &mut String, label: &str, sites: &[Site]) {
-    if sites.is_empty() {
+/// `  <label>: <item>; <item> (+N more)` when `items` holds any, each item as `line` writes it,
+/// the first [`EDGES_SHOWN`] listed ([`capped`]).
+fn edge_line<T>(block: &mut String, label: &str, items: &[T], line: fn(&T) -> String) {
+    if items.is_empty() {
         return;
     }
-    let shown = sites.len().min(EDGES_SHOWN);
-    let listed: Vec<String> = sites[..shown].iter().map(site_line).collect();
-    let _ = write!(block, "  {label}: {}", listed.join("; "));
-    more(block, sites.len() - shown);
+    let _ = writeln!(
+        block,
+        "  {label}: {}",
+        capped(items, EDGES_SHOWN, "; ", line)
+    );
 }
 
-/// ` (+N more)` when `dropped` is non-zero, and the line's end.
-fn more(block: &mut String, dropped: usize) {
-    if dropped > 0 {
-        let _ = write!(block, " (+{dropped} more)");
-    }
-    block.push('\n');
+/// A referrer's site line, and ` ?` after it when its mention gave the entity no single edge.
+fn referrer_line(referrer: &ReferrerSite) -> String {
+    listed_site(&referrer.site, referrer.ambiguous)
 }
 
 /// `file:line id (kind)`, the line left out when unknown and the file when there is none, and
 /// ` [test]` after a test site.
 fn site_line(site: &Site) -> String {
-    let mark = if site.test { " [test]" } else { "" };
-    match &site.file {
-        Some((file, 0)) => format!("{file} {} ({}){mark}", site.id, site.kind),
-        Some((file, line)) => format!("{file}:{line} {} ({}){mark}", site.id, site.kind),
-        None => format!("{} ({}){mark}", site.id, site.kind),
-    }
+    listed_site(site, false)
+}
+
+/// `site` as the domain lists a site ([`site_text`]), ` ?` marked when `ambiguous`.
+fn listed_site(site: &Site, ambiguous: bool) -> String {
+    let file = (site.file.as_ref()).map(|(file, line)| (file.as_str(), *line));
+    site_text(file, &site.id, &site.kind, site.test, ambiguous)
 }
 
 /// Each term's matching lines within its share of [`TEXT_TOTAL`].

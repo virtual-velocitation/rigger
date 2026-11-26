@@ -269,7 +269,7 @@ fn cmd_graph_lookup(terms: &[String], tests: Tests) -> Res {
             contextgraph::answer_unowed(&records, &read, ViewFilter { tests }, |graph| {
                 exit_once_printed(
                     lookup
-                        .lookup(terms, graph.map_err(|e| e.0))
+                        .lookup(terms, graph.map_err(|e| e.0), tests)
                         .map(|reply| print!("{reply}"))
                         .map_err(Into::into),
                 )
@@ -279,6 +279,7 @@ fn cmd_graph_lookup(terms: &[String], tests: Tests) -> Res {
             let reply = lookup.lookup(
                 terms,
                 Err(format!("the context graph could not be opened: {e}")),
+                tests,
             )?;
             print!("{reply}");
             Ok(())
@@ -398,11 +399,7 @@ fn print_entity_site(
         print_site_entries(site);
         return;
     };
-    let name = site
-        .attrs
-        .get("name")
-        .map(String::as_str)
-        .filter(|name| !name.is_empty());
+    let name = contextgraph::query::attrs_name(&site.attrs);
     let body = match name {
         None if site.line != 0 => {
             ShowBody::Note(Unbounded::Missing.note(&site.id, None, &site.kind, file, site.line))

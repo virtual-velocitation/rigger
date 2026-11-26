@@ -55,7 +55,7 @@ skills, and push-side guardrails that land anomalies in the orchestrator's own s
   `TYPE_UNIT_FAILED` emit sites, the ledger fold, `cmd_status`, watch/attention): the
   conductor is in a distinct branch for each failure mode but emits a bare `{id, attempts}`.
   Stamp an additive serde-defaulted `cause` at each emit site from that branch (`reject`,
-  `gate:<name>`, `integrate-conflict`, `infra:<kind>`) - closed values, never inferred
+  `gate:<name>`, `integrate-conflict`, `git-refused`, `infra:<kind>`) - closed values, never inferred
   downstream. Status appends it (`reject-recurrence #4/6 (integrate-conflict)`); watch and
   attention count recurrence per cause and name it: same-cause repeats are churn to audit, a
   changed cause is progress. (Recorded cost of the bare count: one alert conflated two

@@ -1,13 +1,16 @@
 //! The code-side interfaces: a stamped view of the tree's facts ([`CodeView`]), the source the
 //! tree is read from ([`TreeSource`]), the extraction and grouping passes a store is given
-//! ([`Extract`], [`Group`]), the filter a reader applies ([`ViewFilter`]) and the in-memory view
-//! ([`FactsView`]). A store holds no language knowledge: extraction and grouping are passed in.
+//! ([`Extract`], [`Group`]), the lines a reader reads a doc span from ([`SourceLines`]), the
+//! filter a reader applies ([`ViewFilter`]) and the in-memory view ([`FactsView`]). A store holds
+//! no language knowledge: extraction and grouping are passed in.
 
 use crate::code_facts::{FileFacts, Half, MentionKind, ModuleDecl, Scope, Stamp, Tip};
+use crate::contextgraph::{Edge, Node};
 use crate::resolve::ProofCall;
 use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// A file in a view, without its facts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -166,6 +169,9 @@ pub struct Head {
     pub behind: Option<String>,
     /// The worktree the view is compared with: the one it describes.
     pub worktree: PathBuf,
+    /// The extractor the store was opened with, the one a doc read takes a span's text from
+    /// ([`Extract::doc_text`]); none for a head no extractor read.
+    pub extract: Option<Arc<dyn Extract>>,
 }
 
 /// Opens the code view of the head for a reader (7.3). The composition root implements it. A
@@ -250,6 +256,35 @@ pub trait Settled: Sync {
     fn test_files(&self) -> Vec<&str>;
     /// The proof calls `of` selects, in proof order ([`crate::resolve::Resolver::proof_calls`]).
     fn proofs(&self, of: Proofs<'_>) -> Vec<ProofCall>;
+    /// The code half settled whole, when the store settled it: what
+    /// [`crate::composed::Indexed::resolved`] reads under [`SETTLED_FILTER`], the view's groupings
+    /// joined on. None by default, so a reader resolves the half from the facts; a view answering
+    /// other facts or other groupings than the store settled offers none.
+    fn half(&self) -> Option<&dyn SettledHalf> {
+        None
+    }
+}
+
+/// The filter a store settles the code half under ([`SettledHalf`]) and the one alone a read
+/// takes the settled half under: the default, test code hidden.
+pub const SETTLED_FILTER: ViewFilter = ViewFilter {
+    tests: Tests::Exclude,
+};
+
+/// The code half a store settles whole, under [`SETTLED_FILTER`] with the view's groupings
+/// joined on: each read is what [`crate::composed::Indexed::resolved`] answers through
+/// [`crate::contextgraph::Neighbors`].
+pub trait SettledHalf: Sync {
+    /// The node `id`.
+    fn node(&self, id: &str) -> Option<Node>;
+    /// The edges from `id`, in edge order.
+    fn out(&self, id: &str) -> Vec<Edge>;
+    /// The edges into `id`, in edge order.
+    fn incoming(&self, id: &str) -> Vec<Edge>;
+    /// The named code entities of the file `file`.
+    fn members(&self, file: &str) -> Vec<Node>;
+    /// The nodes `leaf` binds.
+    fn leaf_nodes(&self, leaf: &str) -> Vec<Node>;
 }
 
 /// Where a tree is read from: a git repository, or a directory with no git.
@@ -281,13 +316,35 @@ pub trait TreeSource {
         -> Result<(), String>;
 }
 
-/// Reads one file's facts from its path and bytes.
+/// Reads one file's facts from its path and bytes, and the text of a doc span those facts hold.
 pub trait Extract: Send + Sync {
     /// Changes whenever any extraction output can change; a snapshot of another fingerprint is
     /// not trusted.
     fn fingerprint(&self) -> u64;
     /// The facts of the file `entry` names, read from `bytes`; `path` and `blob` come from `entry`.
     fn extract(&self, entry: &Entry, bytes: &[u8]) -> FileFacts;
+    /// The text of a doc span's `raw` lines in a file read as `lang`, which the facts never
+    /// store: by default the lines trimmed ([`trimmed_lines`]); an extractor that knows a
+    /// language's doc comments gives their text alone.
+    fn doc_text(&self, _lang: &str, raw: &str) -> String {
+        trimmed_lines(raw)
+    }
+}
+
+/// The lines of the files a reader's worktree holds, which a doc span is read from: the facts keep
+/// a doc comment's span and never its text.
+pub trait SourceLines: Send + Sync {
+    /// The 1-based, inclusive lines `span` names of the file at `path`, as [`str::lines`] splits
+    /// them, joined by `\n`; none when the file cannot be opened, or the span starts at line 0,
+    /// ends before it starts or reaches past the file's last line.
+    fn lines(&self, path: &str, span: (u32, u32)) -> Option<String>;
+}
+
+/// `raw` split into lines as [`str::lines`] splits it, on `\n` with a trailing `\r` dropped and a
+/// final line ending adding no line, each line trimmed and joined by `\n`: the doc text of a
+/// language with no doc rule ([`Extract::doc_text`]).
+pub fn trimmed_lines(raw: &str) -> String {
+    raw.lines().map(str::trim).collect::<Vec<_>>().join("\n")
 }
 
 /// Computes a view's groupings.
@@ -529,6 +586,26 @@ mod tests {
         }
     }
 
+    /// An extractor with no doc rule gives a span's raw lines trimmed, whatever the language: split
+    /// on `\n` with a trailing `\r` dropped, a final line ending adding no line, a blank line kept
+    /// and every marker kept.
+    #[test]
+    fn an_extractor_with_no_doc_rule_gives_the_lines_trimmed() {
+        use crate::test_support::NoDocRule;
+        // (the language, the span's raw lines, the doc text)
+        for (lang, raw, text) in [
+            (
+                "rust",
+                "  /// a\r\n\t#[doc(hidden)]  \r\n\r\n/// b\r",
+                "/// a\n#[doc(hidden)]\n\n/// b",
+            ),
+            ("zig", "one\n", "one"),
+            ("", "", ""),
+        ] {
+            assert_eq!(NoDocRule.doc_text(lang, raw), text, "{lang}: {raw:?}");
+        }
+    }
+
     fn def(local: &str, leaf: &str, test: bool) -> Def {
         Def {
             local: local.into(),
@@ -538,6 +615,7 @@ mod tests {
             end_line: 2,
             parent: None,
             test,
+            doc: None,
         }
     }
 
@@ -717,6 +795,11 @@ mod tests {
     #[test]
     fn view_filter_defaults_to_excluding_tests() {
         let cases = [
+            (
+                "the filter the half settles under",
+                SETTLED_FILTER,
+                Tests::Exclude,
+            ),
             (
                 "the filter's default",
                 ViewFilter::default(),

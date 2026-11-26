@@ -253,10 +253,11 @@ FileFacts
   scope       Product | Test               (path rule, see section 8)
   partial     true when the parse held an error or the declared extractor said so, so defs
               and mentions cover only as far as the extraction reached
+  doc         the doc span of the file's own doc comment (//! in Rust), or none
   defs        [Def]                        (in the extractor's order)
   mentions    [Mention]                    (in the extractor's order)
   modules     [ModuleDecl]
-  doc         [DocConcept], [DocLink]      (design half; names and targets as written. A code
+  doc_*       [DocConcept], [DocLink]      (design half; names and targets as written. A code
                                             file also holds the rationale concepts and links
                                             found in its source)
   workflow    [WfNode], [WfRelation]       (workflow half; names as written)
@@ -268,11 +269,14 @@ Def
   line, end_line
   parent      index of the enclosing Def, or none
   test        true when the language marks it test-only (a #[test] fn, a #[cfg(test)] module, ...)
+  doc         the doc span of its doc comment, or none
 
 Mention
   enclosing   index of the enclosing Def, or the file
-  name        the name as written: the reference's identifier ("bar")
-  leaf        the final identifier of name; equal to name for every extractor today
+  name        the name as written: "Q::bar" under a path qualifier, "Q.bar" under a member
+              access, "bar" with none
+  leaf        the final identifier of name ("bar"), its qualifier left out; equal to name with
+              no qualifier, and never holding ::, ., < or > from a bundled grammar
   kind        Call | Tagged(<ref kind>)    (Call is the untagged reference)
   line
   test        true when inside a test-only def
@@ -281,18 +285,98 @@ ModuleDecl
   name        "foo"
   def         the index in this file's defs of the module definition that declares it
   test        true for a test-only module
-  candidates  ["crates/x/src/foo.rs", "crates/x/src/foo/mod.rs"]   (from this file's path and
-                                                                   any explicit path attribute)
+  as_root     ["crates/x/src/foo.rs", "crates/x/src/foo/mod.rs"]   (the module's file when this
+                                                                   file is a crate root or a
+                                                                   mod.rs, in the order tried)
+  as_child    ["crates/x/src/a/foo.rs", "crates/x/src/a/foo/mod.rs"]   (when it is any other
+                                                                   file, in the order tried)
+  path_attr   true when the declaration carries an explicit path attribute (#[path = ".."])
 ```
 
-A module's candidate paths depend only on the declaring file, so they are computed at
-extraction. Picking the first candidate that is a file in the tree is a cross-file question, so
-it happens at read (section 6).
+A doc span is the 1-based, inclusive first and last line of a doc comment; the comment's text is
+never stored, but read from the reader's worktree when a node's doc is asked for (section 6.3).
+A tags query's reference is named by its bare leaf, qualified by a path (`::`) or a member access
+(`.`) when one is written: by the qualifier a `@qualifier.path` or
+`@qualifier.member` capture gives, else by the one its `@name` writes before the leaf. A `@name`
+written as a chain of identifiers splits at its last separator, its type arguments left out of
+the split and any comment inside it left out of the split and its qualifier both (`Ns.IShape`
+and `Ns./*x*/IShape` are the leaf `IShape` qualified by the member `Ns`, `List<IShape>` the leaf
+`List`), and one that is no such chain names no mention. A Rust call's `@name` is its leaf
+already, so its qualifier is read off the tree around it instead: the segment before the leaf when
+that begins uppercase, generics and turbofish stripped (`Memo::<K>::new` and `a::Memo::<K>::new`
+give `Memo`), the trait of a qualified-self path (`<T as Tr>::f` gives `Tr`), and for `Self::f` the
+enclosing impl's self type, generics stripped, or inside a trait body the trait; a call whose
+receiver is exactly `self` is a member access qualified by that same type or trait. A lowercase
+segment, a `crate`, `self` or `super` path, any other receiver (`self.a.f()`), an enclosing generic
+parameter and a self type naming no single type write none.
+A Rust field use is a `field` reference qualified by the same rule: a named field read or assigned
+without a call (`opts.root = x`), a member access only when its receiver is exactly `self`
+(`self.root` inside `impl Store` is `Store.root`, `self.inner.depth` is a bare `depth`), and the
+named field a struct literal or pattern writes (`T { f }`, `T { f: v }`, `let T { f, .. }`),
+qualified by the struct's name as a call is by its path (`a::Wrap::<u8> { inner: v }` gives
+`Wrap`, `Self { f }` the impl's self type). A method call's name (`x.f()`) stays a call, and a
+tuple index (`x.0`, `T { 0: v }`) or a field of a struct whose qualifier is excluded
+(`Range { start, end }` under `use std::ops::Range`) stages none.
+A Rust function passed by name is a call at its site, named and qualified as a call is, a
+turbofish after it or not: the leaf of a path read outside a call when it begins lowercase
+(`.map(Store::open)` is `open` qualified by `Store`), and a bare identifier passed as a call's
+argument (`.map(entity_block)`) when it begins lowercase, names no standard-library item or
+enclosing generic parameter, and no binding in scope binds it (a parameter, a `let`, `if let` or
+`while let`, a match arm's pattern, a `for` pattern or a closure parameter); in a re-parsed token
+tree the scope is the invocation's. A function passed by name is staged in Rust alone.
+A Rust variant use is a `variant` reference qualified by the same rule: the leaf of a path that
+is no call's head, in an expression or a pattern, passed by name or in a token tree, when the leaf
+begins uppercase and holds a lowercase letter and the path writes a qualifier
+(`InstallOutcome::AlreadyCurrent` and `Located::Many(c) =>` are `AlreadyCurrent` and `Many`
+qualified by their enum, beside the `type` reference of the enum the path already stages;
+`a::Kind::Many` gives `Kind`, `Self::One` the impl's self type), and the name of a struct literal
+or pattern written `E::V` the same way (`Kind::RejectRecurrence { n } =>` is `RejectRecurrence`
+qualified by `Kind`, in place of the `type` reference of `Kind`, its field `n` qualified by
+`RejectRecurrence`). A call's head (`Hop::Frontier(cs)`) stays a call, a leaf holding no
+lowercase letter (`Mode::RO`) stays a const read, a lowercase qualifier (`models::Unit`) writes no
+variant, a path in type position (`-> Self::Target`) is a type reference alone, and a qualifier
+naming the standard library (`Ordering::Less` under `use std::cmp::Ordering`) stages none, while
+a leaf sharing a standard-library or enclosing generic parameter's name stages its variant all the
+same (`Located::None`, `Shape::Box { w } =>`).
+A Rust const read is a `const` reference of a name spelled `^[A-Z][A-Z0-9_]*$`, a bare identifier
+or the leaf of a whole path (`Self::MAX`, `Mode::RO`; a primitive's, `u8::MAX`, stages none), read
+in an expression or matched in a refutable pattern: a match arm's pattern but its guard, an
+`if let`'s, a `while let`'s or a let-else's, through any patterns nesting it (`REF_KIND_TYPE =>`,
+`Some(ONE)`, `0..=TOP`). The name an irrefutable pattern binds (a parameter, a plain `let`, a `for`,
+a closure parameter), a tuple struct pattern's head, a `ref` or `mut` binding and the name a
+`name @` binds stage none. A const read is also a format string's inline capture, read when the
+format-string argument is one string literal, raw or not (`"{X}".to_owned()` is none), the
+macro's arguments split where a call's are (`f::<A, B>()` is one argument, `a < b` another): the
+first argument of `format!`, `print!`, `println!`, `eprint!`, `eprintln!`, `panic!`,
+`format_args!`, `unreachable!`, `todo!` and `unimplemented!`, the second of `write!`, `writeln!`,
+`assert!` and `debug_assert!`, the third of `assert_eq!`, `assert_ne!`, `debug_assert_eq!` and
+`debug_assert_ne!`. A placeholder's argument and a width or precision `NAME$` count (`{TEMP}`,
+`{:COL_W$}`, the `W` of `{:0W$}`), each at its own line; a `{{` or `}}`
+escape, a name not so spelled (`{temp}`) and a name a named argument binds stage none, and neither
+does that argument's own name (`TEMP` of `format!("{TEMP}", TEMP = 1)`). A name the exclusions hold
+(a standard-library import, an enclosing const generic parameter) stages none in either position.
+A Rust impl header is an `impl` reference of its self type, and of its trait for `impl Tr for T`,
+each by its base name with path, generics, a reference and a pointer stripped
+(`impl<T> CodeView for FactsView<T>` gives `CodeView` and `FactsView`, `impl Draw for &Local`
+gives `Draw` and `Local`), enclosed by the impl definition itself even inside a function; a
+name the exclusions hold (a prelude name such as `Default` or `Box`, a standard-library path, a
+generic self type) stages none, a tuple, slice, array, `dyn` or function self type names no
+single type and stages none while the types inside it stage as type references, and the header
+makes no call.
+A module's two lists depend only on the declaring file, so they
+are computed at extraction, an enclosing inline module's components and an explicit path attribute
+placed by the same two rules; for a file named `mod.rs`, `lib.rs` or `main.rs` the two are equal.
+Which list applies, and the first path in it that is a file in the tree, are cross-file
+questions, so they are answered at read (section 6).
 
 ### 4.2 How a name-reference is stored
 
 A mention stores the name as written, its kind, its line and the def that encloses it. It
 stores no target, no tier and no placeholder. The resolver works those out at read time.
+
+Each call is its own mention, since a proof's evidence lists the line of every call. Tagged
+references that share an enclosing def, name, leaf, tag and test mark are one mention, at the
+first of their lines: a function that reads one constant three times holds one `const` mention.
 
 When a file is added or removed, no other file's facts change, even if that file holds the only
 definition a thousand mentions resolve to.
@@ -306,7 +390,7 @@ definition a thousand mentions resolve to.
 | A file | the id scheme it has today |
 | A design document | the id scheme it has today |
 | A workflow node | the id scheme it has today |
-| A call placeholder `<file>::%<leaf>` | made by the resolver for a mention that resolves to no single definition; never stored |
+| A call placeholder `<file>::%<leaf>`, or `<file>::%<Q>::<leaf>` / `<file>::%<Q>.<leaf>` for a qualified call whose qualifier keeps several candidates | made by the resolver for a mention that resolves to no single definition; never stored |
 
 ### 4.4 The stamp
 
@@ -320,11 +404,14 @@ Stamp                                (a Tip plus what only advance knows)
   tip         the Tip the snapshot describes
   fingerprint the extractor's fingerprint folded with the grouper's generation and the
               settled generation: changes when any extractor's output, the groupings or the
-              rows settled at advance can change (the symbol extractors' tag version, the facts
-              generation, the digest of the extractors the project's workflow declares, when it
-              declares any, the grouping generation and the settled generation; golden tests pin
-              them to digests of the facts, the groupings and the settled rows over fixtures, so
-              an unbumped change fails)
+              rows settled at advance can change (the symbol extractors' tag version, which
+              joins each bundled language's tags generation, the facts generation, the digest
+              of the extractors the project's workflow declares, when it declares any, the
+              grouping generation and the settled generation; golden tests pin each language's
+              tags generation beside digests of its fixtures' symbols and facts, and the other
+              generations beside digests of the other facts, the groupings and the settled rows
+              over fixtures, so a change that moves one of those digests fails until a version
+              pinned beside it is bumped and the digest re-pinned)
   seq         the snapshot's sequence number
 ```
 
@@ -346,12 +433,13 @@ a (u32 offset, u32 length) pair into one pool, and each distinct string is store
  | section table: [u16 kind | u64 offset | u64 length | u32 crc32] x count       |
  +-------------------------------------------------------------------------------+
  | STRINGS    the pool                                                           |
- | FILES      path, blob, lang, half, scope, flags (partial, test file), then    |
- |            [start, end) into each of                                          |
+ | FILES      path, blob, lang, half, scope, flags (partial, test file), doc     |
+ |            span, then [start, end) into each of                               |
  |            DEFS, MENTIONS, MODULES, DOC, WORKFLOW        (rows sorted by path) |
- | DEFS       local, leaf, kind, line, end_line, parent, flags   (one run a file) |
+ | DEFS       local, leaf, kind, line, end_line, parent, flags, doc span         |
+ |                                                              (one run a file) |
  | MENTIONS   enclosing, name, leaf, kind, line, flags            (one run a file) |
- | MODULES    name, flags, candidates                                            |
+ | MODULES    name, flags (test, path attribute), as_root, as_child              |
  | DOC        concepts and links as written                                      |
  | WORKFLOW   nodes and relations as written                                     |
  | IDX_LEAF   leaf -> [def row]       (sorted by leaf; binary search)            |
@@ -361,21 +449,41 @@ a (u32 offset, u32 length) pair into one pool, and each distinct string is store
  | PROOFS     target, caller or none, file, line    (proof order: by target;     |
  |            binary search)                                                     |
  | IDX_PROOF_FILE  [proof row]                 (by file, then proof order)       |
+ | ROW_NODES  the code half resolved whole under the default filter, its         |
+ |            groupings joined on: id, kind, [start, end) into ROW_ATTRS         |
+ |                                               (sorted by id; binary search)   |
+ | ROW_ATTRS  key, value                         (one run a node, in key order)  |
+ | ROW_EDGES  from, to, rel, tier, valid_from, source                            |
+ |                                    (sorted by from, to, rel; binary search)   |
+ | IDX_ROW_IN    id -> [edge row]   (the edges into it, in edge order)           |
+ | IDX_ROW_FILE  file -> [node row] (its members, in id order)                   |
+ | IDX_ROW_LEAF  leaf -> [node row] (the nodes the leaf binds, in id order)      |
  +-------------------------------------------------------------------------------+
 ```
 
 - A reader parses the file from a byte slice it owns. Reading the whole file into memory is
   the access path. A memory mapping is a different owner of the same slice, so the format needs
   no change for one.
-- **Size.** The tree holds 18,202 definitions and 164,734 mentions.
+- A doc span is two u32 lines; lines count from 1, so 0, 0 is no doc comment.
+- The ROW_* sections are the code half `Indexed::resolved` answers: the view resolved whole
+  under the default filter, the filter a read takes unless it asks for tests, with its groupings
+  joined on. A neighbourhood read under that filter takes a node, its edges either way, a
+  file's members and a leaf's nodes from them by binary search, and resolves nothing (section
+  6.3). A read under another filter, and a worktree overlay that differs from its snapshot,
+  resolve near the ids asked.
+- **Size.** Measured on this repository's tree when the code half was settled: 22,802
+  definitions, 254,630 mentions, and a settled half of 19,394 nodes and 73,020 edges.
 
-  | Section | Estimate |
+  | Section | Measured |
   |---|---|
-  | mentions | ~4.0 MB |
-  | definitions | ~0.6 MB |
-  | string pool | ~0.6 MB |
-  | indexes | ~0.7 MB |
-  | **total** | **~6 MB** |
+  | mentions | 8.7 MB |
+  | settled code half (ROW_*, IDX_ROW_*) | 5.6 MB |
+  | string pool | 3.9 MB |
+  | indexes (IDX_LEAF, IDX_NAME, IDX_PROOF_FILE) | 1.7 MB |
+  | definitions | 1.0 MB |
+  | proofs | 0.8 MB |
+  | files, modules, design and workflow facts, groupings | 0.3 MB |
+  | **total** | **22.0 MB** |
 
   Today the graph is 338.7 MB plus its write-ahead log, and the symbols index is 31.5 MB.
 
@@ -611,11 +719,14 @@ so it runs once per advance and is stored in the snapshot:
     definition's proofs and a test's attachment from them instead of resolving each mention of
     the leaf.
   - **definition leaves:** the keys of `IDX_LEAF`, which a lookup's name index reads.
+  - **the code half:** the view resolved whole under the default filter with its groupings
+    joined on (`Indexed::resolved`, the ROW_* sections of section 4.5), so a default read takes
+    a node and its edges rather than resolving the mentions near it.
 
   Their generation (`SETTLED_GENERATION`) is folded into the fingerprint like the grouping
-  generation, and a golden test pins it beside a digest of the rows over a fixture. A view
-  that holds no settled rows (an in-memory view) has the resolver compute them, and the two
-  are tested to answer alike.
+  generation, and a golden test pins it beside a digest of the rows, the code half included,
+  over three fixtures. A view that holds no settled rows (an in-memory view) has the resolver
+  compute them, and the two are tested to answer alike.
 - A grain other than the default is computed at read, on each open that asks for it, and is
   not stored: the reports and the dash's views go through the one rule (`groupings::computed_at`),
   so a dash view at grain 2 shows the groupings `--resolution 2` reports, joined on beside the
@@ -640,13 +751,16 @@ Grouping before and after:
 | extract | ~ 25 ms | 11.4 s / cores ~ 1.5-3 s |
 | build indexes | ~ 15 ms | ~ 15 ms |
 | groupings | ~ 2.3 s | ~ 2.3 s |
+| the code half (section 4.5) | ~ 220 ms | ~ 220 ms |
 | write + fsync + swap | ~ 20 ms | ~ 20 ms |
 | **budget (Done-when)** | **<= 3 s** | **<= 8 s** (today: 5 min 23.5 s) |
 
 A grammar's tags query is compiled once per process, at its first extraction, never per file
-(`LanguageEntry::tags`). Each file is parsed once: the tags query runs over the tree the
-structural reads use, and the impl blocks, Rust's tagged references and the test regions start
-from the nodes one walk of that tree gathers (`StructuralNodes`). Every reference's caller is
+(`LanguageEntry::tags`). Each file is parsed once, and in Rust each macro invocation's token tree
+is parsed again in place, at the file's byte positions (spec 117, MACRO TOKEN TREES): the tags
+query runs over each tree the structural reads use, and the impl blocks, Rust's tagged
+references and the test regions start from the nodes one walk of each tree gathers
+(`StructuralNodes`). Every reference's caller is
 found in one sweep over the references in position order, each definition entering at its
 range's start and leaving at its end (`enclosing_defs`), never a scan of every definition per
 reference.
@@ -793,27 +907,36 @@ Which definitions a mention may resolve to depends on whether the mention is tes
 - **A test mention** produces a proof under every filter. Under `include` and `only` it also
   produces the edges of the call and reference rules, resolved against all candidates, product
   and test. That gives test-to-test and test-to-product CALLS and REFERENCES edges, all marked
-  `test`. A test call the call rule cannot resolve in its own file lands on the definition its
-  proof credits, so a shown test's call edge and the proof it adds name one definition. Under
-  `exclude` it produces no edge.
+  `test`. A test call the call rule sends to a placeholder lands on the definition its proof
+  credits, so a test call's edge and the proof it adds name one definition, or the proof none. The
+  proof rule narrows a qualified call as the qualified-mention rule does, so a test call that rule
+  gives no edge, or sends to the placeholder of several, proves no definition (spec 117, RESOLVER
+  AT READ). Under `exclude` it produces no edge.
 
 A call in file F yields two edges to the one target the call rule below resolves: CALLS from its
 enclosing definition, or from F when the call sits outside every definition (a module-level
-call), and REFERENCES from F.
+call), and REFERENCES from F. A call the qualified-mention rule gives no edge yields neither.
 
 | Rule | Input | Resolution | Output (today's shapes) |
 |---|---|---|---|
+| qualified mention | Mention `Call` or `Tagged(k)` in file F written `Q::leaf` or `Q.leaf` | the candidates the call or tagged-reference rule below reads whose parent is a definition whose leaf is `Q` or an `impl`-kind definition enclosing an `impl` mention of `Q` (a product one for a product mention), else, when none is, those whose parent is a trait an `impl` mention such an implementation encloses names: exactly one, in any file | EXTRACTED edge to that definition |
+| | | several | a call: INFERRED edge to the placeholder keyed by the qualified name as written, `F::%Q::leaf` or `F::%Q.leaf`, never one of the several in its own file, and no proof; a tagged reference: no edge |
+| | | none, under a member qualifier `Q.leaf` | the call or tagged-reference rule below |
+| | | none, under a path qualifier `Q::leaf` where `Q` is the leaf of a product `type` or `trait` definition in F's language | the call or tagged-reference rule below |
+| | | none, under any other path qualifier | no edge and no placeholder; not counted as unresolved (spec 117, RESOLVER AT READ) |
 | call / untagged reference | Mention `Call` in file F | exactly one same-file candidate | EXTRACTED edge to that definition |
 | | | otherwise, a test mention the proof rule credits to a definition | INFERRED edge to that definition |
 | | | otherwise | edge to the placeholder `F::%<leaf>`: INFERRED if any candidate exists anywhere, AMBIGUOUS if none |
-| down-hop | a placeholder | one candidate | a hop to it |
+| down-hop | a placeholder: the candidates of its leaf, the text after the last `::` or `.` of the name it is keyed by, and for a qualified name those the qualified-mention rule keeps | one candidate | a hop to it |
 | | | several candidates | a frontier |
-| up-hop (callers of D) | definition D | direct resolutions to D, plus placeholder edges whose leaf is D's leaf | callers |
-| tagged reference | Mention `Tagged(k)` | candidates restricted to `reference_candidate_kinds(k)`: exactly one same-file | EXTRACTED |
+| up-hop (callers of D) | definition D | direct resolutions to D, plus placeholder edges whose leaf is D's leaf, one keyed by a qualified name only when its down-hop holds D | callers |
+| tagged reference | Mention `Tagged(k)` | definitions of the leaf whose kind `reference_candidate_kinds(k)` names, a non-target kind included (a `field` reference's are a field, a property, a constant, a static or a variant): for any `k` but `field`, exactly one same-file | EXTRACTED |
 | | | else exactly one in the project | INFERRED |
-| | | else | no edge; counted as unresolved |
-| module | ModuleDecl in F | the first of its candidates that is a file in the view | CONTAINS edge to that file, marked `test` when the declaration, F or that file is test code |
-| proof | Mention `Call` that is test code: its `test` mark, a Test-scope file, or a file in the out-of-line test-module closure | exactly one same-file candidate: that definition when it is product, none when it is test; else exactly one same-file product candidate; else exactly one product candidate in the project | +1 to that definition's `proven_by`, and `file:line` added to its `proof_evidence` |
+| | | else | no edge |
+| | | for `k` = `field`, the same-file step skipped and a constant, static or variant left to the qualified-mention rule: exactly one `field` or `property` definition in the project, in F or not | INFERRED |
+| | | else | no edge |
+| module | ModuleDecl in F | F is a child when the first declaration reaching it carries no path attribute, the walk starting at the files no declaration's list names and going down a depth at a time, each depth in path order, the first declaring file in path order the walk has not visited when a depth runs out starting the next as a root: the first path that is a file in the view of its `as_child` list when F is a child, else of its `as_root` list | CONTAINS edge to that file, marked `test` when the declaration, F or that file is test code |
+| proof | Mention `Call` that is test code: its `test` mark, a Test-scope file, or a file in the out-of-line test-module closure | written `Q::leaf` or `Q.leaf`, the qualified-mention rule over every candidate, product and test: exactly one kept, that definition when it is product, none when it is test; none for several kept, or for a call that rule gives no edge; otherwise exactly one same-file candidate: that definition when it is product, none when it is test; else exactly one same-file product candidate; else exactly one product candidate in the project | +1 to that definition's `proven_by`, and `file:line` added to its `proof_evidence` |
 | duplicate id | two definitions with one id | `definition_precedence(kind, line)` | one node |
 | kind precedence | several kinds for one id | `CODE_KIND_PRECEDENCE` | one kind |
 | test-ness | an entity | section 8.1 | `test` attribute; drives the filter |
@@ -857,8 +980,21 @@ as written from every file holding them, and whether one is test code (section 6
 only for those touching a node it resolves, so a link to a node the neighbourhood never reaches
 reads no definition.
 
+A node's doc (`ContextGraph::doc`) is read by a neighbourhood alone. Its file's facts give the
+span: the file's own for a file node, else the one of the production definition the node records
+by name, kind and line, the widest of those when several share them (`Recorded::widest`, the
+definition whose end `definition_end` gives). The span's lines are read from the reader's worktree
+(`SourceLines`) and their text is the one the extractor the store was opened with gives
+(`Extract::doc_text`), which the head carries. A whole-graph read, a graph that withholds its code
+facts, a span past the file's end and a file the read cannot open give no doc.
+
 The work is proportional to the number of mentions of one leaf. The largest frontier measured is
 25 candidates.
+
+Under the default filter a neighbourhood over a snapshot resolves none of this: the snapshot
+settles the code half whole (section 4.5), and a node, its edges either way, a file's members and
+a leaf's nodes are binary searches in it, and a node's hidden provers are its PROOFS rows. A read
+that shows tests, and the overlay of a worktree that differs from its snapshot, resolve as above.
 
 A lookup term resolves the same way. The distinct leaves the definitions carry are its name
 index; each name a tier reaches (exact, prefix, fuzzy, or the nearest names of a miss) reads
@@ -868,24 +1004,35 @@ reached.
 
 ### 6.4 Read cost
 
-| Query | Work | Budget (through the binary) |
-|---|---|---|
-| open + honesty check | read ~6 MB, crc, two git calls (three where discovery asks git, four where the configuration includes a file) | inside the budgets below |
-| `--around <entity>` | the mentions of one leaf | <= 50 ms |
-| whole default view (dash) | 34,301 product mentions + test call mentions for proofs | <= 150 ms |
-| whole view with tests | 164,734 mentions | <= 300 ms |
-| whole view at a non-default grain (dash) | the default view plus groupings on demand | ~ 270 ms |
+`tests/read_budgets.rs` holds each budget: run with `RIGGER_READ_BUDGETS=1`, it clones HEAD,
+builds the release binary, builds the graph, starts the dash on an ephemeral port and takes the
+median of five runs after one warm-up. The gates do not run it. The measured column is that
+median on this repository's tree when the code half was settled (section 4.5).
 
-The interpreted model resolves the product view in 21 ms and everything in 92 ms. Compiled code
-does it in less, so no cache is kept: each view open resolves what its query needs.
+| Query | Work | Budget (through the binary) | Measured |
+|---|---|---|---|
+| open + honesty check | read ~22 MB, crc, two git calls (three where discovery asks git, four where the configuration includes a file) | inside the budgets below | |
+| `--around <entity>`, `--show <entity>` | binary searches in the settled code half; a `--show` miss builds the name index and searches it | < 50 ms | 20 to 35 ms |
+| `--lookup <term>` | the name index, each entity reached with its callees and referrers, the text and prose scans | < 250 ms | 94 to 173 ms |
+| whole default view (dash `/api/graph`) | the product view resolved whole, its proofs read from PROOFS | < 150 ms | 52 ms |
+| whole view with tests (`tests=include`) | every mention resolved whole | < 300 ms | 168 ms |
+| whole view at a non-default grain (`lens=code&resolution=2`) | the default view plus groupings on demand | < 300 ms | 62 ms |
+
+A neighbourhood read under the default filter, on a worktree that matches its snapshot, takes the
+settled code half and resolves nothing near its ids; a whole read, a read under another filter,
+and the overlay of a worktree that differs from its snapshot resolve what the query needs. No
+cache is kept beside the snapshot.
 
 The one exception is the overlay's facts memo (section 13), which keeps the facts extracted from a
 worktree file by the file's content. It cannot be stale, because its key is the content: an
 entry answers only for the bytes it was extracted from. It is bounded at 64 MiB of entries, none
 unread for more than three days, and reaped with the store (section 5.1).
 
-The budgets assume the stamp is current. If HEAD moved without the conductor, the first reader
-afterwards pays one advance first (<= 3 s for a small change, section 5.5).
+The budgets assume the stamp is current and the worktree matches its snapshot. If HEAD moved
+without the conductor, the first reader afterwards pays one advance first (<= 3 s for a small
+change, section 5.5). A worktree that differs from its snapshot has no settled code half to read:
+its overlay resolves near the ids asked, and `--around` with one file changed took 137 to 146 ms
+when the code half was settled, as it did before.
 
 ---
 
@@ -916,10 +1063,16 @@ pub trait TreeSource {
 pub trait Extract: Send + Sync {
     fn fingerprint(&self) -> u64;
     fn extract(&self, entry: &Entry, bytes: &[u8]) -> FileFacts;   // path and blob set from the entry
+    fn doc_text(&self, lang: &str, raw: &str) -> String;           // a doc span's text, never stored
+                                                                   // (by default the lines trimmed)
 }
 pub trait Group {
     fn generation(&self) -> u64;                                   // folded into the fingerprint
     fn group(&self, view: &dyn CodeView) -> Groupings;
+}
+pub trait SourceLines: Send + Sync {
+    fn lines(&self, path: &str, span: (u32, u32)) -> Option<String>;   // a doc span's lines, none
+                                                                   // past the file's end or unread
 }
 
 pub enum Tests { Exclude, Include, Only }
@@ -930,8 +1083,9 @@ pub struct ViewFilter { pub tests: Tests }                         // default: E
 |---|---|
 | `CodeView` | `Snapshot` (rigger-store); `FactsView` (in memory: used by advance, the overlay and tests); `Overlay` (section 13) |
 | `TreeSource` | `GitTreeSource` (rigger-worktree-git, every git it starts itself with `--no-optional-locks`: `ls-tree`, `diff --raw` over a copy of the worktree's index (6.1), whose modes class each path as a regular file or not, so a symlink or submodule, which a tree's listing never holds, is no difference; `ls-files --others --exclude-standard -- :/`, the whole worktree's untracked files from any directory of it; `cat-file --batch` through the existing `BlobBatch`; a worktree file's bytes read as a regular file, never through a symlink); `DirTreeSource` (rigger-store: walks the directory with the one scoped walk, `rigger_store::walk::walk_scoped`, which the grounder walks with too, and hashes each file with FNV, for a project with no git, so `rigger graph build` outside a repository keeps working; it holds the last head's listing only, so a long-lived reader holds one listing) |
-| `Extract` | `FactsExtractor` (rigger-grounder `facts.rs`, over the existing symbol, design and workflow extractors); `ProjectExtractor` (beside it, the one the store's openers compose: `FactsExtractor` under the extractors the project's workflow declares, its fingerprint `FactsExtractor`'s with none and carrying the declaration's digest with any; each declared extractor's command runs as one session, started at the project's root on the first file it reads and closed when a file's answer fails, the next file starting a new one, or when the `ProjectExtractor` is dropped) |
+| `Extract` | `FactsExtractor` (rigger-grounder `facts.rs`, over the existing symbol, design and workflow extractors; its `doc_text` strips a Rust doc span's lines to their comment text, gives a C# span the text of its `///` lines with their XML tags removed, gives a Python span its docstring's body, its parts joined, dedented, and gives any other language the lines trimmed); `ProjectExtractor` (beside it, the one the store's openers compose: `FactsExtractor` under the extractors the project's workflow declares, its fingerprint `FactsExtractor`'s with none and carrying the declaration's digest with any, its `doc_text` `FactsExtractor`'s; each declared extractor's command runs as one session, started at the project's root on the first file it reads and closed when a file's answer fails, the next file starting a new one, or when the `ProjectExtractor` is dropped) |
 | `Group` | `ProductionGroupings` (rigger-domain, over the existing community and concept algorithms) |
+| `SourceLines` | `WorktreeLines` (rigger-store `code/worktree_lines.rs`: each file read through std at its path under the reader's worktree, its bytes read as UTF-8 with each invalid sequence as U+FFFD) |
 
 The store crate depends only on `rigger-domain`, std and the `ignore` gitignore engine.
 Extraction and grouping are passed into it, so it holds no language knowledge. A file's scope
@@ -1036,8 +1190,9 @@ items in product files. An entity counts as a test entity when any of these hold
    The rule stays, unchanged, with the per-language extractor registry. It is applied once, at
    extraction, and stored as `FileFacts.scope`; or
 3. its file is in the out-of-line test-module closure: files reached only through test-only
-   module declarations. This is computed per view open from the MODULES section, using the same
-   `module_target` function the module rule uses, so the two cannot disagree.
+   module declarations. This is computed per view open from the MODULES section, over the same
+   walk that places each declaring file and the same `module_target` function the module rule
+   uses, so the two cannot disagree.
 
 A fixture is a test entity like any other: a definition these rules mark test is held, proved
 through and filtered the same way, with no fixture kind of its own.
@@ -1078,8 +1233,9 @@ hidden test.
   - a show counts the hidden tests its query names and those proving the node it locates;
   - a neighbourhood counts the hidden tests proving a node it shows and, for a definition its
     callers walk steps from, the callers of the test calls that land on a placeholder bound to
-    its leaf. A walk never steps from a hidden test, so a test reaching a shown node only through
-    another hidden test is not counted.
+    its leaf, one keyed by a qualified name only when its down-hop holds that definition. A walk
+    never steps from a hidden test, so a test reaching a shown node only through another hidden
+    test is not counted.
 - **The filter is a parameter of the view:**
   - the dash takes `tests=exclude|include|only` on `/api/graph`, and the explorer's "Show tests"
     toggle sets it; each reply that draws nodes names the drawn ones that are test code
@@ -1329,12 +1485,17 @@ A reader takes a view's test files and proof calls as the store settled them at 
 (`Settled`), not by resolving the whole view, so the overlay re-settles them
 (`resolve::resettle`) on its first read of them. A changed file can move the rows of a file
 that did not change: a module declaration (`#[cfg(test)] mod x;`) flips the test-ness of the
-files it reaches, and a definition gained or lost moves the product targets of every call to
-its leaf, which proves or unproves a test's call to it. Re-settling resolves both the base and
-the merged view, takes the merged view's test files, and redoes the proof calls of each file
-that differs or flipped and of each test file that calls a leaf whose targets moved; every
-other proof call is the base's, since only a definition in a file that differs or flipped can
-move a leaf's targets.
+files it reaches; a definition gained, lost or flipped moves the targets of every call to its
+leaf, which proves or unproves a test's call to it; and a definition or an `impl` mention named
+`Q`, gained or lost, moves what the qualifier `Q` keeps, as does a trait gained, lost or
+flipped that an implementation of `Q` names, which moves the proof of a test's call written
+`Q::leaf` or `Q.leaf`. Re-settling resolves both the base and the merged view, takes the merged
+view's test files, and redoes the proof calls of each file that differs or flipped, of each
+file whose test code calls a leaf whose targets, product or test, moved, and of each file whose
+test code makes a call whose qualifier is the leaf of a definition or of an `impl` mention in
+either version of a file that differs or flipped, or a name an implementation's header holds
+beside such a definition's leaf. Every other proof call is the base's, since only a file that
+differs or flipped holds a definition or an `impl` mention that moved.
 Groupings still describe the stamp: a new entity shows no community until the next advance, and
 the label says so.
 
@@ -1460,8 +1621,9 @@ a reader holding one open (or mapped) never blocks a writer.
   on a branch one commit ahead: the stamp stays on the operator checkout's HEAD, and the reader's
   label counts the differing file.
 - `a_fingerprint_change_advances_from_empty`.
-- `a_change_to_the_facts_ships_with_a_generation_bump`: the facts generation is pinned to a digest
-  of the facts read over the golden fixtures.
+- `a_change_to_the_facts_ships_with_a_generation_bump`: each bundled language's tags generation
+  is pinned to a digest of the facts read over that language's golden fixtures, and the facts
+  generation to a digest of the facts read over the design, rationale and workflow fixtures.
 - `a_corrupt_snapshot_is_treated_as_absent`.
 - `a_reader_never_sees_a_partial_snapshot`, and
   `a_crash_between_renames_leaves_the_old_stamp_current`, both using a fault-injecting publish.

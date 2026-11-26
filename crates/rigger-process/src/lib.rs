@@ -4,8 +4,9 @@
 //! holding a directory, the machine-wide
 //! build-slot budget, the ordered parallel map, the whole-line writer for a stream other processes share, the
 //! keep-awake adapter behind the domain's
-//! `SleepHold` interface, the detached start of a process that outlives its starter, the trigger an
-//! interactive interrupt fires, and the one read of the user's home directory. They know
+//! `SleepHold` interface, the login-start adapter a run registers its relaunch with, the detached
+//! start of a process that outlives its starter, the trigger an interactive interrupt fires, and
+//! the one read of the user's home directory. They know
 //! `std::process`, the filesystem, threads and the host's OS facilities; the root `rigger` crate
 //! re-exports every public module but `file_trust` and `home` under its own name.
 
@@ -24,6 +25,8 @@ pub mod home;
 pub mod interrupt;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod keep_awake;
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub mod login_start;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod os_process;
 #[cfg(any(feature = "store", not(feature = "core")))]

@@ -21,20 +21,12 @@
 //! run serves the plan's planner and its re-plan that planner composed, then a task closing with
 //! the protocol's framing and contract alone and stating none of the policy.
 //!
-//! Spec 121, THE UNIT SIZE CAP IS DECLARED, over the same gate: the conductor's test pins both
-//! prompts over a configuration it builds in memory, and the config store's the key as YAML reads
-//! it. What this file adds is the `defaults.max_unit_added_lines` line a project's workflow.yml
-//! carries, the 3000 `rigger init` writes, a cap of 1 or none, reaching what a run serves: the
-//! planner's protocol and every critique round state the declared cap's sentence, the critique's
-//! cause contract naming a unit over the cap, and a workflow declaring none is served neither;
-//! the cap's scope sentence reaches the planner from its persona, never its task.
-//!
 //! The critique rows are each round's adversary and adjudicator: the first round's for the prompt
 //! no reject precedes, the re-plan round's for the prompt that opens with the reject. Each task is
 //! compared as the headless host frames it ([`framed`]), and each system prompt with its trailing
 //! newlines trimmed, as the fake host reads its file. Every run is minted through
 //! `run_store::start_fresh` and adopted by `rigger run`. The driven workflow differs from what the
-//! verb wrote in its pinned grounder and, in a row declaring another cap or none, its cap line.
+//! verb wrote only in its pinned grounder.
 
 use crate::common;
 
@@ -46,8 +38,7 @@ use common::fixtures::{
     assert_holds_its_critique_method, composed_system_prompt, critique_method_by_persona,
     critique_reject, dag_critique_prompt, markdown_section, plan_protocol_text, policy_counts,
     read_text, served_task, stand_in_launches, DAG_DISJOINT_OVERLAP, DAG_PRIOR_REJECT_HEADER,
-    RECORD_EACH_LAUNCH, UNIT_SIZE_CAP_SCOPE, WHEN_YOU_CRITIQUE_HEADING, WIDGET_CRITERION,
-    WIDGET_UNIT,
+    RECORD_EACH_LAUNCH, WHEN_YOU_CRITIQUE_HEADING, WIDGET_CRITERION, WIDGET_UNIT,
 };
 use common::repo::repo_text;
 use rigger::driver::claude_code::framed;
@@ -109,29 +100,6 @@ fn pin_the_nop_grounder(root: &Path) {
     rewrite_the_workflow(root, "  grounder: symbols", "  grounder: nop");
 }
 
-/// The unit size cap the workflow `rigger init` writes declares.
-const SCAFFOLD_CAP: u32 = 3000;
-
-/// Replace the unit size cap line of the workflow `rigger init` wrote into `root` with `line`; an
-/// empty `line` leaves the workflow declaring no cap.
-fn declare_the_cap(root: &Path, line: &str) {
-    rewrite_the_workflow(
-        root,
-        &format!("  max_unit_added_lines: {SCAFFOLD_CAP}\n"),
-        line,
-    );
-}
-
-/// Assert that `root`'s workflow, as the given `given` left it, loads as declaring the unit size
-/// cap `cap`, 0 being none.
-fn assert_declares_the_cap(given: &str, root: &Path, cap: u32) {
-    assert_eq!(
-        loaded_config(root).workflow.defaults.max_unit_added_lines,
-        cap,
-        "premise: {given} loads as declaring the unit size cap {cap}"
-    );
-}
-
 /// What a spawn was served: its system prompt, then its task.
 type Served = (String, String);
 
@@ -191,11 +159,11 @@ fn served_over_a_reject_and_its_re_plan(root: &Path, reject: &str) -> ([Served; 
     )
 }
 
-/// The task each round's adversary and adjudicator must be served over `root`'s scaffolded workflow, declaring the unit size cap `cap` (0 being none),
-/// after the reject line `reject`, each with the agent file its persona comes from: the framing,
-/// the cap sentence when `cap` is declared, the unit list and the verdict paragraph, the re-plan
-/// round led by the reject and the adversary's closed by its findings protocol, and nothing else.
-fn expected_tasks(root: &Path, reject: &str, cap: u32) -> [(&'static str, String); 4] {
+/// The task each round's adversary and adjudicator must be served over `root`'s scaffolded
+/// workflow after the reject line `reject`, each with the agent file its persona comes from: the
+/// framing, the unit list and the verdict paragraph, the re-plan round led by the reject and the
+/// adversary's closed by its findings protocol, and nothing else.
+fn expected_tasks(root: &Path, reject: &str) -> [(&'static str, String); 4] {
     let config = loaded_config(root);
     let checkin = config.workflow.stages["checkin"].coverage.as_str();
     let first_round = dag_critique_prompt(
@@ -209,7 +177,6 @@ fn expected_tasks(root: &Path, reject: &str, cap: u32) -> [(&'static str, String
             ],
         ],
         DAG_DISJOINT_OVERLAP,
-        cap,
     );
     let second_round = format!(
         "{DAG_PRIOR_REJECT_HEADER}{reject}\n\nThe planner has since revised the DAG; re-review it \
@@ -231,21 +198,6 @@ fn expected_tasks(root: &Path, reject: &str, cap: u32) -> [(&'static str, String
 
 /// What a given does to a freshly scaffolded project before the verbs re-run.
 type Arrange = fn(&Path);
-
-/// The declared caps each gate's table closes with: a workflow declaring no unit size cap, and one
-/// declaring a cap of 1 line, each with the cap it reads as.
-const CAP_ROWS: [(&str, Arrange, u32); 2] = [
-    (
-        "a workflow declaring no unit size cap",
-        |root| declare_the_cap(root, ""),
-        0,
-    ),
-    (
-        "a workflow declaring a cap of 1 line",
-        |root| declare_the_cap(root, "  max_unit_added_lines: 1\n"),
-        1,
-    ),
-];
 
 /// Strike the critique section out of each critiquing persona of `root`, leaving the text a
 /// consumer scaffolded before the method moved.
@@ -278,48 +230,38 @@ fn copy_in_the_committed_planner(root: &Path) {
 }
 
 /// How many times `text`, its whitespace normalized, states each sentence of the
-/// [`PLANNING_POLICY`], in its order, and the unit size cap's scope sentence.
-fn planning_counts(text: &str) -> ([usize; 6], usize) {
-    let text = rigger::wave::normalize_ws(text);
-    (
-        policy_counts(&text),
-        text.matches(UNIT_SIZE_CAP_SCOPE).count(),
-    )
+/// [`PLANNING_POLICY`], in its order.
+fn planning_counts(text: &str) -> [usize; 6] {
+    policy_counts(&rigger::wave::normalize_ws(text))
 }
 
 /// Given a project `rigger init` scaffolded, its planner the one the verb wrote or this
-/// repository's committed planner, which states each planning-policy sentence and the unit size
-/// cap's scope sentence once, its workflow declaring the cap the verb wrote, a cap of 1 line or no
-/// cap at all, when the gate rejects and re-plans, `rigger run` serves the plan's planner and its
-/// re-plan that planner composed with the layers, then a task that closes with the plan
-/// protocol's framing and contract alone, its cap slot stating the declared cap and empty when
-/// none is declared, and states none of the planning policy and no scope sentence.
+/// repository's committed planner, which states each planning-policy sentence once, when the gate
+/// rejects and re-plans, `rigger run` serves the plan's planner and its re-plan that planner
+/// composed with the layers, then a task that closes with the plan protocol's framing and contract
+/// alone and states none of the planning policy.
 #[test]
 fn each_planner_spawn_is_served_the_planning_policy_by_its_persona_and_none_by_its_task() {
-    let givens: [(&str, Arrange, u32); 2] = [
-        ("the planner rigger init wrote", |_| {}, SCAFFOLD_CAP),
+    let givens: [(&str, Arrange); 2] = [
+        ("the planner rigger init wrote", |_| {}),
         (
             "this repository's committed planner",
             copy_in_the_committed_planner,
-            SCAFFOLD_CAP,
         ),
     ];
-    for (given, arrange, cap) in givens.into_iter().chain(CAP_ROWS) {
+    for (given, arrange) in givens {
         let dir = scaffolded_project();
         let root = dir.path();
         arrange(root);
-        assert_declares_the_cap(given, root, cap);
         let protocol = framed(&plan_protocol_text(
             WORKER,
             "(no enumerated acceptance criteria)",
-            cap,
         ));
         let planner = agent_text(root, "planner.md");
         assert_eq!(
             planning_counts(&planner),
-            ([1; 6], 1),
-            "{given}: the planner states each planning-policy sentence and the cap's scope \
-             sentence once:\n{planner}"
+            [1; 6],
+            "{given}: the planner states each planning-policy sentence once:\n{planner}"
         );
         let system = composed_system_prompt(&planner);
         let reject = critique_reject("decomposition-conflict", &["adv-1"]);
@@ -338,10 +280,9 @@ fn each_planner_spawn_is_served_the_planning_policy_by_its_persona_and_none_by_i
                     task.get(task.len().saturating_sub(protocol.len())..),
                     planning_counts(&task)
                 ),
-                (Some(protocol.as_str()), ([0; 6], 0)),
+                (Some(protocol.as_str()), [0; 6]),
                 "{given}: {spawn} is served the planner composed, then a task closing with the \
-                 plan protocol alone, its cap slot filled for the cap {cap}, and stating no \
-                 planning policy and no scope sentence:\n{task}"
+                 plan protocol alone and stating no planning policy:\n{task}"
             );
         }
     }
@@ -363,23 +304,19 @@ fn rigger_init_writes_each_critiquing_persona_its_method_under_the_critique_sect
 }
 
 /// Given a project with the personas `rigger init` wrote, or a consumer's with no critique
-/// section, its workflow declaring the unit size cap the verb wrote, a cap of 1 line or no cap at
-/// all, when the scaffolding verbs re-run, the personas and the declared cap stay, and when the
-/// gate rejects and re-plans, `rigger run` serves each spawn that persona composed with the
-/// layers and then the same task: the framing, stating the declared cap and naming a unit over it
-/// among the causes a re-plan fixes, or neither when no cap is declared, and the output contract,
-/// byte for byte.
+/// section, when the scaffolding verbs re-run, the personas stay, and when the gate rejects and
+/// re-plans, `rigger run` serves each spawn that persona composed with the layers and then the
+/// same task: the framing and the output contract, byte for byte.
 #[test]
 fn each_gate_spawn_is_served_its_own_persona_then_only_the_framing_and_the_output_contract() {
-    let givens: [(&str, Arrange, u32); 2] = [
-        ("the personas rigger init wrote", |_| {}, SCAFFOLD_CAP),
+    let givens: [(&str, Arrange); 2] = [
+        ("the personas rigger init wrote", |_| {}),
         (
             "a consumer's personas with no critique section",
             strike_the_critique_sections,
-            SCAFFOLD_CAP,
         ),
     ];
-    for (given, arrange, cap) in givens.into_iter().chain(CAP_ROWS) {
+    for (given, arrange) in givens {
         let dir = scaffolded_project();
         let root = dir.path();
         arrange(root);
@@ -393,10 +330,9 @@ fn each_gate_spawn_is_served_its_own_persona_then_only_the_framing_and_the_outpu
                 "{given}: rigger {verb} never rewrites a persona"
             );
         }
-        assert_declares_the_cap(given, root, cap);
         let reject = critique_reject("decomposition-conflict", &["adv-1"]);
         let (_, served) = served_over_a_reject_and_its_re_plan(root, &reject);
-        let tasks = expected_tasks(root, &reject, cap);
+        let tasks = expected_tasks(root, &reject);
         for (((file, task), served), spawn) in tasks.into_iter().zip(served).zip(GATE_SPAWNS) {
             let system = composed_system_prompt(&agent_text(root, file));
             assert_eq!(

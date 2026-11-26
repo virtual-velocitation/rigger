@@ -70,8 +70,7 @@ pub struct Def {
     /// or TS named value takes its container's parent, being one definition with it, and a Go
     /// method the path of its receiver base type when a definition of the file sits there; `None`
     /// where that names no definition, the file containing it. Serde-defaulted and omitted when
-    /// `None`; an index persisted before it existed is of an older [`GRAMMAR_TAGS_VERSION`], so it
-    /// loads as absent.
+    /// `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
     /// Spec 86 criterion 1: whether this definition is TEST code - directly annotated
@@ -115,36 +114,34 @@ pub struct Def {
     /// Captured structurally in [`crate::grounder::symbols::extract::extract`] alongside
     /// `is_out_of_line_module`, for the SAME reason: only the declaring file's own parsed tree
     /// carries the attribute, so it must be carried on the definition since a reused persisted
-    /// index never re-reads the source. Consumed by
-    /// `symbols::paths::module_candidates`, which resolves it
-    /// relative to the declaring file's own directory, or its module directory and inline chain
-    /// when nested in inline mods ([`Self::enclosing_inline_module_path`], whose doc gives examples
-    /// where that chain departs from rustc). `#[serde(default)]` for the same
-    /// pre-86-index-compatibility reason as `is_test`/`is_out_of_line_module`; omitted from the
-    /// wire form when `None` so the overwhelmingly common case stays byte-identical to before this
-    /// field existed.
+    /// index never re-reads the source. Consumed by `symbols::paths::module_candidates`, which
+    /// resolves it in both of its lists relative to the declaring file's own directory, or, when
+    /// nested in inline mods, to the module directory each list places it under and the inline
+    /// chain ([`Self::enclosing_inline_module_path`], whose doc gives examples where that chain
+    /// departs from rustc). `#[serde(default)]` for the same pre-86-index-compatibility reason as
+    /// `is_test`/`is_out_of_line_module`; omitted from the wire form when `None` so the
+    /// overwhelmingly common case stays byte-identical to before this field existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path_override: Option<String>,
     /// Round 9 (`op-u86-c1-path-attribute-contract-is-rustc-s-and-unresolvable-never-excludes`):
     /// the `/`-joined chain of enclosing INLINE `mod name { .. }` names (outermost first) this
     /// out-of-line declaration sits nested inside, when any - the EXTRA directory-component chain
-    /// its file resolves under, `#[path]` override or convention alike (spec 117 criterion 8), one
-    /// level per enclosing inline module, on top of the declaring file's own module directory, so
-    /// `mod outer { mod x; }` in `src/lib.rs` names `src/outer/x.rs`. Each level is the inline
-    /// name as written, so the chain names rustc's directory only where that name is the
-    /// directory. Among the departures: an inline parent with its own `#[path]` (under
-    /// `#[path = "dir"] mod outer { .. }` rustc looks in `dir/`) and a raw identifier
-    /// (`mod r#type { .. }`, where rustc reads `type/`). `None` when the declaration sits
-    /// directly at the file's own top level (the overwhelmingly common case), in which case an
-    /// override stays directory-of-file-relative exactly as before this field existed. Verified
-    /// against real rustc for a plain inline parent
-    /// (throwaway probe crates, not part of this tree): `mod outer { #[path = "foo.rs"] mod
-    /// inner; }` in `src/lib.rs` resolves `foo.rs` against `src/outer/foo.rs`, and the identical
-    /// nesting inside a LEAF file `src/parent.rs` resolves against `src/parent/outer/foo.rs` - the
-    /// file's own MODULE directory (what a plain, non-overridden out-of-line sibling of
-    /// `parent.rs` would already use) with `outer/`
-    /// appended, never the file's bare directory. Captured
-    /// structurally in [`crate::grounder::symbols::extract::extract`] alongside
+    /// its file resolves under, `#[path]` override or convention alike (spec 117, MODULE ROOTS AT
+    /// READ), one level per enclosing inline module, on top of the module directory each of the
+    /// declaration's two lists places it under, so `mod outer { mod x; }` in `src/lib.rs` names
+    /// `src/outer/x.rs`. Each level is the inline name as written, so the chain names rustc's
+    /// directory only where that name is the directory. Among the departures: an inline parent
+    /// with its own `#[path]` (under `#[path = "dir"] mod outer { .. }` rustc looks in `dir/`) and
+    /// a raw identifier (`mod r#type { .. }`, where rustc reads `type/`). `None` when the
+    /// declaration sits directly at the file's own top level (the overwhelmingly common case), in
+    /// which case an override stays directory-of-file-relative exactly as before this field
+    /// existed. Verified against real rustc for a plain inline parent (throwaway probe crates, not
+    /// part of this tree): `mod outer { #[path = "foo.rs"] mod inner; }` in `src/lib.rs` resolves
+    /// `foo.rs` against `src/outer/foo.rs`, and the identical nesting inside a LEAF file
+    /// `src/parent.rs` resolves against `src/parent/outer/foo.rs` - the file's own MODULE
+    /// directory (what a plain, non-overridden out-of-line sibling of `parent.rs` would already
+    /// use) with `outer/` appended, never the file's bare directory. Captured structurally in
+    /// [`crate::grounder::symbols::extract::extract`] alongside
     /// `is_out_of_line_module`/`path_override`, for the same reason: only the declaring file's own
     /// parsed tree can see its ancestor `mod_item` nodes. Consumed at the events/index layer
     /// ([`crate::grounder::symbols::paths::module_candidates`], both branches).
@@ -152,16 +149,22 @@ pub struct Def {
     /// out-of-line fields; omitted from the wire form when `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enclosing_inline_module_path: Option<String>,
+    /// Spec 117 (DOC FACTS): the definition's doc span, the 1-based inclusive lines from its first
+    /// doc line to its last - the lines a `@doc` capture in its query match covers, else, in
+    /// Rust, its outer doc lines' ([`crate::grounder::symbols::extract::extract`] sets it); `None`
+    /// when it has none. Serde-defaulted and omitted when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc: Option<(u32, u32)>,
 }
 
-/// A reference site: the referenced name, its 1-based line, and the ENCLOSING definition the
-/// reference occurs inside (the caller), named by its path ([`Def::path`], spec 119 criterion 8:
-/// `T::new`, `outer::inner`). `None` for a top-level reference outside every
-/// definition - an import or a module-level call; a file-level impl header's trait and type
-/// attribute to the impl block, a definition of its own, and its trait's tagged `type` row to the
-/// self type's definition when the file defines that once (spec 117). Set during extraction by
-/// attributing the reference to the innermost function-like definition whose range contains it,
-/// else the innermost definition of any kind but a declaration (spec 116). Serde-defaulted and
+/// A reference site: the referenced name's bare leaf, its 1-based line, and the ENCLOSING
+/// definition the reference occurs inside (the caller), named by its path ([`Def::path`], spec 119
+/// criterion 8: `T::new`, `outer::inner`). `None` for a top-level reference outside every
+/// definition - an import or a module-level call; an impl header's `impl` mentions of its trait
+/// and self type attribute to the impl block, a definition of its own, even inside a function
+/// (spec 117, RUST TAGS IMPL HEADERS). Set during extraction by attributing the reference to the
+/// innermost function-like definition whose range contains it, else the innermost definition of
+/// any kind but a declaration (spec 116). Serde-defaulted and
 /// omitted when `None` so a pre-37 persisted index folds as caller-less and a caller-less ref
 /// serializes byte-identically to before. `Default` is the bare reference a tagged one is pushed
 /// from before attribution and the test-region pass fill its caller and test mark.
@@ -179,14 +182,36 @@ pub struct SymRef {
     /// byte-identical-wire-form reason as `Def::is_test`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub is_test: bool,
-    /// Spec 117 (REFERENCES): what kind of non-call reference this is - a const read, a type
-    /// reference or an imported leaf of a `use`, the `EdgeInferred` payload's own spelling
-    /// (`contextgraph::REF_KIND_CONST`, `REF_KIND_TYPE`, `REF_KIND_USE`) - extracted for Rust
-    /// only; `None` for a call, every other language's reference included, which folds and counts
-    /// as before the field existed. A calls-only consumer reads [`FileSymbols::calls`].
+    /// Spec 117 (RUST REFERENCES, CAPTURES): what kind of non-call reference this is, in the
+    /// `EdgeInferred` payload's own spelling (`contextgraph::REF_KIND_*`): in every language, the
+    /// kind a tags query's `@reference.<kind>` suffix names (a type, an impl, a const read, a field
+    /// or a use), and in Rust also a const read, a type reference or an imported leaf of a `use`
+    /// read off the tree. `None` for a call, a constructed `new T()` included, which folds and
+    /// counts as before the field existed.
+    /// A calls-only consumer reads [`FileSymbols::calls`].
     /// Serde-defaulted and omitted when `None`, so a call serializes byte-identically to before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ref_kind: Option<String>,
+    /// Spec 117 (CAPTURES, RUST REFERENCES): the qualifier the reference was written with: a tags
+    /// query's `@qualifier.path` or `@qualifier.member` capture, else the text before the leaf of
+    /// a chained `@name` (`Ns` of `Ns.IShape`), and for a Rust call the one the Rust rule reads
+    /// off the tree around its name (`Store` of `Store::open()`, `B` of `C::f()` under `use a::B
+    /// as C`, the enclosing impl's type or the trait of `self.file()`). `name` above stays the
+    /// bare leaf. `None` for a reference written bare and for a Rust call the rule qualifies by
+    /// nothing (`self.inner.open()`).
+    /// Serde-defaulted and omitted when `None`, so an unqualified reference serializes
+    /// byte-identically to before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qualifier: Option<Qualifier>,
+}
+
+/// A reference's qualifier (spec 117, CAPTURES): its text, and whether it is a path (`Shape` of
+/// `Shape::area`) or a member access (`Shape` of `Shape.area`). The facts layer writes the
+/// mention's name from it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Qualifier {
+    pub name: String,
+    pub path: bool,
 }
 
 /// One file's extracted symbols, tagged with the language it was parsed as (the scope key for
@@ -209,6 +234,13 @@ pub struct FileSymbols {
     /// before this field existed.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub partial: bool,
+    /// Spec 117 (DOC FACTS): the file's doc span, the 1-based inclusive lines from its first doc
+    /// line to its last - the lines the `@doc` capture of the first query match that tags nothing
+    /// covers (a Python module docstring), else, in Rust, the inner doc lines the file opens with
+    /// ([`crate::grounder::symbols::extract::extract`] sets it); `None` when it has none.
+    /// Serde-defaulted and omitted when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc: Option<(u32, u32)>,
 }
 
 impl FileSymbols {
@@ -221,22 +253,103 @@ impl FileSymbols {
     }
 }
 
-/// The version of the grammar / tag-query set this build extracts with (architecture 5.5.3),
-/// stamped into unit 3's `BlastRadiusComputed` audit event (via `Symbols::blast_radius_stamped`) so a
-/// recorded radius names the tag-query generation that produced it, and part of the code store's
-/// extractor fingerprint, so a snapshot written under another set is not trusted. Bump it when a
-/// shipped grammar or an authored tags query changes, so a radius computed under an older grammar
-/// set is distinguishable on replay from one the current set would produce (gap 104); so does a
-/// change to what extraction records under an unchanged query, the caller a reference carries
-/// (`SymRef::enclosing`) and a definition's parent (`Def::parent`) included: `ts-tags-v4` is
-/// spec 119's one bump, and `ts-tags-v5` is spec 117's, at the tagged references
-/// (`SymRef::ref_kind`: const reads, type references and the leaves a `use` imports) and the
-/// test regions and impl-header callers they take. The registry's golden test
-/// `an_extraction_change_ships_with_a_grammar_tags_version_bump` pins this tag beside the digest
-/// of a fixed extraction, so a change to what extraction records fails it until the tag is bumped
-/// and the pair re-pinned together. Parser-free, so it lives in the model both feature lanes
-/// compile.
-pub const GRAMMAR_TAGS_VERSION: &str = "ts-tags-v5";
+// Each registry entry's tags generation, a literal its own macro names. The entry's const and
+// `GRAMMAR_TAGS_VERSION`'s `concat!` both expand the macro, since `concat!` takes literals alone,
+// so the literal is spelled once; `GRAMMAR_TAGS_VERSION`'s doc says when one is bumped.
+
+macro_rules! rust_tags_generation {
+    () => {
+        "rust-tags-v12"
+    };
+}
+
+macro_rules! csharp_tags_generation {
+    () => {
+        "csharp-tags-v6"
+    };
+}
+
+macro_rules! ts_tags_generation {
+    () => {
+        "typescript-tags-v7"
+    };
+}
+
+macro_rules! tsx_tags_generation {
+    () => {
+        "tsx-tags-v7"
+    };
+}
+
+macro_rules! js_tags_generation {
+    () => {
+        "javascript-tags-v7"
+    };
+}
+
+macro_rules! go_tags_generation {
+    () => {
+        "go-tags-v4"
+    };
+}
+
+macro_rules! python_tags_generation {
+    () => {
+        "python-tags-v2"
+    };
+}
+
+/// The tags generation of the Rust registry entry (`.rs`).
+pub const RUST_TAGS_GENERATION: &str = rust_tags_generation!();
+
+/// The tags generation of the C# registry entry (`.cs`).
+pub const CSHARP_TAGS_GENERATION: &str = csharp_tags_generation!();
+
+/// The tags generation of the TypeScript registry entry (`.ts`).
+pub const TS_TAGS_GENERATION: &str = ts_tags_generation!();
+
+/// The tags generation of the TSX registry entry (`.tsx`).
+pub const TSX_TAGS_GENERATION: &str = tsx_tags_generation!();
+
+/// The tags generation of the JavaScript registry entry (`.js`, `.mjs`, `.cjs`, `.jsx`).
+pub const JS_TAGS_GENERATION: &str = js_tags_generation!();
+
+/// The tags generation of the Go registry entry (`.go`).
+pub const GO_TAGS_GENERATION: &str = go_tags_generation!();
+
+/// The tags generation of the Python registry entry (`.py`).
+pub const PYTHON_TAGS_GENERATION: &str = python_tags_generation!();
+
+/// The version of the grammar / tag-query set this build extracts with (architecture 5.5.3):
+/// every registry entry's tags generation, joined by `,` in the registry's order, so a bump of
+/// any one entry's generation moves it. Stamped into unit 3's `BlastRadiusComputed` audit event
+/// (via `Symbols::blast_radius_stamped`) so a recorded radius names the tag-query generations
+/// that produced it, and part of the code store's extractor fingerprint, so a snapshot written
+/// under another set is not trusted. An entry's generation is bumped when its shipped grammar,
+/// its authored tags query or what extraction records from its files under an unchanged query
+/// changes, the caller a reference carries (`SymRef::enclosing`) and a definition's parent
+/// (`Def::parent`) included, so a radius computed under an older grammar set is distinguishable
+/// on replay from one the current set would produce (gap 104). The registry's golden test
+/// `an_extraction_change_ships_with_a_grammar_tags_version_bump` pins each entry's generation
+/// beside the digest of its fixtures' extraction, so a change to what one language's extraction
+/// records fails that language's row until its generation is bumped and the row re-pinned
+/// together, and holds this value equal to its table's generations joined in order. Parser-free,
+/// so it lives in the model both feature lanes compile.
+pub const GRAMMAR_TAGS_VERSION: &str = concat!(
+    rust_tags_generation!(),
+    ",",
+    csharp_tags_generation!(),
+    ",",
+    ts_tags_generation!(),
+    ",",
+    tsx_tags_generation!(),
+    ",",
+    js_tags_generation!(),
+    ",",
+    go_tags_generation!(),
+    ",",
+    python_tags_generation!(),
+);
 
 /// The whole-project index, held in memory while an emit pass lowers it. Deterministic containers
 /// only (`BTreeMap`): iterating it is stable across processes, unlike a `HashMap` whose
@@ -308,6 +421,7 @@ mod tests {
                 is_out_of_line_module: false,
                 path_override: None,
                 enclosing_inline_module_path: None,
+                doc: Some((5, 6)),
             }],
             refs: vec![SymRef {
                 name: "clamp".into(),
@@ -315,11 +429,67 @@ mod tests {
                 enclosing: None,
                 is_test: false,
                 ref_kind: None,
+                qualifier: Some(Qualifier {
+                    name: "Health".into(),
+                    path: true,
+                }),
             }],
             partial: false,
+            doc: Some((1, 2)),
         };
         let json = serde_json::to_string(&file).expect("model serializes with plain serde");
         let back: FileSymbols = serde_json::from_str(&json).expect("model round-trips");
         assert_eq!(back, file);
+    }
+
+    /// Spec 117 (DOC FACTS): a definition's and a file's doc span serialize as the `[first, last]`
+    /// line pair, are omitted when there is none, and read back from that wire form, a record
+    /// with no `doc` key reading as no span.
+    #[test]
+    fn a_doc_span_is_its_line_pair_on_the_wire_and_omitted_when_none() {
+        // (the file's span, the definition's span, the file's wire form)
+        let rows = [
+            (
+                None,
+                None,
+                r#"{"lang":"Rust","defs":[{"kind":"Function","name":"f","line":3,"end_line":4,"path":"f"}],"refs":[]}"#,
+            ),
+            (
+                Some((1, 1)),
+                Some((2, 2)),
+                r#"{"lang":"Rust","defs":[{"kind":"Function","name":"f","line":3,"end_line":4,"path":"f","doc":[2,2]}],"refs":[],"doc":[1,1]}"#,
+            ),
+        ];
+        for (file_doc, def_doc, json) in rows {
+            let file = FileSymbols {
+                lang: Lang::Rust,
+                defs: vec![Def {
+                    kind: Kind::Function,
+                    name: "f".into(),
+                    line: 3,
+                    end_line: 4,
+                    path: "f".into(),
+                    parent: None,
+                    is_test: false,
+                    is_out_of_line_module: false,
+                    path_override: None,
+                    enclosing_inline_module_path: None,
+                    doc: def_doc,
+                }],
+                refs: Vec::new(),
+                partial: false,
+                doc: file_doc,
+            };
+            assert_eq!(
+                serde_json::to_string(&file).expect("the file serializes"),
+                json,
+                "{file_doc:?} {def_doc:?}"
+            );
+            assert_eq!(
+                serde_json::from_str::<FileSymbols>(json).expect("the wire form reads back"),
+                file,
+                "{file_doc:?} {def_doc:?}"
+            );
+        }
     }
 }

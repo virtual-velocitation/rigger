@@ -151,7 +151,7 @@ flowchart TB
     COND["conductor<br/>(execute the DAG . sole state writer)"]
     LEDGER["ledger / projector<br/>(durable run state)"]
     GATES["gate engine<br/>(run . ratchet . autonomy)"]
-    SAFE["safety<br/>(budget . remediate . escalate)"]
+    SAFE["safety<br/>(remediate . escalate)"]
     LOADER --> COND
     COND --- LEDGER & GATES & SAFE
   end
@@ -334,8 +334,7 @@ just entries in a project's `gates:` map. Rigger ships **zero** gates.
 A fixed pipeline bakes one team's process into the tool. Rigger's `conductor::run`
 (`crates/rigger-conductor/src/conductor.rs`) instead executes whatever DAG the workflow YAML declares: it
 topo-sorts the stages, runs the ready set wave by wave (independent stages concurrently),
-defers the coverage gate past a `produces` planner stage, trips the budget breaker before
-each wave, and projects the final `RunState`. The canonical pipeline above is simply the
+defers the coverage gate past a `produces` planner stage, and projects the final `RunState`. The canonical pipeline above is simply the
 *default* workflow shipped as an example.
 
 **Review and integration are per UNIT, inside each unit's lifecycle.** Every implementer
@@ -440,7 +439,7 @@ human.
 
 ### 4.4 Safety rails and recovery
 
-`checkBudget` (token/time circuit-breaker -> pause), `remediate` (bounded retry with
+`remediate` (bounded retry with
 re-grounding -> escalate after N), `flagSpecDefect` (halt + amend the spec, don't
 deviate), `abortTask` (discard un-integrated worktrees, keep integrated). Never silent,
 never infinite.
@@ -469,7 +468,7 @@ because decisions, review findings, and hard-won lessons evaporate with the sess
 produced them. The memory layer removes both failure modes. The model, in one line:
 **agents append immutable events to a log; a projector folds the log into a bi-temporal
 knowledge graph; agents retrieve their connected subgraph, pull deeper facts on demand,
-and subscribe for in-flight decisions.**
+and read their peers' decisions on each call.**
 
 ### 5.1 The event store: the log is the source of truth
 
@@ -496,8 +495,8 @@ pub trait EventStore: Send + Sync {
     fn read_all(&self, from: Position, dir: Direction, filter: &Filter)
         -> Result<Vec<Event>, Error>;
 
-    /// Open a catch-up subscription over the global log: replay matching events from
-    /// `from`, then deliver new ones live (the live-awareness mechanism).
+    /// Open a catch-up subscription over the global log: replay matching events after
+    /// `from` (exclusive), then deliver new ones live.
     fn subscribe_all(&self, from: Position, filter: &Filter) -> Result<Subscription, Error>;
 
     /// Open a catch-up subscription over one stream from a revision.
@@ -840,17 +839,19 @@ flowchart LR
   E ==>|append| LOG[("event log<br/>global order, bi-temporal")]
   LOG ==>|projector folds| CG[("knowledge graph")]
   CG ==>|FEED: scoped subgraph + on-demand pull| R
-  LOG -. "subscribe_all(filter=my blast-radius)<br/>live: see a peer's in-flight decision" .-> W
+  LOG -. "rigger peers(my files)<br/>one read per call: see a peer's recorded decision" .-> W
 ```
 
-**Live awareness, concretely.** An agent's run is wrapped by a **side-car**
-(`sidecar::Sidecar`) that holds a `subscribe_all` catch-up subscription, draining matching
-`DecisionMade` events in a background thread and keeping only the peer decisions whose
-`governs` files intersect the agent's blast-radius. A concurrent agent's in-flight decision
-about a shared file reaches the agent **before its next action**, without touching the
-agent's files: isolation guards the *files* (worktree), the event stream is the *separate
-shared decision channel*. The two are orthogonal - the insight that makes live awareness
-safe.
+**Live awareness, concretely.** Each `rigger peers` call, and each MCP `rigger_peers` call,
+is one read of the run's peer records (`sidecar::Sidecar::read`): the current run's events
+from its boundary and every run's carried-over decisions, lessons and findings. A call that
+names files is scoped to the records whose files (a decision's `governs`, a finding's or
+lesson's `about`) intersect them; a call that names no files is scoped to every record. The
+reply keeps the best-ranked of those records under one size budget (`mcpserver::peers_json`)
+and counts the ones it leaves out. A concurrent agent's decision about
+a shared file reaches the agent **at its next peers call**, without touching the agent's
+files: isolation guards the *files* (worktree), the event log is the *separate shared
+decision channel*. The two are orthogonal - the insight that makes live awareness safe.
 
 ### 5.7 Grounding: structural, and pulled rather than pushed
 
@@ -910,8 +911,8 @@ pub struct SpawnOpts {
 }
 ```
 
-The conductor fills `blast_radius` from the same grounding it seeds the prompt with, so the
-side-car filters peer decisions against exactly the files the agent was grounded on.
+The conductor fills `blast_radius` from the same grounding it seeds the prompt with and
+carries it onto the parked spawn request (`SpawnRequest.blast_radius`).
 
 - **`claude_code` (default, self-contained).** `rigger run` builds
   `driver::claude_code::Driver` at its composition root. It hosts each agent as a headless `claude` session over the stream-json protocol and
@@ -1047,7 +1048,6 @@ structurally.
 | An unreadable secret file or config | Surfaces LOUDLY; never a silent fall-through to the sqlite default that would fracture the run's store |
 | Server backend unreachable | Fail fast at startup with a clear (redacted) error; the `sqlite` default never has this failure mode |
 | Gate command itself errors (not just fails) | Gate engine wraps the run; a throwing command -> `{pass:false, evidence:"gate errored: ..."}`; never crashes the loop |
-| Budget exhausted mid-run | `checkBudget` circuit-breaker pauses; resume by replaying the ledger projection |
 
 ---
 
@@ -1138,7 +1138,7 @@ Where each responsibility lives, and the design move that keeps it project-agnos
 | `conductor` | executes the workflow DAG: planning, waves, the per-unit lifecycle, remediation, recovery | the pipeline is declared in YAML, never hardcoded |
 | `ledger` | per-unit run state | a pure fold over the event log - never a second source of truth |
 | `gate` | the verification library + the per-gate autonomy ratchet | a gate is any command that must exit 0; rigor is config |
-| `safety` | spawn-budget circuit breaker, bounded retry, escalation | every bound is config, never a constant |
+| `safety` | bounded retry, escalation | every bound is config, never a constant |
 | `grounder` | seeds each agent with exactly the code it needs | pluggable: `symbols` (structural; the default), `grep`, `nop` (explicit opt-outs) |
 | `eventstore` | the append-only log + the two backends + redaction | one trait; the backend is chosen by store resolution, not a recompile |
 | `contextgraph` + `community` + `concepts` | the knowledge graph: code + design + decisions, its derivations, and the directed-call traversal | a rebuildable bi-temporal projection of the log; derivations are event-sourced |
@@ -1213,7 +1213,7 @@ Where each responsibility lives, and the design move that keeps it project-agnos
 | **Lens** | one of three altitudes the inspector reads the graph at (`concepts`, `code`, `files`) |
 | **Store resolution** | the single authority that selects the event-store backend from config |
 | **Driver** | the pluggable agent-spawning backend (`claude_code` \| `workflow`) |
-| **Side-car** | the per-agent subscription that delivers in-flight cross-agent decisions |
+| **Side-car** | one read of a run's peer records, which `rigger peers` and MCP `rigger_peers` scope to the caller's files |
 
 ---
 

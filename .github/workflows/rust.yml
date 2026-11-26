@@ -160,11 +160,13 @@ jobs:
         run: cargo test -p rigger-store-sqlite --no-default-features eventstore::kurrentdb
 
   # The cross-OS check (spec 125): the workspace compiles on Windows and on macOS, one leg per OS.
-  # No job runs a test there: this check is the compile of the macOS and Windows adapters. The check
-  # step runs under bash on every runner and exports an empty RUSTC_WRAPPER in its own shell, so
-  # cargo and any cargo it starts run no wrapper: .cargo/config.toml names a Unix shell script as
-  # its wrapper, and an empty environment value overrides it. The build script's version
-  # derivation degrades to `+unversioned` without go-gitsemver, so the job installs nothing else.
+  # This check is the compile of the macOS and Windows adapters; the one suite it runs there,
+  # bare_rigger_hooks_resolve_periphery, proves an exec-form hook's bare `rigger` runs the binary
+  # PATH holds, `rigger.exe` on Windows. The step runs under bash on every runner and exports an
+  # empty RUSTC_WRAPPER in its own shell, so cargo and any cargo it starts run no wrapper:
+  # .cargo/config.toml names a Unix shell script as its wrapper, and an empty environment value
+  # overrides it. The build script's version derivation degrades to `+unversioned` without
+  # go-gitsemver, so the job installs nothing else.
   cross-os-check:
     strategy:
       # A red leg never cancels the other, so each OS reports its own errors in the one run.
@@ -172,6 +174,9 @@ jobs:
       matrix:
         os: [windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    env:
+      # The suite's test build compiles the dev profile; line tables keep a panic's file:line.
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
     steps:
       - uses: actions/checkout@v4
         with:
@@ -183,8 +188,9 @@ jobs:
           # Spec 93 criterion 3: `cargo check` runs crates/rigger-dash's build script, which
           # cross-compiles crates/console-core for this target.
           targets: wasm32-unknown-unknown
-      - name: check the workspace
+      - name: check the workspace and run the cross-OS suite
         shell: bash
         run: |
           export RUSTC_WRAPPER=
           cargo check --workspace
+          cargo test -p rigger --test bare_rigger_hooks_resolve_periphery

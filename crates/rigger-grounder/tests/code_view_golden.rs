@@ -4,16 +4,20 @@
 
 #![cfg(all(feature = "symbols", any(feature = "store", not(feature = "core"))))]
 
+extern crate rigger_grounder as rigger;
+
 use std::path::{Path, PathBuf};
 
 use rigger_domain::code_facts::{Stamp, Tip};
 use rigger_domain::code_graph::CodeGraph;
-use rigger_domain::code_view::{Entry, Extract, FactsView, ViewFilter};
+use rigger_domain::code_view::{Extract, FactsView, ViewFilter};
 use rigger_domain::contextgraph::Graph;
 use rigger_grounder::facts::FactsExtractor;
 
 #[path = "../../../tests/common/fixtures/resolver_tree.rs"]
 mod resolver_tree;
+#[path = "../../../tests/common/symbol_index.rs"]
+mod symbol_index;
 
 use resolver_tree::RESOLVER_TREE as TREE;
 
@@ -61,11 +65,7 @@ fn viewed(root: &Path) -> FactsView {
         .iter()
         .map(|(path, _)| {
             let bytes = std::fs::read(root.join(path)).unwrap();
-            let entry = Entry {
-                path: path.to_string(),
-                blob: String::new(),
-            };
-            FactsExtractor.extract(&entry, &bytes)
+            symbol_index::facts_of(&FactsExtractor, path, &bytes)
         })
         .collect();
     let stamp = Stamp {
@@ -82,17 +82,66 @@ fn viewed(root: &Path) -> FactsView {
 
 /// The departures the code store states from the fold's graph: each row names one, with the
 /// golden lines it drops and the lines it adds.
-const DEPARTURES: &[(&str, &[&str], &[&str])] = &[(
-    "a test call from a file in the test-module closure proves the product definition it calls",
-    &[
-        "node src/shapes.rs::origin [code-entity] kind=function lang=rust line=16 name=origin",
-        "node src/util.rs::compute [code-entity] kind=function lang=rust line=3 name=compute",
-    ],
-    &[
-        r#"node src/shapes.rs::origin [code-entity] kind=function lang=rust line=16 name=origin proof_evidence=["src/lib_tests/more.rs:2"] proven_by=1"#,
-        r#"node src/util.rs::compute [code-entity] kind=function lang=rust line=3 name=compute proof_evidence=["src/lib_tests.rs:5"] proven_by=1"#,
-    ],
-)];
+const DEPARTURES: &[(&str, &[&str], &[&str])] = &[
+    (
+        "a test call from a file in the test-module closure proves the product definition it calls",
+        &[
+            "node src/shapes.rs::origin [code-entity] kind=function lang=rust line=16 name=origin",
+            "node src/util.rs::compute [code-entity] kind=function lang=rust line=3 name=compute",
+        ],
+        &[
+            r#"node src/shapes.rs::origin [code-entity] kind=function lang=rust line=16 name=origin proof_evidence=["src/lib_tests/more.rs:2"] proven_by=1"#,
+            r#"node src/util.rs::compute [code-entity] kind=function lang=rust line=3 name=compute proof_evidence=["src/lib_tests.rs:5"] proven_by=1"#,
+        ],
+    ),
+    (
+        "a file no declaration reaches places its modules as a crate root does (spec 117, MODULE \
+         ROOTS AT READ)",
+        &[
+            "edge src/twins.rs::left::leaf -CONTAINS/extracted-> src/twins/left/leaf.rs",
+            "edge src/twins.rs::right::leaf -CONTAINS/extracted-> src/twins/right/leaf.rs",
+        ],
+        &[],
+    ),
+    (
+        "a call inside a macro's token tree is read, so a test's call inside `assert_eq!` proves \
+         the product definition it calls (spec 117, MACRO TOKEN TREES)",
+        &[
+            r#"node src/lib.rs::helper [code-entity] kind=function lang=rust line=26 name=helper proof_evidence=["src/lib.rs:39"] proven_by=1"#,
+        ],
+        &[
+            r#"node src/lib.rs::helper [code-entity] kind=function lang=rust line=26 name=helper proof_evidence=["src/lib.rs:39","src/lib.rs:40"] proven_by=2"#,
+        ],
+    ),
+    (
+        "an impl header's trait and self type are `impl` mentions the impl encloses, never calls, \
+         and a prelude trait such as `Default` stages none (spec 117, RUST TAGS IMPL HEADERS)",
+        &[
+            "edge src/shapes.rs -REFERENCES/ambiguous-> src/shapes.rs::%Default",
+            "edge src/shapes.rs::impl Default for Shape -CALLS/ambiguous-> src/shapes.rs::%Default",
+            "edge src/shapes.rs::impl Default for Shape -CALLS/extracted-> src/shapes.rs::Shape",
+            "edge src/shapes.rs::impl Shape -CALLS/extracted-> src/shapes.rs::Shape",
+            "node src/shapes.rs::%Default [code-entity] ",
+        ],
+        &[
+            "edge src/shapes.rs::impl Default for Shape -REFERENCES/extracted-> src/shapes.rs::Shape",
+            "edge src/shapes.rs::impl Shape -REFERENCES/extracted-> src/shapes.rs::Shape",
+        ],
+    ),
+    (
+        "a call qualified by a type reaches the method the type's impl defines, the impl \
+         mentioning its self type (spec 117, RUST TAGS IMPL HEADERS)",
+        &[
+            "edge src/lib.rs -REFERENCES/inferred-> src/lib.rs::%new",
+            "edge src/lib.rs::run -CALLS/inferred-> src/lib.rs::%new",
+            "node src/lib.rs::%new [code-entity] ",
+        ],
+        &[
+            "edge src/lib.rs -REFERENCES/extracted-> src/shapes.rs::Shape::new",
+            "edge src/lib.rs::run -CALLS/extracted-> src/shapes.rs::Shape::new",
+        ],
+    ),
+];
 
 /// The golden with every departure applied.
 fn departed(golden: &str) -> String {

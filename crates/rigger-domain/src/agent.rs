@@ -29,7 +29,10 @@ pub const SPAWN_BOUND_TOOLS: [&str; 3] = [
 #[error("conductor: {0}")]
 pub struct Error(pub String);
 
-/// Each listed error converts into a conductor [`Error`] carrying its display text.
+/// Each listed error converts into a conductor [`Error`] carrying its display text. The worktree
+/// errors are not listed: a worktree result reaches a conductor error only through the
+/// conductor's one git step, which marks a conductor fault as a halt and a refusal the unit's own
+/// work caused as the stage's failure.
 macro_rules! error_from_display {
     ($($source:ty),+) => {
         $(
@@ -41,11 +44,7 @@ macro_rules! error_from_display {
         )+
     };
 }
-error_from_display!(
-    crate::eventstore::Error,
-    crate::worktree::Error,
-    serde_json::Error
-);
+error_from_display!(crate::eventstore::Error, serde_json::Error);
 
 /// What an agent returns when it finishes.
 #[derive(Clone, Debug, Default)]
@@ -89,6 +88,10 @@ pub struct SpawnHost {
     /// its order: the operator's copy under `.claude/agents/` where the checkout holds one, else
     /// the embedded text.
     pub helpers: Vec<HelperCopy>,
+    /// The one directory, relative to the tree's root and ending in `/`, a producer's commits
+    /// may touch: the project's declared specs location, which a producer's `Stop` hook and the
+    /// conductor's landing of its commits each take as the stage's output.
+    pub producer_output: String,
 }
 
 /// One fan-out helper's definition as a spawn host resolved it.
@@ -203,6 +206,50 @@ pub struct SpawnOpts {
     /// with [`resumed_from`](Self::resumed_from); a host whose resume finds no such session
     /// falls back to a fresh launch with the full `prompt`.
     pub resume_task: String,
+    /// What a session host's relaunch of this spawn's interrupted launch sends after its
+    /// interruption note and ahead of any [`resume_task`](Self::resume_task) it carries: what
+    /// the conductor learned since that launch began, which the forked session never saw. Sent
+    /// once: a relaunch whose carried task already holds it sends only that task. A launch that
+    /// is no relaunch ignores it; empty sends nothing.
+    pub relaunch_task: String,
+    /// What the conductor takes from this spawn's worktree ([`dir`](Self::dir)) once its session
+    /// ends. Set at the conductor's writing spawn sites alone; [`TreeDuty::None`] everywhere
+    /// else. A session host that installs per-spawn hooks gives a spawn with a duty a `Stop` hook
+    /// (`rigger hook stop`) asking whether the tree is one that step takes, so the session that
+    /// left it otherwise fixes it before it ends.
+    pub tree_duty: TreeDuty,
+}
+
+/// What the conductor takes from a writing spawn's worktree once the spawn's session ends, which
+/// is what that session's `Stop` hook asks of the tree before the session may stop.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum TreeDuty {
+    /// Nothing is taken from the tree: a reviewer, or a spawn with no worktree. No `Stop` hook.
+    #[default]
+    None,
+    /// The conductor commits the whole tree onto `branch` - the attempt's checkpoint, or the
+    /// conflict resolution's merge and the checkpoint after it - so the hook asks whether that
+    /// commit, or the merge before it, would be refused.
+    Checkpoint { branch: String },
+    /// The conductor lands only the commits the session made in the tree - a producer's - and
+    /// never commits the tree itself, so the hook asks whether work of the producer's output,
+    /// the only work that lands, is left outside a commit.
+    OwnCommits {
+        /// The producer's output: [`SpawnHost::producer_output`].
+        output: String,
+    },
+}
+
+/// Whether `path`, relative to the tree's root, lies in the producer's `output`
+/// ([`SpawnHost::producer_output`]), a directory relative to the same root named with or without
+/// its closing `/`: the scope decision the conductor refuses a producer's commits on. A
+/// producer's `Stop` hook holds its session on the same scope, read as git's pathspec for that
+/// directory, since git's status names a directory it tracks nothing in by that directory alone:
+/// only uncommitted work in the output, the only work that lands, holds it.
+pub fn in_producer_output(path: &str, output: &str) -> bool {
+    let dir = output.trim_end_matches('/');
+    path.strip_prefix(dir)
+        .is_some_and(|rest| rest.starts_with('/'))
 }
 
 impl SpawnOpts {
@@ -228,6 +275,8 @@ impl SpawnOpts {
             host,
             resumed_from: String::new(),
             resume_task: String::new(),
+            relaunch_task: String::new(),
+            tree_duty: TreeDuty::None,
         }
     }
 }
@@ -386,6 +435,9 @@ pub enum Disposition {
     Wait,
     /// The category never holds: the error takes its spawn site's existing path.
     Fault,
+    /// The API refused the request as the conductor built it: the conductor's fault, so the run
+    /// holds as on a [`CONDUCTOR_FAULT`] and the close counts toward no outage.
+    Rejected,
 }
 
 /// One row of the disposition table: what a category does to the run, the action a hold of it
@@ -400,13 +452,29 @@ pub struct DispositionRow {
     /// Whether a probe of a hold of this cause reads the login (`claude auth status`) before
     /// its canary: a logged-out answer is the cause itself, so no canary runs.
     pub credential: bool,
+    /// Whether a probe can release a hold of this cause (spec 105 RELEASE): `false` for a cause
+    /// whose hold only `rigger release` ends and for a category that never holds.
+    pub probed: bool,
 }
 
 impl DispositionRow {
     /// Whether a session that ended of this category waits on the run, a hold or a wait row,
-    /// rather than failing its spawn as a fault row does.
+    /// rather than failing its spawn as a fault or a rejected row does.
     pub fn waits(&self) -> bool {
-        self.disposition != Disposition::Fault
+        matches!(self.disposition, Disposition::Hold | Disposition::Wait)
+    }
+
+    /// Whether a hold of this row is for the orchestrator first (spec 105): it holds, needs no
+    /// person and no probe ends it, so the orchestrator's fix and its `rigger release` do, and
+    /// the same fault again after a release goes to a person ([`FAULT_RECURRED`]).
+    pub fn for_orchestrator(&self) -> bool {
+        self.disposition == Disposition::Hold && !self.needs_person && !self.probed
+    }
+
+    /// Whether a hold of this row asks someone to act: it needs a person or it is for the
+    /// orchestrator ([`DispositionRow::for_orchestrator`]). Only such a cause moves an open hold.
+    pub fn asks(&self) -> bool {
+        self.needs_person || self.for_orchestrator()
     }
 }
 
@@ -417,6 +485,56 @@ pub const API_UNSTABLE: &str = "api-unstable";
 /// The cause of the hold `rigger hold` appends: the operator holds the run, giving a reason.
 pub const OPERATOR: &str = "operator";
 
+/// The cause of the hold the conductor appends on a fault of its own that ends the run's drive, a
+/// spawn the API refused included: the fault, not a unit's work, stopped the run. Its row holds it
+/// for the orchestrator, the session that launched the run and watches it, which fixes the cause
+/// at its root and releases the run; [`FAULT_RECURRED`] and [`FAULT_ON_A_PERSONS_HOLD`] hold it
+/// for a person instead.
+pub const CONDUCTOR_FAULT: &str = "conductor-fault";
+
+/// A hold for the orchestrator ([`DispositionRow::for_orchestrator`]) held for a person instead:
+/// a hold its run released held it on the same fault, so the orchestrator's fix did not hold.
+pub const FAULT_RECURRED: DispositionRow = DispositionRow {
+    action: "the orchestrator's fix did not hold: a person decides, then runs rigger release",
+    needs_person: true,
+    ..CONDUCTOR_FAULT_ROW
+};
+
+/// A hold for the orchestrator held for a person instead: it landed on an open hold that already
+/// waits on one, so its release stays theirs.
+pub const FAULT_ON_A_PERSONS_HOLD: DispositionRow = DispositionRow {
+    action: "a person holds this run: they read the fault, decide, then run rigger release",
+    needs_person: true,
+    ..CONDUCTOR_FAULT_ROW
+};
+
+/// A conductor-fault hold of a unit's own work git refused (a checkpoint commit, the merge of the
+/// run branch into its worktree), held for the orchestrator: the unit was charged the attempt the
+/// refusal ended, so its release retries the unit with the refusal in its next prompt.
+pub const UNIT_WORK_REFUSED: DispositionRow = for_the_orchestrator(
+    "git refused a unit's own work, the refusal in the fault rigger status prints under this \
+     hold: rigger release retries the unit with it; fix the tree first only if the fault shows \
+     no agent session can change it",
+);
+
+/// The conductor-fault row: held for the orchestrator, which reads the fault `rigger status`
+/// prints under the hold, fixes its cause and releases the run.
+const CONDUCTOR_FAULT_ROW: DispositionRow = for_the_orchestrator(
+    "read the fault rigger status prints under this hold, fix its cause at the root, then run \
+     rigger release",
+);
+
+/// The row of a hold for the orchestrator naming `action`: no person first, no probe ends it.
+const fn for_the_orchestrator(action: &'static str) -> DispositionRow {
+    DispositionRow {
+        disposition: Disposition::Hold,
+        action,
+        needs_person: false,
+        credential: false,
+        probed: false,
+    }
+}
+
 /// The action of a hold that clears without anyone: a wait-class category's and `api-unstable`'s.
 const RETRIES_BY_ITSELF: &str = "none, the run retries by itself";
 
@@ -425,6 +543,7 @@ const WAITS: DispositionRow = DispositionRow {
     action: RETRIES_BY_ITSELF,
     needs_person: false,
     credential: false,
+    probed: true,
 };
 
 const FAULTS: DispositionRow = DispositionRow {
@@ -432,30 +551,42 @@ const FAULTS: DispositionRow = DispositionRow {
     action: "",
     needs_person: false,
     credential: false,
+    probed: false,
 };
 
-/// The row a hold of `action` reads, every category that holds on sight needing a person.
+const REJECTED: DispositionRow = DispositionRow {
+    disposition: Disposition::Rejected,
+    ..FAULTS
+};
+
+/// The row a hold of `action` reads that a person resolves first, a probe ending it once their
+/// act has cleared its cause.
 const fn holds(action: &'static str) -> DispositionRow {
     DispositionRow {
         disposition: Disposition::Hold,
         action,
         needs_person: true,
         credential: false,
+        probed: true,
     }
 }
 
-/// The disposition table's row for a hold's `cause`: `api-unstable`'s, `operator`'s, or the
-/// category's. The `operator` row needs a person and names no action: no row can hold a per-hold
-/// reason, so `rigger hold`'s append puts its reason in the action over the row's.
+/// The disposition table's row for a hold's `cause`: `api-unstable`'s, `operator`'s,
+/// `conductor-fault`'s, or the category's. The `operator` row needs a person, names no action and
+/// is never probed: no row can hold a per-hold reason, so `rigger hold`'s append puts its reason
+/// in the action over the row's. The `conductor-fault` row is held for the orchestrator, the fault
+/// its detail.
 pub fn cause_row(cause: &str) -> DispositionRow {
     match cause {
         API_UNSTABLE => DispositionRow {
             disposition: Disposition::Hold,
-            action: RETRIES_BY_ITSELF,
-            needs_person: false,
-            credential: false,
+            ..WAITS
         },
-        OPERATOR => holds(""),
+        OPERATOR => DispositionRow {
+            probed: false,
+            ..holds("")
+        },
+        CONDUCTOR_FAULT => CONDUCTOR_FAULT_ROW,
         category => AgentFailure::from_category(category).row(),
     }
 }
@@ -514,6 +645,12 @@ impl AgentFailure {
             .unwrap_or(AgentFailure::Unknown)
     }
 
+    /// Whether the API refused the request as the conductor built it: this category's row
+    /// rejects ([`Disposition::Rejected`]).
+    pub fn is_rejected(self) -> bool {
+        self.row().disposition == Disposition::Rejected
+    }
+
     /// This category's row of the disposition table (spec 105): THE one table, beside the enum
     /// so a new category cannot compile without one.
     pub fn row(self) -> DispositionRow {
@@ -528,14 +665,13 @@ impl AgentFailure {
             AgentFailure::BillingError => holds("fix the account's billing"),
             AgentFailure::AccountOnHold => holds("resolve the account's hold"),
             AgentFailure::VerificationRequired => holds("complete the account's verification"),
-            AgentFailure::ModelNotFound => holds(
+            AgentFailure::ModelNotFound => for_the_orchestrator(
                 "fix the agent's configured model, restart rigger run with --rebase-definition, \
                  then run rigger release",
             ),
             AgentFailure::RateLimit | AgentFailure::Overloaded | AgentFailure::ServerError => WAITS,
-            AgentFailure::InvalidRequest
-            | AgentFailure::MaxOutputTokens
-            | AgentFailure::Unknown => FAULTS,
+            AgentFailure::InvalidRequest => REJECTED,
+            AgentFailure::MaxOutputTokens | AgentFailure::Unknown => FAULTS,
         }
     }
 }
@@ -595,8 +731,8 @@ pub fn launch_interrupted(class: AgentFailure, message: String) -> Error {
 /// the [`STORE_FAULT_MARKER`] heading a [`store_fault`] (each dropped here because its readers -
 /// the held-run decorator for the first, the implementer's attempt arm and the refused record's
 /// re-run for the second, the held-run decorator and the conflict resolver for the third - match
-/// it before this strip runs, while `PARKED_MARKER` and `BUDGET_MARKER` pass through untouched, since
-/// callers upstream still branch on them).
+/// it before this strip runs, while `PARKED_MARKER` passes through untouched, since
+/// callers upstream still branch on it).
 /// Unlike `PARKED_MARKER`/`PLAN_LANDING_MARKER`/`LAND_REFUSED_MARKER` - bare prefixes a plain
 /// `.replace(MARKER, "")` cleans - [`FAILURE_MARKER`] brackets DATA (the class name) that
 /// the message ALSO repeats in prose (`no_result_error`'s own "class {class}"), so a bare
@@ -718,23 +854,25 @@ mod tests {
     }
 
     /// THE DISPOSITION TABLE (spec 105): every category, by its wire name, maps to the disposition,
-    /// the action and the need for a person decided for it, and whether it is a credential
-    /// category whose probe reads the login first; a name no binary knows faults as `unknown` does.
+    /// the action and the need for a person decided for it, whether it is a credential category
+    /// whose probe reads the login first and whether a probe ends its hold; a name no binary knows
+    /// faults as `unknown` does. `model_not_found` alone is for the orchestrator first.
     #[test]
     fn every_category_maps_to_its_decided_disposition_action_and_person() {
-        use Disposition::{Fault, Hold, Wait};
-        let rows: [(&str, Disposition, &str, bool, bool); 14] = [
-            ("rate_limit", Wait, RETRIES, false, false),
-            ("overloaded", Wait, RETRIES, false, false),
-            ("server_error", Wait, RETRIES, false, false),
-            ("authentication_failed", Hold, LOGIN, true, true),
-            ("oauth_org_not_allowed", Hold, LOGIN, true, true),
+        use Disposition::{Fault, Hold, Rejected, Wait};
+        let rows: [(&str, Disposition, &str, bool, bool, bool); 14] = [
+            ("rate_limit", Wait, RETRIES, false, false, true),
+            ("overloaded", Wait, RETRIES, false, false, true),
+            ("server_error", Wait, RETRIES, false, false, true),
+            ("authentication_failed", Hold, LOGIN, true, true, true),
+            ("oauth_org_not_allowed", Hold, LOGIN, true, true, true),
             (
                 "cloud_credential_error",
                 Hold,
                 "refresh the cloud provider's credentials",
                 true,
                 false,
+                true,
             ),
             (
                 "billing_error",
@@ -742,6 +880,7 @@ mod tests {
                 "fix the account's billing",
                 true,
                 false,
+                true,
             ),
             (
                 "account_on_hold",
@@ -749,6 +888,7 @@ mod tests {
                 "resolve the account's hold",
                 true,
                 false,
+                true,
             ),
             (
                 "verification_required",
@@ -756,19 +896,21 @@ mod tests {
                 "complete the account's verification",
                 true,
                 false,
+                true,
             ),
-            ("model_not_found", Hold, MODEL, true, false),
-            ("invalid_request", Fault, "", false, false),
-            ("max_output_tokens", Fault, "", false, false),
-            ("unknown", Fault, "", false, false),
-            ("a_category_no_binary_knows", Fault, "", false, false),
+            ("model_not_found", Hold, MODEL, false, false, false),
+            ("invalid_request", Rejected, "", false, false, false),
+            ("max_output_tokens", Fault, "", false, false, false),
+            ("unknown", Fault, "", false, false, false),
+            ("a_category_no_binary_knows", Fault, "", false, false, false),
         ];
-        for (category, disposition, action, needs_person, credential) in rows {
+        for (category, disposition, action, needs_person, credential, probed) in rows {
             let row = DispositionRow {
                 disposition,
                 action,
                 needs_person,
                 credential,
+                probed,
             };
             assert_eq!(
                 AgentFailure::from_category(category).row(),
@@ -782,9 +924,11 @@ mod tests {
         }
     }
 
-    /// A hold's `cause` reads its row from the one table, the two causes no category names
+    /// A hold's `cause` reads its row from the one table, the three causes no category names
     /// included: `api-unstable` needs no person and the run retries by itself; `operator` needs a
-    /// person and names no action, `rigger hold`'s reason standing in for it.
+    /// person, names no action, `rigger hold`'s reason standing in for it, and no probe ends it;
+    /// `conductor-fault` is held for the orchestrator, its action what the orchestrator does, and
+    /// its two rows for a person name why a person decides.
     #[test]
     fn a_holds_cause_reads_the_table_api_unstable_and_operator_included() {
         let rows = [
@@ -795,6 +939,7 @@ mod tests {
                     action: RETRIES,
                     needs_person: false,
                     credential: false,
+                    probed: true,
                 },
             ),
             (
@@ -804,6 +949,18 @@ mod tests {
                     action: "",
                     needs_person: true,
                     credential: false,
+                    probed: false,
+                },
+            ),
+            (
+                "conductor-fault",
+                DispositionRow {
+                    disposition: Disposition::Hold,
+                    action: "read the fault rigger status prints under this hold, fix its cause \
+                             at the root, then run rigger release",
+                    needs_person: false,
+                    credential: false,
+                    probed: false,
                 },
             ),
             (
@@ -816,6 +973,70 @@ mod tests {
             assert_eq!(cause_row(cause), row, "{cause}");
         }
         assert_eq!(API_UNSTABLE, "api-unstable");
+        let for_a_person = |action| DispositionRow {
+            disposition: Disposition::Hold,
+            action,
+            needs_person: true,
+            credential: false,
+            probed: false,
+        };
+        assert_eq!(
+            [FAULT_RECURRED, FAULT_ON_A_PERSONS_HOLD],
+            [
+                for_a_person(
+                    "the orchestrator's fix did not hold: a person decides, then runs rigger \
+                     release"
+                ),
+                for_a_person(
+                    "a person holds this run: they read the fault, decide, then run rigger release"
+                ),
+            ],
+            "a hold for the orchestrator's rows for a person"
+        );
+        assert_eq!(
+            UNIT_WORK_REFUSED,
+            DispositionRow {
+                disposition: Disposition::Hold,
+                action: "git refused a unit's own work, the refusal in the fault rigger status \
+                         prints under this hold: rigger release retries the unit with it; fix the \
+                         tree first only if the fault shows no agent session can change it",
+                needs_person: false,
+                credential: false,
+                probed: false,
+            },
+            "a unit's refused work is held for the orchestrator, whose release retries the unit"
+        );
+    }
+
+    /// WHO A HOLD ASKS (spec 105): a cause is for the orchestrator first when it holds, needs no
+    /// person and no probe ends it, `conductor-fault` and `model_not_found`; it asks someone to act
+    /// when it needs a person or is for the orchestrator; an outage, `api-unstable` and a category
+    /// that never holds ask no one.
+    #[test]
+    fn a_hold_is_for_the_orchestrator_when_it_needs_no_person_and_no_probe_ends_it() {
+        let rows: [(&str, bool, bool); 9] = [
+            ("conductor-fault", true, true),
+            ("model_not_found", true, true),
+            ("operator", false, true),
+            ("authentication_failed", false, true),
+            ("billing_error", false, true),
+            ("rate_limit", false, false),
+            ("api-unstable", false, false),
+            ("invalid_request", false, false),
+            ("unknown", false, false),
+        ];
+        for (cause, for_orchestrator, asks) in rows {
+            let row = cause_row(cause);
+            assert_eq!(
+                (row.for_orchestrator(), row.asks()),
+                (for_orchestrator, asks),
+                "{cause}"
+            );
+        }
+        assert!(
+            !FAULT_RECURRED.for_orchestrator() && FAULT_RECURRED.asks(),
+            "a recurred fault's row asks a person"
+        );
     }
 
     /// The request a spawn parks is derived from its options and its agent alone: every field the

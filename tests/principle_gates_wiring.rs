@@ -16,6 +16,7 @@ use common::git::{build_unit_branch, commit_files, init_repo, unit_branch_repo};
 use common::repo::{repo_root, run_gate_script, run_sh, stub_path};
 use common::shell_outcome;
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::path::Path;
 use std::process::Command;
 
@@ -191,6 +192,27 @@ fn every_script_under_the_gates_directory_is_named_by_the_workflow() {
         Vec::<String>::new(),
         "scripts the workflow never names"
     );
+}
+
+/// This repository's workflow points cargo's target directory at each site's own build cache, so
+/// two units' gates and agents never build into one directory. Cargo names a workspace member's
+/// artifacts by paths relative to the workspace root and judges them fresh by mtime, so in a
+/// target directory two worktrees share, one tree's test binary links the other tree's newer
+/// artifacts and its gate goes red on code outside its diff.
+#[test]
+fn this_repositorys_workflow_builds_each_site_over_its_own_cache() {
+    let build = loaded_config(&repo_root()).workflow.build;
+    let env = rigger::gate::BuildEnv::declared(&build).unwrap();
+    for cache in ["/scratch/cargo-target-a", "/scratch/cargo-target-b"] {
+        let site = env.at(cache);
+        assert!(
+            site.vars
+                .contains(&("CARGO_TARGET_DIR".to_string(), cache.to_string())),
+            "a build at the site whose cache is {cache} sets CARGO_TARGET_DIR to it; got {:?}",
+            site.vars
+        );
+        assert_eq!(site.cache, cache);
+    }
 }
 
 rigger::test_cases! {
@@ -488,14 +510,31 @@ fn labelled_listing() -> String {
     .concat()
 }
 
-/// Sources the shipped container runtime snippet as a gate does, with a podman socket where
-/// the snippet looks for one when `runtime`, and, when `cli`, a stand-in `podman` on PATH whose
-/// labelled test containers are `fresh` (5 s old) and `old` (an hour old); without `cli` the
-/// PATH holds no container CLI at all. `max_age` sets RIGGER_TEST_CONTAINER_MAX_AGE_S. Neither
-/// DOCKER_HOST nor the test runner's cap RIGGER_TEST_AS_BYTES reaches the snippet. The snippet
-/// must source cleanly; returns its output, one line per `podman` call, and the environment it
-/// leaves exported to the tests the gate runs next.
+/// Sources the shipped container runtime snippet as a gate does, with XDG_RUNTIME_DIR naming
+/// the scratch directory the snippet runs in ([`source_container_snippet_with`]).
 fn source_container_snippet(
+    runtime: bool,
+    cli: bool,
+    max_age: Option<&str>,
+) -> (String, Vec<String>, BTreeMap<String, String>) {
+    source_container_snippet_with(|work| Some(work.into()), runtime, cli, max_age)
+}
+
+/// What a row sets XDG_RUNTIME_DIR to, given the scratch directory the snippet runs in: `None`
+/// leaves it unset.
+type RuntimeDirOf = fn(&Path) -> Option<OsString>;
+
+/// Sources the shipped container runtime snippet as a gate does, from a scratch working
+/// directory holding a podman socket at `podman/podman.sock` when `runtime`, with
+/// XDG_RUNTIME_DIR set to what `runtime_dir` makes of that directory (unset for `None`), and,
+/// when `cli`, a stand-in `podman` on PATH whose labelled test containers are `fresh` (5 s old)
+/// and `old` (an hour old); without `cli` the PATH holds no container CLI at all. `max_age` sets
+/// RIGGER_TEST_CONTAINER_MAX_AGE_S. Neither DOCKER_HOST nor the test runner's cap
+/// RIGGER_TEST_AS_BYTES reaches the snippet. The snippet must source cleanly; returns its output,
+/// one line per `podman` call, and the environment it leaves exported to the tests the gate runs
+/// next.
+fn source_container_snippet_with(
+    runtime_dir: RuntimeDirOf,
     runtime: bool,
     cli: bool,
     max_age: Option<&str>,
@@ -516,7 +555,7 @@ fn source_container_snippet(
             "PATH",
             stub_path(work.path(), "podman", cli.then_some("recording-podman.sh")),
         )
-        .env("XDG_RUNTIME_DIR", work.path())
+        .current_dir(work.path())
         .env("RECORDING_PODMAN_LOG", &log)
         .env("RECORDING_PODMAN_CONTAINERS", "fresh:5 old:3600")
         .env_remove("DOCKER_HOST")
@@ -524,6 +563,10 @@ fn source_container_snippet(
     match max_age {
         Some(age) => cmd.env("RIGGER_TEST_CONTAINER_MAX_AGE_S", age),
         None => cmd.env_remove("RIGGER_TEST_CONTAINER_MAX_AGE_S"),
+    };
+    match runtime_dir(work.path()) {
+        Some(dir) => cmd.env("XDG_RUNTIME_DIR", dir),
+        None => cmd.env_remove("XDG_RUNTIME_DIR"),
     };
     let (sourced, out) = shell_outcome(&cmd.output().unwrap());
     assert!(sourced, "the snippet must source cleanly: {out}");
@@ -551,6 +594,45 @@ fn the_container_snippet_exports_the_found_socket_and_leaves_the_test_runner_cap
     let socket = format!("unix://{}/podman/podman.sock", exported["XDG_RUNTIME_DIR"]);
     assert_eq!(exported.get("DOCKER_HOST"), Some(&socket), "{out}");
     assert_eq!(exported.get("RIGGER_TEST_AS_BYTES"), None, "{out}");
+}
+
+/// The snippet looks for the podman socket under XDG_RUNTIME_DIR only when that is an absolute
+/// path, as the XDG base directory specification requires; an unset, empty or relative value
+/// falls back to `/run/user/<uid>`. Each row runs the snippet from a directory holding a podman
+/// socket, so a relative value naming that directory, if honoured, would find it.
+#[test]
+fn the_container_snippet_honours_only_an_absolute_runtime_dir() {
+    let uid = Command::new("id").arg("-u").output().unwrap().stdout;
+    let fallback = format!(
+        "/run/user/{}/podman/podman.sock",
+        String::from_utf8_lossy(&uid).trim()
+    );
+    let fallback_host = Path::new(&fallback)
+        .exists()
+        .then(|| format!("unix://{fallback}"));
+    let rows: [(&str, RuntimeDirOf, bool); 5] = [
+        ("absolute", |work| Some(work.into()), true),
+        ("unset", |_| None, false),
+        ("empty", |_| Some("".into()), false),
+        ("relative", |_| Some(".".into()), false),
+        ("dot-relative", |_| Some("./".into()), false),
+    ];
+    for (row, runtime_dir, honoured) in rows {
+        let (out, _, exported) = source_container_snippet_with(runtime_dir, true, true, None);
+        let expected = if honoured {
+            Some(format!(
+                "unix://{}/podman/podman.sock",
+                exported["XDG_RUNTIME_DIR"]
+            ))
+        } else {
+            fallback_host.clone()
+        };
+        assert_eq!(
+            exported.get("DOCKER_HOST"),
+            expected.as_ref(),
+            "{row}: {out}"
+        );
+    }
 }
 
 /// Once it has found the runtime, the snippet removes the labelled test containers an earlier

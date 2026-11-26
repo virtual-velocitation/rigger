@@ -982,8 +982,7 @@ fn reset_derived_from_a_subdirectory_reads_the_marker_under_a_relative_rigger_tm
 /// RELATIVE `defaults.workdir` `rel-scratch`.
 const RELATIVE_WORKDIR_WORKFLOW: WorkflowFixture = WorkflowFixture {
     worker: UNISOLATED_WORKER,
-    body:
-        "defaults:\n  grounder: nop\n  budget: 60\n  max_wall_clock: 300\n  workdir: rel-scratch\n\
+    body: "defaults:\n  grounder: nop\n  max_wall_clock: 300\n  workdir: rel-scratch\n\
            stages:\n  a:\n    agent: worker\n    on_pass: none\n",
 };
 
@@ -991,8 +990,7 @@ const RELATIVE_WORKDIR_WORKFLOW: WorkflowFixture = WorkflowFixture {
 /// with the scratch root placed by the `~/` `defaults.workdir` `~/tilde-scratch`.
 const TILDE_WORKDIR_WORKFLOW: WorkflowFixture = WorkflowFixture {
     worker: UNISOLATED_WORKER,
-    body:
-        "defaults:\n  grounder: nop\n  budget: 60\n  max_wall_clock: 300\n  workdir: \"~/tilde-scratch\"\n\
+    body: "defaults:\n  grounder: nop\n  max_wall_clock: 300\n  workdir: \"~/tilde-scratch\"\n\
            stages:\n  a:\n    agent: worker\n    on_pass: none\n",
 };
 
@@ -1316,7 +1314,6 @@ fn the_help_and_the_rendered_skills_state_that_the_guard_reads_liveness() {
 /// lock; once released, the identical command succeeds.
 #[test]
 fn reset_derived_refuses_a_held_step_lock_and_succeeds_once_released() {
-    use fs2::FileExt;
     let dir = temp_store_project();
     let root = dir.path();
 
@@ -1336,7 +1333,6 @@ fn reset_derived_refuses_a_held_step_lock_and_succeeds_once_released() {
         "the refusal must name the override; stderr: {err:?}"
     );
 
-    FileExt::unlock(&lock_file).unwrap();
     drop(lock_file);
 
     assert_prunes(
@@ -1353,7 +1349,6 @@ fn reset_derived_refuses_a_held_step_lock_and_succeeds_once_released() {
 /// under the worktree's own path.
 #[test]
 fn reset_derived_from_a_nested_worktree_still_refuses_the_resolved_stores_held_lock() {
-    use fs2::FileExt;
     let dir = temp_git_project_with_commit();
     let root = dir.path();
     seed_store(root);
@@ -1376,7 +1371,6 @@ fn reset_derived_from_a_nested_worktree_still_refuses_the_resolved_stores_held_l
         "the refusal must name the held step lock; stderr: {err:?}"
     );
 
-    FileExt::unlock(&lock_file).unwrap();
     drop(lock_file);
 }
 

@@ -6,14 +6,13 @@
 //! This is the SINGLE authority both operator surfaces render: `rigger status`
 //! (`cmd_status` in the binary) and the dashboard ([`crate::dash`]) each call
 //! [`from_events`] and print the SAME [`Blocker::full_line`], so the two surfaces
-//! cannot drift. It reads only existing run state (the [`ledger`] projection plus the
-//! durable `BudgetExhausted` fact) - no new event type, no control flow.
+//! cannot drift. It reads only existing run state (the [`ledger`] projection) - no new event
+//! type, no control flow.
 //!
 //! The kinds are a fixed, closed set (spec 19a): `building`, `reviewing`,
-//! `reject-recurrence`, `approved-not-integrated`, `escalated`, and the run-level
-//! `budget`. Determinism is by construction: units are folded from a
-//! [`BTreeMap`](std::collections::BTreeMap) (lexical) and the run-level budget line,
-//! when present, sorts FIRST.
+//! `reject-recurrence`, `approved-not-integrated`, `escalated` and `resumed`. Determinism is
+//! by construction: units are folded from a [`BTreeMap`](std::collections::BTreeMap)
+//! (lexical).
 //!
 //! ## On `approved-not-integrated`
 //!
@@ -26,20 +25,10 @@
 //! therefore means the approve WAS on the channel and integration has not completed -
 //! the opposite of a channel stall - so the line names that state truthfully.
 
-use serde::Deserialize;
-
 use crate::config::{Defaults, Stage};
 use crate::eventstore::Event;
 use crate::ledger::{self, RunState, Status};
 use crate::safety;
-
-/// The spawn budget is spent - the circuit-breaker tripped (§4.4, §8). Moved here from
-/// `conductor.rs` (spec 93, criterion 1): this module already owns the durable
-/// `BudgetExhausted` fact's interpretation (see [`Budget`] below), and `conductor.rs`
-/// (store-gated) cannot stay this module's dependency, so the definition lives here and
-/// `conductor::TYPE_BUDGET_EXHAUSTED` is now `pub use crate::blocker::TYPE_BUDGET_EXHAUSTED;`
-/// - every existing call site is unchanged.
-pub const TYPE_BUDGET_EXHAUSTED: &str = "BudgetExhausted";
 
 /// The reject-recurrence diagnose threshold (spec 69 Design: "reject-recurrence at the diagnose
 /// threshold (>= 3 ...")): the count at which a failing unit stops reading as remediating on its
@@ -63,17 +52,8 @@ pub fn awaits_finding_audit(unit: &ledger::Unit) -> bool {
         && unit.resumed.is_none()
 }
 
-/// The run's spawn-budget halt, folded from the durable `BudgetExhausted` fact:
-/// `spent` spawns against a `cap` (`defaults.budget`). Surfaced as the run-level
-/// [`Kind::Budget`] blocker.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Budget {
-    pub spent: u32,
-    pub cap: u32,
-}
-
 /// The closed set of current-blocker kinds (spec 19a, unit 1). Each unfinished unit
-/// maps to exactly one; [`Kind::Budget`] is the single run-level condition.
+/// maps to exactly one.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Kind {
     /// The implementer is building this unit (grounding/red/green), on attempt `n`.
@@ -83,7 +63,7 @@ pub enum Kind {
     /// The unit failed and is remediating: this is failure `n` of the `max` bound it
     /// escalates at ([`ledger::Unit::max_retries`], stamped on its failure). `cause` is the
     /// conductor's own closed-vocabulary tag for WHY (spec 69, criterion 3: the cause wire) -
-    /// `reject`, `gate:<name>`, `integrate-conflict`, or `infra:<kind>` - defaulted to
+    /// `reject`, `gate:<name>`, `integrate-conflict`, `git-refused`, or `infra:<kind>` - defaulted to
     /// `"unknown"` when the folded [`ledger::Unit::cause`] is empty (a cause-less prior event).
     RejectRecurrence { n: u32, max: u32, cause: String },
     /// The review approved (on the result channel) but the unit is not yet integrated.
@@ -97,30 +77,20 @@ pub enum Kind {
     /// operator sees confirmation of their own grant rather than losing it in the
     /// ordinary remediation noise.
     Resumed { by: String, attempts_granted: u32 },
-    /// The whole run halted on the spawn budget (run-level, not a single unit).
-    Budget(Budget),
 }
 
-/// One current-blocker line: the `subject` it is about (a unit id, or empty for the
-/// run-level budget condition) and its [`Kind`].
+/// One current-blocker line: the unit `subject` it is about and its [`Kind`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Blocker {
-    /// The unit id this blocker describes, or empty for a run-level condition.
+    /// The unit id this blocker describes.
     pub subject: String,
     pub kind: Kind,
 }
 
-/// The subject label shown to an operator when a run-level condition has no unit.
-const RUN_SUBJECT: &str = "run";
-
 impl Blocker {
-    /// The subject label: the unit id, or `run` for a run-level condition.
+    /// The subject label: the unit id.
     pub fn subject(&self) -> &str {
-        if self.subject.is_empty() {
-            RUN_SUBJECT
-        } else {
-            &self.subject
-        }
+        &self.subject
     }
 
     /// The kind's one-line description, without the subject prefix. Hyphens only (a
@@ -140,10 +110,6 @@ impl Blocker {
                 by,
                 attempts_granted,
             } => format!("resumed by {by} ({attempts_granted} attempt(s) granted)"),
-            Kind::Budget(b) => format!(
-                "budget spent {}/{} (raise defaults.budget and resume)",
-                b.spent, b.cap
-            ),
         }
     }
 
@@ -162,7 +128,6 @@ impl Blocker {
             Kind::ApprovedNotIntegrated => "approved-not-integrated",
             Kind::Escalated => "escalated",
             Kind::Resumed { .. } => "resumed",
-            Kind::Budget(_) => "budget",
         }
     }
 }
@@ -212,57 +177,8 @@ pub fn stage_max_retries(stage: Option<&Stage>, defaults: &Defaults) -> (u32, Re
     }
 }
 
-#[derive(Deserialize)]
-struct BudgetExhausted {
-    #[serde(default)]
-    budget: u32,
-    #[serde(default)]
-    spawns: u32,
-}
-
-/// Fold the run's spawn-budget halt from the durable `BudgetExhausted` fact, or `None`
-/// when the run is not currently halted on budget.
-///
-/// A halt is reported ONLY when the `BudgetExhausted` is the LATEST unit-lifecycle
-/// event by position: a resume that raised `defaults.budget` and scheduled the stalled
-/// work records later lifecycle events, so a stale `BudgetExhausted` still sitting in
-/// the log does not re-report a halt the operator has since resolved. When nothing has
-/// happened since the halt, it is the current blocker and is surfaced.
-pub fn budget_halt(events: &[Event]) -> Option<Budget> {
-    let mut budget: Option<(u64, Budget)> = None;
-    let mut last_lifecycle_pos: u64 = 0;
-    for e in events {
-        match e.type_.as_str() {
-            TYPE_BUDGET_EXHAUSTED => {
-                if let Ok(p) = serde_json::from_slice::<BudgetExhausted>(&e.data) {
-                    budget = Some((
-                        e.position,
-                        Budget {
-                            spent: p.spawns,
-                            cap: p.budget,
-                        },
-                    ));
-                }
-            }
-            ledger::TYPE_UNIT_STARTED
-            | ledger::TYPE_UNIT_STATUS
-            | ledger::TYPE_UNIT_FAILED
-            | ledger::TYPE_UNIT_ESCALATED
-            | ledger::TYPE_UNIT_INTEGRATED => {
-                last_lifecycle_pos = last_lifecycle_pos.max(e.position);
-            }
-            _ => {}
-        }
-    }
-    match budget {
-        Some((pos, b)) if pos >= last_lifecycle_pos => Some(b),
-        _ => None,
-    }
-}
-
-/// Classify the current blocker for each unfinished unit of a run, plus the run-level
-/// budget halt when present. PURE over the projected [`RunState`], the folded `budget`,
-/// and the already-resolved run-wide `max_retries` bound - no I/O, no clock. A failed unit's
+/// Classify the current blocker for each unfinished unit of a run. PURE over the projected
+/// [`RunState`] and the already-resolved run-wide `max_retries` bound - no I/O, no clock. A failed unit's
 /// line names the bound stamped on its latest failure ([`ledger::Unit::max_retries`], the one
 /// the conductor escalates it at), and the run-wide bound only when that failure carries none.
 ///
@@ -275,17 +191,10 @@ pub fn budget_halt(events: &[Event]) -> Option<Budget> {
 ///   unit's stamped bound;
 /// - `Escalated` -> [`Kind::Escalated`].
 ///
-/// The run-level [`Kind::Budget`] blocker, when `budget` is `Some`, sorts FIRST; the
-/// per-unit blockers follow in the [`RunState::units`] `BTreeMap`'s lexical order, so
-/// the whole list is deterministic.
-pub fn classify(run: &RunState, budget: Option<Budget>, max_retries: u32) -> Vec<Blocker> {
+/// The blockers follow the [`RunState::units`] `BTreeMap`'s lexical order, so the whole list
+/// is deterministic.
+pub fn classify(run: &RunState, max_retries: u32) -> Vec<Blocker> {
     let mut out = Vec::new();
-    if let Some(b) = budget {
-        out.push(Blocker {
-            subject: String::new(),
-            kind: Kind::Budget(b),
-        });
-    }
     for (id, u) in &run.units {
         if u.status == Status::Integrated {
             continue;
@@ -332,8 +241,7 @@ pub fn classify(run: &RunState, budget: Option<Budget>, max_retries: u32) -> Vec
     out
 }
 
-/// The convenience entry both operator surfaces call: project the run, fold the budget
-/// halt, and [`classify`] - so `rigger status` and the dashboard render the SAME lines
+/// The convenience entry both operator surfaces call: project the run and [`classify`] - so `rigger status` and the dashboard render the SAME lines
 /// from ONE call. `configured_max_retries` is `defaults.max_retries` (unresolved);
 /// [`effective_max_retries`] applies the `0 -> MAX_RETRIES` fallback, and a failed unit's
 /// stamped bound takes precedence over it ([`classify`]).
@@ -344,20 +252,14 @@ pub fn from_events(
     let run = ledger::project(events)?;
     Ok(classify(
         &run,
-        budget_halt(events),
         effective_max_retries(configured_max_retries),
     ))
 }
 
 /// A helper for callers that already hold a projected [`RunState`] (the dashboard folds
-/// one for its unit view): classify from that state plus the raw `events` (for the
-/// budget fold) without re-projecting.
-pub fn from_state(run: &RunState, events: &[Event], configured_max_retries: u32) -> Vec<Blocker> {
-    classify(
-        run,
-        budget_halt(events),
-        effective_max_retries(configured_max_retries),
-    )
+/// one for its unit view): classify from that state without re-projecting.
+pub fn from_state(run: &RunState, configured_max_retries: u32) -> Vec<Blocker> {
+    classify(run, effective_max_retries(configured_max_retries))
 }
 
 /// Render a classified list to its shared one-line strings (what each surface prints).
@@ -468,7 +370,7 @@ mod tests {
             ),
         ]);
         let blockers = from_events(&events, 5).unwrap();
-        // Lexical unit order; no budget line; no integrated unit.
+        // Lexical unit order; no integrated unit.
         let got: Vec<(String, Kind)> = blockers
             .iter()
             .map(|b| (b.subject().to_string(), b.kind.clone()))
@@ -640,44 +542,25 @@ mod tests {
         assert_eq!(blockers[0].full_line(), "u: escalated (awaiting a human)");
     }
 
+    /// A log written while the spawn budget existed still carries its `BudgetExhausted` and
+    /// `TaskAborted` records: they fold to no blocker, and the unit reads as it stands.
     #[test]
-    fn budget_halt_is_a_run_level_blocker_sorted_first() {
-        // A run halted on budget: a pending unit plus the terminal BudgetExhausted, which
-        // is the LAST lifecycle event, so the halt is current.
+    fn a_retired_budget_halt_in_an_old_log_folds_to_no_blocker() {
         let events = positioned(vec![
             ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u"}"#),
-            ev(TYPE_BUDGET_EXHAUSTED, r#"{"budget":200,"spawns":200}"#),
+            ev(
+                ledger::TYPE_BUDGET_EXHAUSTED,
+                r#"{"budget":200,"spawns":200}"#,
+            ),
+            ev(
+                ledger::TYPE_TASK_ABORTED,
+                r#"{"reason":"spawn budget exhausted"}"#,
+            ),
         ]);
-        let blockers = from_events(&events, 3).unwrap();
-        // Budget sorts first, then the unit.
         assert_eq!(
-            blockers[0].kind,
-            Kind::Budget(Budget {
-                spent: 200,
-                cap: 200
-            })
+            lines(&from_events(&events, 3).unwrap()),
+            ["u: building (attempt 1)"]
         );
-        assert_eq!(blockers[0].subject(), "run");
-        assert_eq!(
-            blockers[0].full_line(),
-            "run: budget spent 200/200 (raise defaults.budget and resume)"
-        );
-        assert_eq!(blockers[1].subject(), "u");
-    }
-
-    #[test]
-    fn a_resume_past_the_budget_halt_suppresses_the_stale_line() {
-        // The operator raised defaults.budget and resumed: lifecycle events land AFTER
-        // the BudgetExhausted, so the stale halt is NOT re-reported.
-        let events = positioned(vec![
-            ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u"}"#),
-            ev(TYPE_BUDGET_EXHAUSTED, r#"{"budget":200,"spawns":200}"#),
-            // Resume scheduled the work: a later lifecycle event.
-            ev(ledger::TYPE_UNIT_INTEGRATED, r#"{"id":"u","commit":"c"}"#),
-        ]);
-        assert_eq!(budget_halt(&events), None);
-        // With u integrated and no live budget halt, there is nothing to report.
-        assert!(from_events(&events, 3).unwrap().is_empty());
     }
 
     #[test]
@@ -694,9 +577,6 @@ mod tests {
             ev(ledger::TYPE_UNIT_FAILED, r#"{"id":"u","attempts":1}"#),
         ]);
         let run = ledger::project(&events).unwrap();
-        assert_eq!(
-            from_state(&run, &events, 3),
-            from_events(&events, 3).unwrap()
-        );
+        assert_eq!(from_state(&run, 3), from_events(&events, 3).unwrap());
     }
 }

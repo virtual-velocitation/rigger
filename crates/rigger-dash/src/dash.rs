@@ -25,7 +25,7 @@
 //!     authority - control goes through the CLI, never the dash.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::Path;
 use std::sync::Arc;
@@ -52,8 +52,8 @@ use crate::contextgraph::{
 // them.
 use crate::contextgraph::query::{
     bucket_label_index, count_tests, defs_by_entity_suffix, fold_buckets, member_set,
-    memory_rail_of, neighborhood_of, node_file, node_label, node_leaf, node_name, referenced_id,
-    withheld_reached, Buckets,
+    memory_rail_of, neighborhood_of, node_file, node_label, node_name, placeholder_candidates,
+    referenced_id, withheld_reached, Buckets,
 };
 pub use crate::contextgraph::query::{
     card, cluster_detail, cluster_key, clustered_overview, explain, memory_rail, neighborhood,
@@ -856,11 +856,11 @@ pub fn should_reap_singleton(
     ever_seen_live && live_instances == 0 && !agent_live
 }
 
-/// What the dash's data provider yields per request: the run's events, its context subgraph with
-/// what the read that drew it describes, this run's progress reports (spec 14), and each in-flight
-/// spawn's liveness-marker age. Factored into a `type` so the provider signature stays readable
-/// across the server, its callers, and the tests.
-pub type DashInputs = (Vec<Event>, GraphRead, Vec<Event>, HashMap<String, u64>);
+/// What the dash's data provider yields per request: the run's events, this run's progress
+/// reports (spec 14), and each in-flight spawn's liveness-marker age. The run's context subgraph
+/// is no part of it: only `/api/state` draws one, through its own provider. Factored into a `type`
+/// so the provider signature stays readable across the server, its callers, and the tests.
+pub type DashInputs = (Vec<Event>, Vec<Event>, HashMap<String, u64>);
 
 /// One row of the dash's LANDING view (spec 50, criterion 3): a registered rigger instance the
 /// operator can ATTACH to. It is the presentation projection of a [`crate::registry::Instance`],
@@ -941,10 +941,9 @@ pub struct StateView {
     pub position: Position,
     pub run: RunView,
     pub metrics: MetricsView,
-    /// One current-blocker line per unfinished unit, plus the run-level budget halt (spec
-    /// 19a, unit 1). Folded by the SHARED [`blocker`] classifier that `rigger status` also
-    /// renders, so the two surfaces show the SAME lines. Deterministically ordered (the
-    /// run-level budget first, then units lexically).
+    /// One current-blocker line per unfinished unit (spec 19a, unit 1). Folded by the SHARED
+    /// [`blocker`] classifier that `rigger status` also renders, so the two surfaces show the
+    /// SAME lines. Deterministically ordered (units lexically).
     pub blockers: Vec<BlockerView>,
     /// The live pending frontier + fixpoint/halt, reused verbatim from
     /// [`spawn::step_result`] (already `Serialize`).
@@ -990,9 +989,9 @@ pub struct RunView {
 /// drift; `subject` and `kind` are the same value pre-split for the page's table + styling.
 #[derive(Debug, Serialize)]
 pub struct BlockerView {
-    /// The subject: a unit id, or `run` for the run-level budget halt.
+    /// The subject: a unit id.
     pub subject: String,
-    /// A short kind tag for grouping/styling (e.g. `building`, `escalated`, `budget`).
+    /// A short kind tag for grouping/styling (e.g. `building`, `escalated`).
     pub kind: String,
     /// The kind's description, without the subject prefix.
     pub detail: String,
@@ -1389,10 +1388,10 @@ pub fn build_state(
     };
 
     // The current-blocker lines, from the SHARED classifier `rigger status` also renders
-    // (over the same projected run + the budget fold). `from_state` reuses the `run` we
+    // (over the same projected run). `from_state` reuses the `run` we
     // already projected above rather than re-projecting. The raw blockers are also the run
     // tree's live-status source, so we classify ONCE and reuse (no second derivation).
-    let raw_blockers = blocker::from_state(&run, events, configured_max_retries);
+    let raw_blockers = blocker::from_state(&run, configured_max_retries);
     let blockers = raw_blockers
         .iter()
         .map(|b| BlockerView {
@@ -1505,7 +1504,8 @@ pub const REPROJECT_FILES_UNRESOLVED: &str = "no member resolves to a file";
 /// Under [`Lens::Files`] the fold resolves CROSS-GRAIN honestly ([`Reprojection::unresolved`]): a
 /// member that is a real definition (or a doc / file path) folds under its own file; a BARE
 /// cross-file placeholder (no `name` attr) resolves by its leaf to the call-target DEFINITION of
-/// that leaf - EXACTLY ONE folds under that definition's file (standing in for it, not counted
+/// that leaf, of those its down-hop keeps when it is keyed by a qualified name - EXACTLY ONE
+/// folds under that definition's file (standing in for it, not counted
 /// again, when that definition is itself a member), MORE THAN ONE (or zero) is surfaced
 /// as a marked-unresolved entry carrying the sorted candidate ids, never a wrong attribution to the
 /// referencing file its id encodes; a member naming NO file under its kind's arm of [`node_file`]
@@ -1651,11 +1651,12 @@ fn reproject_derived(graph: &Graph, subject: &str, lens: &Lens, members: &[&Node
 /// - a member that IS a definition (a non-empty `name` attr, [`node_name`]) or a doc / file
 ///   node folds under its OWN file ([`node_file`], read by its kind);
 /// - a BARE cross-file code-entity placeholder (no `name` attr, or an empty one) resolves by its
-///   leaf ([`node_leaf`]) over the call-target DEFINITION nodes sharing it (never a data member or a declaration, which
-///   folds under its own file as every definition does): EXACTLY ONE folds under that definition's
-///   file, and when that definition is itself a member the placeholder stands in for it, carrying
-///   its edges but not counted again; MORE THAN ONE (or zero) is marked-unresolved with the sorted
-///   candidate ids;
+///   leaf ([`node_leaf`](crate::contextgraph::query::node_leaf)) over the call-target DEFINITION
+///   nodes sharing it (never a data member or a declaration, which folds under its own file as
+///   every definition does), those its down-hop keeps for one keyed by a qualified name
+///   ([`placeholder_candidates`]): EXACTLY ONE folds under that definition's file, and when that
+///   definition is itself a member the placeholder stands in for it, carrying its edges but not
+///   counted again; MORE THAN ONE (or zero) is marked-unresolved with the sorted candidate ids;
 /// - a member naming NO file under its kind's arm of [`node_file`] (a decision, or a `::`-less code
 ///   entity) is marked unresolved too, with an EMPTY candidate frontier - the same honesty shape a
 ///   zero-candidate bare placeholder already carries - rather than falling back to its raw KIND as
@@ -1681,12 +1682,10 @@ fn reproject_files(graph: &Graph, subject: &str, members: &[&Node]) -> Reproject
     for m in members {
         let is_bare = m.kind == KIND_CODE_ENTITY && node_name(m).is_none();
         if is_bare {
-            // A bare placeholder resolves by its leaf; the honesty rule decides.
-            let cands = node_leaf(m)
-                .and_then(|leaf| defs_by_suffix.get(leaf))
-                .map(Vec::as_slice)
-                .unwrap_or_default();
-            match cands {
+            // A bare placeholder resolves by its leaf, keeping those its down-hop keeps when it
+            // is keyed by a qualified name; the honesty rule decides.
+            let cands = placeholder_candidates(m, &defs_by_suffix);
+            match cands.as_slice() {
                 [only] => {
                     if let Some(file) = node_file(KIND_CODE_ENTITY, only) {
                         resolved.insert(m.id.as_str(), file.to_string());
@@ -2747,7 +2746,6 @@ const CONSOLE_EVENT_TYPES: &[&str] = &[
     metrics::TYPE_BLAST_RADIUS_COMPUTED,
     crate::contextgraph::TYPE_FILE_TOUCHED,
     "DefinitionSuperseded",
-    blocker::TYPE_BUDGET_EXHAUSTED,
     run::TYPE_RUN_HELD,
     run::TYPE_RUN_RELEASED,
     ledger::TYPE_DAG_RECORDED,
@@ -3103,9 +3101,11 @@ impl Response {
         match self.status {
             200 => "OK",
             400 => "Bad Request",
+            403 => "Forbidden",
             404 => "Not Found",
             405 => "Method Not Allowed",
             410 => "Gone",
+            431 => "Request Header Fields Too Large",
             500 => "Internal Server Error",
             _ => "OK",
         }
@@ -3657,12 +3657,12 @@ fn report_error(
 /// fixed address itself via [`bind_singleton`] (so the AddrInUse that decides the singleton
 /// short-circuit is seen BEFORE this accept loop), then hands the bound listener here.
 ///
-/// Two providers, split by cadence (spec 45, criterion 1): `provider` yields the cheap
-/// run-scoped inputs (events, the run-seeded graph, progress, liveness) every `/api/*`
-/// request rides - including the 1.5s state poll - while `graph_provider` opens the
-/// projection and reads the whole graph LAZILY, consulted ONLY on a `/api/graph` request.
-/// So the state poll never triggers a whole-graph read; the overview/drill/neighborhood
-/// views read the projection directly through their own provider.
+/// The graph is read by need (spec 45, criterion 1): `provider` yields the cheap run-scoped
+/// inputs (events, progress, liveness) every `/api/*` request rides - including the 1.5s state
+/// poll and every console stream poll - while `state_graph_provider` draws the run-seeded graph
+/// from those events for `/api/state` alone, and `graph_provider` opens the projection and reads
+/// the whole graph LAZILY, consulted ONLY on a `/api/graph` request. So no poll but the state
+/// poll reads a graph, and none reads the whole one.
 ///
 /// One connection at a time, synchronously: loopback single-operator traffic needs no
 /// concurrency, and a serial loop keeps the sqlite reads and the whole server free of any
@@ -3676,9 +3676,10 @@ fn report_error(
 /// local project (backward compatible). The `instances_provider` reads the machine-global
 /// registry for the `/api/instances` landing list.
 #[allow(clippy::too_many_arguments)]
-pub fn serve_on<F, G, R, H, I, C>(
+pub fn serve_on<F, S, G, R, H, I, C>(
     listener: TcpListener,
     provider: F,
+    state_graph_provider: S,
     graph_provider: G,
     calls_provider: I,
     instances_provider: H,
@@ -3688,6 +3689,7 @@ pub fn serve_on<F, G, R, H, I, C>(
 ) -> io::Result<()>
 where
     F: Fn(Option<&str>) -> Result<DashInputs, String> + Send + Sync + 'static,
+    S: Fn(Option<&str>, &[Event]) -> GraphRead,
     G: Fn(Option<&str>, Tests, f64) -> R,
     R: Into<GraphRead>,
     H: Fn() -> Vec<InstanceView>,
@@ -3705,6 +3707,7 @@ where
                 if let Err(e) = handle_conn(
                     s,
                     &provider,
+                    &state_graph_provider,
                     &graph_provider,
                     &calls_provider,
                     &instances_provider,
@@ -3721,24 +3724,42 @@ where
     Ok(())
 }
 
+/// The most bytes of a request head (request line and headers) a connection may send.
+const MAX_REQUEST_HEAD: u64 = 16 * 1024;
+
+/// Whether a `Host` header value names this machine's loopback: `localhost`, `127.0.0.1` or
+/// `[::1]`, in any case, with or without a port.
+fn is_loopback_host(value: &str) -> bool {
+    let value = value.trim();
+    let name = match value.rsplit_once(':') {
+        Some((name, port)) if port.bytes().all(|b| b.is_ascii_digit()) => name,
+        _ => value,
+    };
+    ["localhost", "127.0.0.1", "[::1]"]
+        .iter()
+        .any(|loopback| name.eq_ignore_ascii_case(loopback))
+}
+
 /// Read one request, route it, and write the response. Splits the store read from the
 /// pure [`route`] so a `provider` failure degrades only the `/api/*` paths (to `500`),
 /// never the static page - and of `/api/graph` only a unit seed, the one graph view that
 /// reads the run; every other graph view answers from the graph alone.
 ///
-/// The graph is sourced by cadence (spec 45, criterion 1): every other `/api/*` path reads the
-/// run-scoped inputs from `provider`, but a `/api/graph` request opens the whole-graph
-/// projection through `graph_provider` (consulted HERE and nowhere else), so the state poll
-/// never rides a whole-graph read, and reads `provider` only for a unit seed it re-points.
+/// The graph is sourced by need (spec 45, criterion 1): every other `/api/*` path reads the
+/// run-scoped inputs from `provider`, and of those only `/api/state` draws the run-seeded graph
+/// through `state_graph_provider`; a `/api/graph` request opens the whole-graph projection
+/// through `graph_provider` (consulted HERE and nowhere else), so the state poll never rides a
+/// whole-graph read, and reads `provider` only for a unit seed it re-points.
 ///
 /// Which STORE the run/graph providers read is chosen HERE from the request's `?instance=<id>`
 /// selector (spec 50, criterion 3): present, they open that registered instance's stores;
 /// absent, the dash's own local project. `/api/instances` is served from the separate
 /// `instances_provider` (the registry landing) and needs no store read at all.
 #[allow(clippy::too_many_arguments)]
-fn handle_conn<F, G, R, H, I, C>(
+fn handle_conn<F, S, G, R, H, I, C>(
     stream: TcpStream,
     provider: &Arc<F>,
+    state_graph_provider: &S,
     graph_provider: &G,
     calls_provider: &I,
     instances_provider: &H,
@@ -3748,6 +3769,7 @@ fn handle_conn<F, G, R, H, I, C>(
 ) -> io::Result<()>
 where
     F: Fn(Option<&str>) -> Result<DashInputs, String> + Send + Sync + 'static,
+    S: Fn(Option<&str>, &[Event]) -> GraphRead,
     G: Fn(Option<&str>, Tests, f64) -> R,
     R: Into<GraphRead>,
     H: Fn() -> Vec<InstanceView>,
@@ -3756,7 +3778,7 @@ where
 {
     // Bound how long a slow or broken client can hold the single serving slot.
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
-    let mut reader = BufReader::new(stream);
+    let mut reader = BufReader::new((&stream).take(MAX_REQUEST_HEAD));
 
     let mut request_line = String::new();
     if reader.read_line(&mut request_line)? == 0 {
@@ -3770,21 +3792,37 @@ where
     // so it reflects what the browser actually applied - unlike the URL's own `since=`,
     // which that same native retry reissues verbatim from whatever `connectStream(since)`
     // was called with at page-load and never re-evaluates.
+    // A `Host` naming anything but this machine's loopback is refused (DNS rebinding: a page
+    // on another origin resolving its own name to 127.0.0.1 must not read the dash).
     let mut header = String::new();
     let mut last_event_id: Option<Position> = None;
+    let mut head_ended = false;
+    let mut host_is_loopback = true;
     while reader.read_line(&mut header)? > 0 {
         if header == "\r\n" || header == "\n" {
+            head_ended = true;
             break;
         }
         if let Some((name, value)) = header.trim_end_matches(['\r', '\n']).split_once(':') {
             if name.trim().eq_ignore_ascii_case("last-event-id") {
                 last_event_id = value.trim().parse::<Position>().ok();
             }
+            if name.trim().eq_ignore_ascii_case("host") {
+                host_is_loopback &= is_loopback_host(value);
+            }
         }
         header.clear();
     }
+    let head_overran = !head_ended && reader.get_ref().limit() == 0;
+    drop(reader);
 
-    let mut stream = reader.into_inner();
+    let mut stream = stream;
+    if head_overran {
+        return Response::text(431, "request head too large").write_to(&mut stream);
+    }
+    if !host_is_loopback {
+        return Response::text(403, "the dash answers only a loopback Host").write_to(&mut stream);
+    }
     let parsed = parse_request_line(request_line.trim_end());
 
     // THE STREAM (spec 94, criterion 2; d-u94c2-stream-threading): a console tab's
@@ -3907,10 +3945,15 @@ where
                     answer
                 } else {
                     match provider(instance) {
-                        Ok((events, read, progress, liveness)) => {
-                            // Every other `/api/*` path keeps the cheap run-seeded graph the
-                            // polled provider yields; the run snapshot states what that read
-                            // describes in its body, beside the decisions it draws.
+                        Ok((events, progress, liveness)) => {
+                            // Only the run snapshot draws the run-seeded graph, and states what
+                            // that read describes in its body, beside the decisions it draws;
+                            // every other `/api/*` path answers from the run inputs alone.
+                            let read = if path == "/api/state" {
+                                state_graph_provider(instance, &events)
+                            } else {
+                                GraphRead::default()
+                            };
                             let answer = route_hiding(
                                 &method,
                                 &target,
@@ -4079,7 +4122,7 @@ fn serve_console_stream<F>(
     // from the fresh head - rather than replaying a position the store can never serve
     // again.
     if since > 0 {
-        if let Ok((events, _, _, _)) = provider(instance) {
+        if let Ok((events, _, _)) = provider(instance) {
             if let Some(floor) = events.iter().map(|e| e.position).min() {
                 if since < floor {
                     write_retained_window_gone(&mut stream, since, floor);
@@ -4114,7 +4157,7 @@ fn serve_console_stream<F>(
     let mut last_heartbeat = Instant::now();
 
     loop {
-        if let Ok((events, _graph, progress_events, liveness_ages)) = provider(instance) {
+        if let Ok((events, progress_events, liveness_ages)) = provider(instance) {
             let mut new_events: Vec<&Event> = events
                 .iter()
                 .filter(|e| is_console_event(e) && e.position > last_event)
@@ -4817,12 +4860,7 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let port = addr.port();
         let provider = |_instance: Option<&str>| -> Result<DashInputs, String> {
-            Ok((
-                Vec::new(),
-                Graph::default().into(),
-                Vec::new(),
-                HashMap::new(),
-            ))
+            Ok((Vec::new(), Vec::new(), HashMap::new()))
         };
         let graph_provider = |_instance: Option<&str>, _tests: Tests, _: f64| Graph::default();
         let instances_provider = Vec::new;
@@ -4841,6 +4879,7 @@ mod tests {
             if let Err(e) = serve_on(
                 listener,
                 provider,
+                no_state_graph,
                 graph_provider,
                 calls_provider,
                 instances_provider,
@@ -7163,7 +7202,6 @@ mod tests {
             "BlastRadiusComputed",
             "FileTouched",
             "DefinitionSuperseded",
-            "BudgetExhausted",
             "RunHeld",
             "RunReleased",
             "DagRecorded",
@@ -10640,7 +10678,7 @@ mod tests {
             let events = store
                 .read_stream(conductor::STREAM, 0, Direction::Forward)
                 .map_err(|e| e.to_string())?;
-            Ok((events, Graph::default().into(), Vec::new(), HashMap::new()))
+            Ok((events, Vec::new(), HashMap::new()))
         };
 
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
@@ -10660,6 +10698,7 @@ mod tests {
             handle_conn(
                 conn,
                 &provider,
+                &no_state_graph,
                 &graph_provider,
                 &calls_provider,
                 &instances_provider,
@@ -10688,6 +10727,85 @@ mod tests {
         assert_eq!(v["run"]["units"][0]["id"], "u1");
         assert_eq!(v["run"]["units"][0]["status"], "integrated");
         assert_eq!(v["metrics"]["review_approve"], 1);
+    }
+
+    /// A state graph provider that draws no graph.
+    fn no_state_graph(_: Option<&str>, _: &[Event]) -> GraphRead {
+        GraphRead::default()
+    }
+
+    /// The status a dash whose run read fails answers to the request head `head`, sent whole.
+    fn status_answering(head: &[u8]) -> Option<u16> {
+        use std::io::{Read, Write};
+        let provider = Arc::new(|_: Option<&str>| -> Result<DashInputs, String> {
+            Err("the run read failed".into())
+        });
+        let graph_provider = |_: Option<&str>, _: Tests, _: f64| Graph::default();
+        let calls_provider =
+            |_: Option<&str>,
+             _: &[String],
+             _: crate::contextgraph::Direction,
+             _: i64,
+             _: &str,
+             _: Tests| { crate::contextgraph::CallGraph::default() };
+        let instances_provider = Vec::new;
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (conn, _) = listener.accept().unwrap();
+            handle_conn(
+                conn,
+                &provider,
+                &no_state_graph,
+                &graph_provider,
+                &calls_provider,
+                &instances_provider,
+                3,
+                "rigger-run",
+                "origin/main",
+            )
+            .unwrap();
+        });
+        let mut client = TcpStream::connect(addr).unwrap();
+        client.write_all(head).unwrap();
+        let mut resp = String::new();
+        client.read_to_string(&mut resp).unwrap();
+        server.join().unwrap();
+        resp.strip_prefix("HTTP/1.1 ")
+            .and_then(|r| r.get(..3))
+            .and_then(|code| code.parse().ok())
+    }
+
+    /// A request head that fills [`MAX_REQUEST_HEAD`] exactly and never ends.
+    fn unending_head() -> Vec<u8> {
+        let mut head = b"GET / HTTP/1.1\r\nX-Pad: ".to_vec();
+        head.resize(MAX_REQUEST_HEAD as usize, b'a');
+        head
+    }
+
+    /// GIVEN the dash on loopback, WHEN a request names a `Host` that is not this machine's
+    /// loopback, THEN it answers 403 before any route or provider, the stream included; a loopback
+    /// name with any port, in any case, or no `Host` at all, is served; and a head that fills its
+    /// bound without ending answers 431.
+    #[test]
+    fn only_a_loopback_host_and_a_bounded_head_are_served() {
+        let rows: [(&str, Option<&str>, u16); 9] = [
+            ("/api/state", Some("evil.example"), 403),
+            ("/api/console/stream", Some("evil.example:7420"), 403),
+            ("/", Some("localhost.evil.example"), 403),
+            ("/", Some("127.0.0.1.evil.example:7420"), 403),
+            ("/", Some("localhost"), 200),
+            ("/", Some("127.0.0.1:7420"), 200),
+            ("/", Some("[::1]:7420"), 200),
+            ("/", Some("LocalHost:7420"), 200),
+            ("/", None, 200),
+        ];
+        for (target, host, status) in rows {
+            let host = host.map_or(String::new(), |h| format!("Host: {h}\r\n"));
+            let head = format!("GET {target} HTTP/1.1\r\n{host}\r\n");
+            assert_eq!(status_answering(head.as_bytes()), Some(status), "{head:?}");
+        }
+        assert_eq!(status_answering(&unending_head()), Some(431));
     }
 
     /// GIVEN a dash whose read of the run fails, WHEN `/api/graph` is asked for the overview, a
@@ -10728,6 +10846,7 @@ mod tests {
                 handle_conn(
                     conn,
                     &provider,
+                    &no_state_graph,
                     &graph_provider,
                     &calls_provider,
                     &instances_provider,
@@ -10834,12 +10953,7 @@ mod tests {
             let calls_seen = Arc::new(Mutex::new(Vec::new()));
             let (g, c) = (Arc::clone(&graph_seen), Arc::clone(&calls_seen));
             let provider = |_: Option<&str>| -> Result<DashInputs, String> {
-                Ok((
-                    Vec::new(),
-                    Graph::default().into(),
-                    Vec::new(),
-                    HashMap::new(),
-                ))
+                Ok((Vec::new(), Vec::new(), HashMap::new()))
             };
             let graph_provider = move |_: Option<&str>, tests: Tests, _: f64| {
                 g.lock().unwrap().push(tests);
@@ -10865,6 +10979,7 @@ mod tests {
                 handle_conn(
                     conn,
                     &provider,
+                    &no_state_graph,
                     &graph_provider,
                     &calls_provider,
                     &Vec::new,
@@ -10942,13 +11057,13 @@ mod tests {
         use std::net::{TcpListener, TcpStream};
 
         let ask = |read: Option<GraphLabel>| -> (String, serde_json::Value) {
-            let provider = Arc::new(move |_: Option<&str>| -> Result<DashInputs, String> {
-                let polled = GraphRead {
-                    label: read.clone(),
-                    ..GraphRead::default()
-                };
-                Ok((Vec::new(), polled, Vec::new(), HashMap::new()))
+            let provider = Arc::new(|_: Option<&str>| -> Result<DashInputs, String> {
+                Ok((Vec::new(), Vec::new(), HashMap::new()))
             });
+            let state_graph = move |_: Option<&str>, _: &[Event]| GraphRead {
+                label: read.clone(),
+                ..GraphRead::default()
+            };
             let graph_provider = |_: Option<&str>, _: Tests, _: f64| GraphRead::default();
             let calls_provider = |_: Option<&str>,
                                   _: &[String],
@@ -10963,6 +11078,7 @@ mod tests {
                 handle_conn(
                     conn,
                     &provider,
+                    &state_graph,
                     &graph_provider,
                     &calls_provider,
                     &Vec::new,
@@ -11020,12 +11136,7 @@ mod tests {
 
         let ask = |target: &str, read: Option<GraphLabel>| -> String {
             let provider = Arc::new(|_: Option<&str>| -> Result<DashInputs, String> {
-                Ok((
-                    Vec::new(),
-                    Graph::default().into(),
-                    Vec::new(),
-                    HashMap::new(),
-                ))
+                Ok((Vec::new(), Vec::new(), HashMap::new()))
             });
             let whole = read.clone();
             // The read withheld `x` alone: a view counts the withheld hits of its own answer.
@@ -11057,6 +11168,7 @@ mod tests {
                 handle_conn(
                     conn,
                     &provider,
+                    &no_state_graph,
                     &graph_provider,
                     &calls_provider,
                     &Vec::new,
@@ -11146,6 +11258,7 @@ mod tests {
             handle_conn(
                 conn,
                 &provider,
+                &no_state_graph,
                 &graph_provider,
                 &calls_provider,
                 &instances_provider,
@@ -11185,15 +11298,8 @@ mod tests {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
         // The polled provider: the cheap run-scoped inputs `/api/state` and `/api/events` ride.
-        // Its graph slot is the run-seeded slice (here empty); it is what the decisions/findings
-        // panel reads, and it must be the ONLY graph the state poll touches.
         let provider = |_instance: Option<&str>| -> Result<DashInputs, String> {
-            Ok((
-                Vec::new(),
-                Graph::default().into(),
-                Vec::new(),
-                HashMap::new(),
-            ))
+            Ok((Vec::new(), Vec::new(), HashMap::new()))
         };
 
         // The SEPARATE whole-graph provider: it counts every consultation and yields a fixture
@@ -11233,6 +11339,7 @@ mod tests {
                 handle_conn(
                     conn,
                     &provider,
+                    &no_state_graph,
                     &graph_provider,
                     &calls_provider,
                     &instances_provider,
@@ -11301,36 +11408,41 @@ mod tests {
         );
     }
 
-    /// A graph request reads the polled run inputs (the run's events, its run-seeded graph,
-    /// progress and liveness) only when its answer needs the run's events: a seed that is no
-    /// node of the graph, re-pointed onto a unit's content. Every other graph view answers from
-    /// the graph provider alone, while the state poll still reads the polled inputs once.
+    /// A graph request reads the polled run inputs (the run's events, progress and liveness) only
+    /// when its answer needs the run's events: a seed that is no node of the graph, re-pointed
+    /// onto a unit's content. Every other graph view answers from the graph provider alone, while
+    /// the state poll still reads the polled inputs once. Of the paths that read them, only the
+    /// state poll draws the run-seeded graph.
     #[test]
     fn a_graph_request_reads_the_polled_run_inputs_only_to_re_point_a_unit_seed() {
         use std::io::{Read, Write};
         use std::net::{TcpListener, TcpStream};
         use std::sync::atomic::{AtomicUsize, Ordering};
 
-        let cases: [(&str, usize); 6] = [
-            ("/api/graph", 0),
-            ("/api/graph?tests=include", 0),
-            ("/api/graph?tests=only", 0),
-            ("/api/graph?seed=seed-node&depth=1", 0),
-            ("/api/graph?seed=u-unit&depth=1", 1),
-            ("/api/state", 1),
+        // (target, polled run reads, run-seeded graph draws)
+        let cases: [(&str, usize, usize); 9] = [
+            ("/api/graph", 0, 0),
+            ("/api/graph?tests=include", 0, 0),
+            ("/api/graph?tests=only", 0, 0),
+            ("/api/graph?seed=seed-node&depth=1", 0, 0),
+            ("/api/graph?seed=u-unit&depth=1", 1, 0),
+            ("/api/state", 1, 1),
+            ("/api/state?instance=x", 1, 1),
+            ("/api/events", 1, 0),
+            ("/api/console/snapshot", 1, 0),
         ];
-        for (target, expected) in cases {
+        for (target, expected, expected_drawn) in cases {
             let polled = Arc::new(AtomicUsize::new(0));
             let polled_by_provider = Arc::clone(&polled);
             let provider = Arc::new(move |_: Option<&str>| -> Result<DashInputs, String> {
                 polled_by_provider.fetch_add(1, Ordering::SeqCst);
-                Ok((
-                    Vec::new(),
-                    Graph::default().into(),
-                    Vec::new(),
-                    HashMap::new(),
-                ))
+                Ok((Vec::new(), Vec::new(), HashMap::new()))
             });
+            let drawn = AtomicUsize::new(0);
+            let state_graph = |_: Option<&str>, _: &[Event]| {
+                drawn.fetch_add(1, Ordering::SeqCst);
+                GraphRead::default()
+            };
             let graph_provider = |_: Option<&str>, _: Tests, _: f64| -> Graph {
                 Graph {
                     nodes: vec![Node {
@@ -11351,37 +11463,103 @@ mod tests {
             let instances_provider = Vec::new;
             let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
             let addr = listener.local_addr().unwrap();
-            let server = std::thread::spawn(move || {
-                let (conn, _) = listener.accept().unwrap();
-                handle_conn(
-                    conn,
-                    &provider,
-                    &graph_provider,
-                    &calls_provider,
-                    &instances_provider,
-                    3,
-                    "rigger-run",
-                    "origin/main",
-                )
-                .unwrap();
+            std::thread::scope(|scope| {
+                scope.spawn(|| {
+                    let (conn, _) = listener.accept().unwrap();
+                    handle_conn(
+                        conn,
+                        &provider,
+                        &state_graph,
+                        &graph_provider,
+                        &calls_provider,
+                        &instances_provider,
+                        3,
+                        "rigger-run",
+                        "origin/main",
+                    )
+                    .unwrap();
+                });
+                let mut client = TcpStream::connect(addr).unwrap();
+                client
+                    .write_all(
+                        format!("GET {target} HTTP/1.1\r\nHost: localhost\r\n\r\n").as_bytes(),
+                    )
+                    .unwrap();
+                let mut resp = String::new();
+                client.read_to_string(&mut resp).unwrap();
+                assert!(
+                    resp.starts_with("HTTP/1.1 200 OK"),
+                    "{target} is served: {resp}"
+                );
             });
-            let mut client = TcpStream::connect(addr).unwrap();
-            client
-                .write_all(format!("GET {target} HTTP/1.1\r\nHost: localhost\r\n\r\n").as_bytes())
-                .unwrap();
-            let mut resp = String::new();
-            client.read_to_string(&mut resp).unwrap();
-            server.join().unwrap();
-            assert!(
-                resp.starts_with("HTTP/1.1 200 OK"),
-                "{target} is served: {resp}"
-            );
             assert_eq!(
-                polled.load(Ordering::SeqCst),
-                expected,
-                "{target} reads the polled run inputs {expected} time(s)"
+                (polled.load(Ordering::SeqCst), drawn.load(Ordering::SeqCst)),
+                (expected, expected_drawn),
+                "{target}: polled run reads, run-seeded graph draws"
             );
         }
+    }
+
+    /// GIVEN an open console stream, WHEN it has polled the run inputs several times, THEN it
+    /// has drawn the run-seeded graph none of them: only the state poll draws one.
+    #[test]
+    fn a_console_stream_poll_draws_no_run_graph() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let polled = Arc::new(AtomicUsize::new(0));
+        let polled_by_provider = Arc::clone(&polled);
+        let provider = Arc::new(move |_: Option<&str>| -> Result<DashInputs, String> {
+            polled_by_provider.fetch_add(1, Ordering::SeqCst);
+            Ok((Vec::new(), Vec::new(), HashMap::new()))
+        });
+        let drawn = AtomicUsize::new(0);
+        let state_graph = |_: Option<&str>, _: &[Event]| {
+            drawn.fetch_add(1, Ordering::SeqCst);
+            GraphRead::default()
+        };
+        let graph_provider = |_: Option<&str>, _: Tests, _: f64| Graph::default();
+        let calls_provider =
+            |_: Option<&str>,
+             _: &[String],
+             _: crate::contextgraph::Direction,
+             _: i64,
+             _: &str,
+             _: Tests| { crate::contextgraph::CallGraph::default() };
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mut client = TcpStream::connect(addr).unwrap();
+        client
+            .write_all(b"GET /api/console/stream HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .unwrap();
+        let (conn, _) = listener.accept().unwrap();
+        handle_conn(
+            conn,
+            &provider,
+            &state_graph,
+            &graph_provider,
+            &calls_provider,
+            &Vec::new,
+            3,
+            "rigger-run",
+            "origin/main",
+        )
+        .unwrap();
+        let mut status = String::new();
+        BufReader::new(&client).read_line(&mut status).unwrap();
+        assert!(status.starts_with("HTTP/1.1 200"), "{status}");
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while polled.load(Ordering::SeqCst) < 3 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            (
+                polled.load(Ordering::SeqCst) >= 3,
+                drawn.load(Ordering::SeqCst)
+            ),
+            (true, 0),
+            "the stream polled the run inputs, and drew no run-seeded graph"
+        );
     }
 
     // --- Spec 39, criterion 1: the per-project dash marker + idempotency decision ---
@@ -13588,5 +13766,78 @@ mod file_half_c13 {
             vec![("Makefile", 1), ("src/utils/Makefile", 1)]
         );
         assert_eq!(unresolved_frontiers(&re), vec![("v1.2-choice", Vec::new())]);
+    }
+}
+
+/// Spec 117, SEVERAL NARROWED CANDIDATES NEVER PREFER THEIR FILE, at the files re-projection: a
+/// placeholder keyed by a qualified name binds by its leaf.
+#[cfg(test)]
+mod qualified_placeholder_c2 {
+    use super::reprojection_views::{cluster_counts, unresolved_frontiers};
+    use super::*;
+    use crate::test_support::ONE_COMMUNITY;
+    use crate::test_support::{def_node, node_with_optional_attrs, one_community_graph};
+
+    /// One row: the case, the `candidates` attribute the placeholder carries, and the file
+    /// buckets and marked-unresolved frontiers the files re-projection gives.
+    type QualifiedCase<'a> = (
+        &'a str,
+        Option<&'a str>,
+        Vec<(&'a str, usize)>,
+        Vec<(&'a str, Vec<String>)>,
+    );
+
+    /// Each row: a community holding the placeholder `src/report.rs::%Cube.size` alone, with the
+    /// definitions of its leaf `size` outside it. The placeholder keeps those of its leaf its
+    /// `candidates` attribute carries, the resolver's down-hop, and every one when it carries
+    /// none or one that does not parse: exactly one folds under that definition's file, more are
+    /// marked unresolved with those candidates.
+    #[test]
+    fn reproject_files_binds_a_qualified_placeholder_by_its_leaf_over_its_down_hop() {
+        let (area, other, volume) = (
+            "src/area.rs::Area::size",
+            "src/other.rs::size",
+            "src/volume.rs::Volume::size",
+        );
+        let placeholder = "src/report.rs::%Cube.size";
+        let frontier =
+            |cands: &[&str]| vec![(placeholder, cands.iter().map(|c| c.to_string()).collect())];
+        let cases: [QualifiedCase<'_>; 4] = [
+            (
+                "a down-hop of two shown definitions: a frontier of those two",
+                Some(r#"["src/area.rs::Area::size","src/volume.rs::Volume::size"]"#),
+                vec![],
+                frontier(&[area, volume]),
+            ),
+            (
+                "a down-hop of one shown definition and one the graph does not hold",
+                Some(r#"["src/volume.rs::Volume::size","tests/cube.rs::Cube::size"]"#),
+                vec![("src/volume.rs", 1)],
+                vec![],
+            ),
+            (
+                "no down-hop carried: every definition of the leaf",
+                None,
+                vec![],
+                frontier(&[area, other, volume]),
+            ),
+            (
+                "a down-hop that does not parse reads as none carried",
+                Some("src/area.rs::Area::size"),
+                vec![],
+                frontier(&[area, other, volume]),
+            ),
+        ];
+        for (case, carried, clusters, unresolved) in cases {
+            let ph =
+                node_with_optional_attrs(placeholder, KIND_CODE_ENTITY, &[("candidates", carried)]);
+            let mut g = one_community_graph(ONE_COMMUNITY, vec![ph]);
+            g.nodes
+                .extend([area, other, volume].map(|d| def_node(d, "size")));
+            let re = reproject(&g, ONE_COMMUNITY, &Lens::Files);
+            assert_eq!(cluster_counts(&re), clusters, "{case}");
+            assert_eq!(unresolved_frontiers(&re), unresolved, "{case}");
+            assert_eq!(re.total, 1, "{case}");
+        }
     }
 }

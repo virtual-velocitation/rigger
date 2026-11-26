@@ -225,23 +225,41 @@ fn view_stamp(tree: &str, fingerprint: u64, seq: u64) -> rigger::code_facts::Sta
     }
 }
 
+/// What a reader knows of a worktree that matches the tree its view describes.
+pub fn matching_honesty() -> rigger::composed::Honesty {
+    rigger::composed::Honesty {
+        worktree: "the worktree".to_string(),
+        compared: rigger::code_view::Compared::Overlaid(0),
+        behind: None,
+    }
+}
+
 /// The record half `records` composed with `view`, read from a worktree that matches its tree.
 pub fn view_graph<'r>(
     records: &'r dyn rigger::contextgraph::Neighbors,
     view: &dyn rigger::code_view::CodeView,
 ) -> rigger::composed::Composed<'r> {
-    let honesty = rigger::composed::Honesty {
-        worktree: "the worktree".to_string(),
-        compared: rigger::code_view::Compared::Overlaid(0),
-        behind: None,
-    };
     rigger::composed::Composed::new(
         records,
         view,
         rigger::code_view::ViewFilter::default(),
-        honesty,
+        matching_honesty(),
     )
     .expect("a view composes")
+}
+
+/// `records` composed with `view` under `tests` by each code half the composition root wires,
+/// named: the whole one, and the one resolved only near the ids it is asked about.
+pub fn halves<'r>(
+    records: &'r rigger::composed::Indexed,
+    view: &'r rigger::code_view::FactsView,
+    tests: rigger::code_view::Tests,
+) -> [(&'static str, Box<dyn ContextGraph + 'r>); 2] {
+    use rigger::composed::Composed;
+    let filter = rigger::code_view::ViewFilter { tests };
+    let whole = Composed::new(records, view, filter, matching_honesty()).unwrap();
+    let near = Composed::near(records, view, filter, matching_honesty(), None).unwrap();
+    [("whole", Box::new(whole)), ("near", Box::new(near))]
 }
 
 /// The code view of a tree holding exactly `files`, each `(path, source text)` pair read into its
@@ -261,6 +279,28 @@ pub fn files_view(
         })
         .collect();
     rigger::code_view::FactsView::new(view_stamp("files", extract.fingerprint(), 1), facts)
+}
+
+/// An extractor with no doc rule of its own, so it keeps [`Extract::doc_text`]'s default.
+///
+/// [`Extract::doc_text`]: rigger::code_view::Extract::doc_text
+pub struct NoDocRule;
+
+impl rigger::code_view::Extract for NoDocRule {
+    fn fingerprint(&self) -> u64 {
+        0
+    }
+
+    fn extract(
+        &self,
+        entry: &rigger::code_view::Entry,
+        _bytes: &[u8],
+    ) -> rigger::code_facts::FileFacts {
+        rigger::code_facts::FileFacts {
+            path: entry.path.clone(),
+            ..Default::default()
+        }
+    }
 }
 
 /// The subgraph `depth` hops around `seeds` that `records` composed with the code view of a tree
@@ -335,6 +375,7 @@ pub fn planted_file(
                 end_line: line,
                 parent: None,
                 test: false,
+                doc: None,
             })
             .collect(),
         mentions: calls.chain(refs).collect(),
@@ -342,31 +383,88 @@ pub fn planted_file(
     }
 }
 
-/// `file` with each `(enclosing, leaf)` of `uses` added as a `use` of `leaf` on line 1, inside the
-/// definition named `enclosing`, or at file level when that is empty: a reference that calls
-/// nothing.
-pub fn with_uses(
+/// `file` with each `(enclosing, name, leaf)` of `mentions` added as a mention of `kind` written
+/// `name`, of the leaf `leaf`, on line 1, inside the definition named `enclosing`, or at file
+/// level when that is empty.
+fn with_mentions(
     mut file: rigger::code_facts::FileFacts,
-    uses: &[(&str, &str)],
+    kind: rigger::code_facts::MentionKind,
+    mentions: &[(&str, &str, &str)],
 ) -> rigger::code_facts::FileFacts {
-    use rigger::code_facts::{Mention, MentionKind};
-    use rigger::contextgraph::REF_KIND_USE;
-    for (enclosing, leaf) in uses {
+    for (enclosing, name, leaf) in mentions {
         let enclosing = (!enclosing.is_empty()).then(|| {
             let at = file.defs.iter().position(|d| d.leaf == *enclosing);
-            at.unwrap_or_else(|| panic!("{}: no definition {enclosing} holds a use", file.path))
-                as u32
+            at.unwrap_or_else(|| {
+                panic!(
+                    "{}: no definition {enclosing} holds a {kind:?} mention",
+                    file.path
+                )
+            }) as u32
         });
-        file.mentions.push(Mention {
+        file.mentions.push(rigger::code_facts::Mention {
             enclosing,
-            name: leaf.to_string(),
+            name: name.to_string(),
             leaf: leaf.to_string(),
-            kind: MentionKind::Tagged(REF_KIND_USE.to_string()),
+            kind: kind.clone(),
             line: 1,
             test: false,
         });
     }
     file
+}
+
+/// `file` with each `(enclosing, leaf)` of `refs` added as a mention of `leaf` tagged `tag`
+/// ([`with_mentions`]): a reference that calls nothing.
+pub fn with_tagged(
+    file: rigger::code_facts::FileFacts,
+    tag: &str,
+    refs: &[(&str, &str)],
+) -> rigger::code_facts::FileFacts {
+    let refs: Vec<(&str, &str, &str)> = refs.iter().map(|(at, leaf)| (*at, *leaf, *leaf)).collect();
+    let kind = rigger::code_facts::MentionKind::Tagged(tag.to_string());
+    with_mentions(file, kind, &refs)
+}
+
+/// `file` with each `(enclosing, name, leaf)` of `calls` added as a call written `name` of the
+/// leaf `leaf` ([`with_mentions`]): a call whose written name may carry a qualifier, as
+/// `CodeView.file` does.
+pub fn with_calls(
+    file: rigger::code_facts::FileFacts,
+    calls: &[(&str, &str, &str)],
+) -> rigger::code_facts::FileFacts {
+    with_mentions(file, rigger::code_facts::MentionKind::Call, calls)
+}
+
+/// `file` with each `(enclosing, leaf)` of `uses` added as a `use` of `leaf` ([`with_tagged`]).
+pub fn with_uses(
+    file: rigger::code_facts::FileFacts,
+    uses: &[(&str, &str)],
+) -> rigger::code_facts::FileFacts {
+    with_tagged(file, rigger::contextgraph::REF_KIND_USE, uses)
+}
+
+/// Define `leaf` of `kind` at `line` of `file`, nested in the definition named `parent`: a member
+/// whose local name is the parent's local name, `::` and `leaf`, as its extractor reads it.
+pub fn define_member(
+    file: &mut rigger::code_facts::FileFacts,
+    parent: &str,
+    leaf: &str,
+    kind: &str,
+    line: u32,
+) {
+    let at = file.defs.iter().position(|d| d.leaf == parent);
+    let at = at.unwrap_or_else(|| panic!("{}: no definition {parent} holds {leaf}", file.path));
+    let local = format!("{}::{leaf}", file.defs[at].local);
+    file.defs.push(rigger::code_facts::Def {
+        local,
+        leaf: leaf.to_string(),
+        kind: kind.to_string(),
+        line,
+        end_line: line,
+        parent: Some(at as u32),
+        test: false,
+        doc: None,
+    });
 }
 
 /// A planted tree: the files a test's code view holds, each built up as its extractor would read
@@ -401,6 +499,7 @@ impl PlantedTree {
             end_line: line,
             parent: None,
             test: false,
+            doc: None,
         });
     }
 
@@ -493,6 +592,7 @@ pub fn matching_head(view: rigger::code_view::FactsView) -> rigger::code_view::H
         compared: rigger::code_view::Compared::Overlaid(0),
         behind: None,
         worktree: std::path::PathBuf::new(),
+        extract: None,
     }
 }
 
@@ -801,7 +901,7 @@ pub fn file_half(id: &str) -> &str {
     split_id(id).0
 }
 
-/// The file declaring `mod x;` (spec 117, A MODULE ROW REACHES ITS FILE).
+/// The file declaring `mod x;` (spec 117, MODULE ROOTS AT READ).
 pub const DECLARING_FILE: &str = "src/lib.rs";
 /// The `mod` node of [`DECLARING_FILE`]'s `mod x;`.
 pub const MOD_NODE: &str = "src/lib.rs::x";
@@ -830,7 +930,17 @@ pub fn module_graph() -> Graph {
 
 /// The one live module edge from [`MOD_NODE`] onto `file`, `extracted`, as `(from, to, tier)`.
 pub fn declared(file: &str) -> Vec<(String, String, String)> {
-    vec![(MOD_NODE.into(), file.into(), TIER_EXTRACTED.into())]
+    declared_edges(&[(MOD_NODE, file)])
+}
+
+/// The live module edges `pairs` names, each `(mod node, file)` pair one `extracted` `CONTAINS`,
+/// as `(from, to, tier)`, sorted.
+pub fn declared_edges(pairs: &[(&str, &str)]) -> Vec<(String, String, String)> {
+    let mut edges: Vec<_> = (pairs.iter())
+        .map(|(from, to)| (from.to_string(), to.to_string(), TIER_EXTRACTED.to_string()))
+        .collect();
+    edges.sort();
+    edges
 }
 
 /// THE MEMBER RULE's graph (spec 119), holding no edge, so no `CONTAINS` reaches any node: the

@@ -484,6 +484,31 @@ fn a_guarded_gates_background_child_keeps_reset_build_cache_refused_until_it_exi
     );
 }
 
+/// The exclusive probe a test takes on the guard leaves it free once the probe's open closes,
+/// while a copy of its descriptor lives, as one does in a process another test thread forks
+/// until that process execs. A probe released only by closing its open stays held by the copy,
+/// so the `rigger reset --build-cache` that follows a free probe finds the cache in use.
+#[test]
+fn a_taken_exclusive_probe_leaves_the_guard_free_while_a_copy_of_its_descriptor_lives() {
+    use common::fixtures::exclusive_probe;
+
+    let dir = tempfile::tempdir().expect("tempdir for the guard");
+    let guard = dir.path().join(CACHE_GUARD);
+    let probe = rigger::gate::open_build_cache_guard(&guard).expect("open the guard");
+    let copy = probe
+        .try_clone()
+        .expect("the probe's descriptor duplicates");
+    let taken = exclusive_probe(&probe);
+    drop(probe);
+    let free = try_exclusive_lock(&guard);
+    drop(copy);
+    assert_eq!(
+        (taken, free),
+        (Ok(()), Ok(())),
+        "the probe takes the free guard and leaves it free while a copy of its descriptor lives"
+    );
+}
+
 #[test]
 fn reset_build_cache_resolves_a_configured_scratch_workdir_not_the_default_path() {
     // spec 77 criterion 5's own prior review history was rejected repeatedly over exactly
@@ -584,7 +609,7 @@ fn a_gate_whose_guard_parent_cannot_be_created_faults_runs_nothing_and_writes_no
 
     assert_eq!(
         got.map(|res| res.pass),
-        Err(ProbeFault {
+        Err(ProbeFault::Guard {
             guard: bad_guard.to_str().unwrap().to_string(),
             error: create_error,
         }),
@@ -604,7 +629,6 @@ const DEFERRED_GATE_WORKFLOW: WorkflowFixture = WorkflowFixture {
     worker: ISOLATED_WORKER,
     body: r#"defaults:
   grounder: nop
-  budget: 60
 gates:
   ok: { run: "true", kind: core }
   late: { run: "touch late-ran", kind: deferred }
@@ -645,7 +669,7 @@ fn a_run_whose_deferred_gate_guard_probe_fails_halts_naming_the_guard_and_the_ne
         .open(&guard)
         .unwrap_err()
         .to_string();
-    let fault = ProbeFault {
+    let fault = ProbeFault::Guard {
         guard: guard.to_str().unwrap().to_string(),
         error: open_error,
     };

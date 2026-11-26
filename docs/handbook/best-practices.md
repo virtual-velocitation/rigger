@@ -36,7 +36,7 @@ Everything below was learned running Rigger on itself - including the failures. 
 
 **13. Aliases, never pinned model IDs.** `model: sonnet`, resolved by the driver at spawn time. Pinning a version into agent files reintroduces rot in the exact place designed to be config. When a new tier ships, update the driver once and audit output quality - do not chase model IDs through your fleet. And when comparing run quality across time, record which resolution actually ran; "sonnet" last month and "sonnet" today may be different models.
 
-**14. Cap everything that can spin.** A non-zero spawn `budget` on every unattended run (zero means unlimited; unlimited means a rejected unit can churn for hours). Bounded `max_retries` with escalation. `recurse: false` on workers - the capability constraint, not a prompt instruction, is what actually prevents a recursive fan-out from eating your quota. Fixed remediation depth, hard abort on breaker trip.
+**14. Cap everything that can spin.** Bounded `max_retries` with escalation. `recurse: false` on workers - the capability constraint, not a prompt instruction, is what actually prevents a recursive fan-out from eating your quota. Fixed remediation depth.
 
 **15. Isolate files, share decisions.** Worktree isolation plus blast-radius partitioning means parallel agents cannot corrupt each other's work; the live event log means they still see each other's reasoning. Both halves matter - isolation without shared memory recreates the blind fleet; shared files without isolation recreates the merge hell.
 
@@ -60,6 +60,6 @@ Everything below was learned running Rigger on itself - including the failures. 
 
 ## Starting out
 
-**23. Dogfood on a small, real spec first.** One or two criteria, `auto_notify`, low budget - then *read the run*: every decision emitted, every verdict, what integrated. Calibrate prompts, gates, and tiers against what actually happened before scaling up. The loop is a power tool; learn its kick on a scrap piece.
+**23. Dogfood on a small, real spec first.** One or two criteria, `auto_notify` - then *read the run*: every decision emitted, every verdict, what integrated. Calibrate prompts, gates, and tiers against what actually happened before scaling up. The loop is a power tool; learn its kick on a scrap piece.
 
 **24. When the loop fails, fix the loop.** Every operational failure - a driver that stalls, a display that misleads, an install that frictions - is itself a spec waiting to be written. Rigger's own gaps get closed by running Rigger on them. That reflex, applied consistently, is what makes an agentic SDLC compound: the tool improves at the same cadence as the product.

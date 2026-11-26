@@ -19,6 +19,7 @@ use rigger_domain::code_view::{
 };
 use rigger_domain::composed::Label;
 use rigger_domain::contextgraph::query::path_leaf;
+use rigger_domain::resolve::is_impl;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 
@@ -99,8 +100,8 @@ impl Symbols {
     }
 
     /// [`Grounder::seed`] over one read's `sight`, of the worktree at `tree`.
-    fn seed_in(&self, sight: &Sight<'_>, tree: &Path, query: &str, k: usize) -> Vec<String> {
-        if query.is_empty() || k == 0 {
+    fn seed_in(&self, sight: &Sight<'_>, tree: &Path, query: &str) -> Vec<String> {
+        if query.is_empty() {
             return Vec::new();
         }
         let terms = code_terms(query);
@@ -128,12 +129,16 @@ impl Symbols {
             .collect();
         named.sort_by_key(Vec::len);
         named.into_iter().flatten().for_each(&mut add);
-        scored_hits(sight, &query_terms(query))
+        let words = query_terms(query);
+        let distinct = words
+            .iter()
+            .map(|t| t.to_lowercase())
+            .collect::<BTreeSet<_>>()
+            .len();
+        scored_hits(sight, &words)
             .into_iter()
-            .filter(|h| !h.test)
-            .take(k)
+            .filter(|h| !h.test && h.tier == EXACT_TIER && h.name_coverage == distinct)
             .for_each(|h| add(&h.file));
-        seed.truncate(k);
         seed
     }
 }
@@ -210,12 +215,16 @@ impl<'v> Sight<'v> {
         view.defs_named(leaf).filter(move |d| self.serves(&d.file))
     }
 
-    /// The served call references to `leaf`: no tagged reference (spec 117) counts, ranks or
-    /// places a file.
-    fn calls_named(&self, leaf: &str) -> impl Iterator<Item = MentionRef<'v>> + '_ {
+    /// The served references to `leaf`, of every kind.
+    fn mentions_named(&self, leaf: &str) -> impl Iterator<Item = MentionRef<'v>> + '_ {
         let view = self.view;
         view.mentions_named(leaf)
-            .filter(move |m| m.kind == MentionKind::Call && self.serves(&m.file))
+            .filter(move |m| self.serves(&m.file))
+    }
+
+    /// The served call references to `leaf`, those that count ([`ranks`]).
+    fn calls_named(&self, leaf: &str) -> impl Iterator<Item = MentionRef<'v>> + '_ {
+        self.mentions_named(leaf).filter(|m| ranks(&m.kind))
     }
 
     /// How many definitions named `name` the served files of `lang` hold, and with `count_refs`
@@ -552,8 +561,17 @@ impl ScoredHit {
     }
 }
 
+/// The [`ScoredHit::tier`] of a hit whose name equals a query term.
+const EXACT_TIER: u8 = 2;
+
+/// Whether a reference of `kind` counts or ranks: a call does, no tagged reference does (spec
+/// 117, CAPTURES). The one filter [`Sight::calls_named`] and [`scored_hits`] read.
+fn ranks(kind: &MentionKind) -> bool {
+    *kind == MentionKind::Call
+}
+
 /// Score every (file, line) definition/call-reference location of the served files against
-/// `terms` (a tagged reference, spec 117, never a location), ranked by [`ScoredHit::rank`] - the
+/// `terms` (a tagged reference, [`ranks`], never a location), ranked by [`ScoredHit::rank`] - the
 /// ONE scored, sorted pass both [`Symbols::ground`] and [`Symbols::ground_ranked`] consume, so the
 /// two views can never disagree on ranking. A location that matches more than one term (or both an
 /// EXACT and a CONTAINS candidate) keeps its BEST tier - commonness is a property of the matched
@@ -582,7 +600,7 @@ fn scored_hits(sight: &Sight<'_>, terms: &[&str]) -> Vec<ScoredHit> {
             let mut hit_tier = 0u8;
             for t in terms {
                 let tier = if name == *t {
-                    2u8
+                    EXACT_TIER
                 } else if name.contains(t) {
                     1u8
                 } else {
@@ -631,11 +649,7 @@ fn scored_hits(sight: &Sight<'_>, terms: &[&str]) -> Vec<ScoredHit> {
         for d in &facts.defs {
             score_one(&d.leaf, d.line, HitKind::Def, 3, d.test);
         }
-        for m in facts
-            .mentions
-            .iter()
-            .filter(|m| m.kind == MentionKind::Call)
-        {
+        for m in facts.mentions.iter().filter(|m| ranks(&m.kind)) {
             score_one(&m.leaf, m.line, HitKind::Ref, 2, m.test);
         }
     }
@@ -693,15 +707,17 @@ impl Grounder for Symbols {
     }
 
     /// The prompt seed: the code `query` names ([`code_terms`]) resolved to the files that hold
-    /// it, then the whole-text match. The files it spells come first (a served file whose path
-    /// ends in the term, else the file itself when the tree holds it), then the files that define
-    /// each identifier it names - the identifier fewer files define first, so a widely defined
-    /// name never crowds out a specific one. The fill is [`Symbols::ground`]'s own top-`k` hit
-    /// lines with test code left out: a prose word never matches a test function's sentence name,
-    /// while a test file or test function the query names explicitly still seeds. At most `k`
-    /// distinct files.
-    fn seed(&self, query: &str, k: usize) -> Vec<String> {
-        self.read(|sight| self.seed_in(sight, Path::new(&self.root), query, k))
+    /// it, whole and never truncated, then the whole-text match. The files it spells come first (a
+    /// served file whose path ends in the term, else the file itself when the tree holds it), then
+    /// the files that define each identifier it names - the identifier fewer files define first, so
+    /// a widely defined name never crowds out a specific one. The fill is cut by a class of
+    /// [`ScoredHit::rank`], never by a count: it keeps the product-code hits whose name the query
+    /// names whole, a name that holds every query word (full name coverage) and equals one of them
+    /// (the exact tier), so a word that merely occurs in a longer name, or a name that holds some of
+    /// a criterion's prose words, never seeds. Test code never fills, while a test file or test
+    /// function the query names explicitly still seeds.
+    fn seed(&self, query: &str) -> Vec<String> {
+        self.read(|sight| self.seed_in(sight, Path::new(&self.root), query))
     }
 
     /// The two-view blast radius over the cross-reference graph (architecture 5.5.1, spec 16 unit
@@ -714,8 +730,9 @@ impl Grounder for Symbols {
     ///
     /// - `precise` (the grounding contract) is the STRUCTURAL view - the files that DEFINE the
     ///   queried symbols (and any file the tree holds that a path term names) ranked ABOVE the
-    ///   files whose call references name them (spec 117: a tagged reference places no file) -
-    ///   capped at `k`. It is what seeds an agent's prompt, so it favors precision.
+    ///   files whose call references or implementation headers name them (spec 117, CAPTURES: an
+    ///   implementing file stays in a trait's radius, and no other tagged reference places a
+    ///   file). It is what seeds an agent's prompt, so it favors precision.
     /// - `safe` (the safety contract) is the structural view UNIONed, UNCAPPED, with a
     ///   whole-identifier text search (the EXISTING [`Grep`] walk) for each named symbol the view
     ///   does NOT define - the fallback for references a name index never sees (a string-literal
@@ -724,9 +741,10 @@ impl Grounder for Symbols {
     ///   worktree that cannot be compared withholds every code file from the structural view, so a
     ///   text hit is added for every named symbol: a missed reference is the unsafe error.
     /// - A HUB term (a name referenced across much of the tree) fails SAFE through `safe` itself:
-    ///   every file that defines it or holds a call reference to it is in the view, never
-    ///   truncated, so the partitioning consumer's overlap test keeps the unit apart from exactly
-    ///   the units that share one of those files - and pairs it with every unit that shares none.
+    ///   every file that defines it, calls it or names it in an implementation header is in the
+    ///   view, never truncated, so the partitioning consumer's overlap test keeps the unit apart
+    ///   from exactly the units that share one of those files - and pairs it with every unit that
+    ///   shares none.
     ///
     /// Determinism is by construction: the served files come in path order, so both structural
     /// passes are sorted, and the grep-recovered tail of `safe` is explicitly SORTED before it is
@@ -740,8 +758,8 @@ impl Grounder for Symbols {
     /// [`Self::blast_radius_stamped`]'s radius: one read gives both. A query WITH code
     /// terms that simply matches nothing is ALSO empty, but that case does run the uncapped search
     /// per unresolved name - it just comes back empty.
-    fn blast_radius(&self, query: &str, k: usize) -> BlastRadius {
-        self.blast_radius_stamped(query, k).radius
+    fn blast_radius(&self, query: &str) -> BlastRadius {
+        self.blast_radius_stamped(query).radius
     }
 
     /// The prompt seed and the radius with the provenance stamp `<tree-id>/<grammar-tags-version>`
@@ -749,18 +767,13 @@ impl Grounder for Symbols {
     /// `symbols` grounder is STRUCTURAL, so the stamp is NON-EMPTY - the signal unit 3's conductor
     /// keys the audit + retention metric off - even for the empty-radius fail-safe, whose open
     /// still names the tree. A change to the tree changes the stamp.
-    fn blast_radius_stamped(&self, query: &str, k: usize) -> StampedRadius {
+    fn blast_radius_stamped(&self, query: &str) -> StampedRadius {
         let head = self.heads.head(Path::new(&self.root));
-        self.blast_radius_stamped_over(head.as_ref().map_err(String::as_str), query, k)
+        self.blast_radius_stamped_over(head.as_ref().map_err(String::as_str), query)
     }
 
     /// [`Grounder::blast_radius_stamped`] over `head`, the open the caller made, never another.
-    fn blast_radius_stamped_over(
-        &self,
-        head: Result<&Head, &str>,
-        query: &str,
-        k: usize,
-    ) -> StampedRadius {
+    fn blast_radius_stamped_over(&self, head: Result<&Head, &str>, query: &str) -> StampedRadius {
         // The query's terms are the CODE it names ([`code_terms`]), never its prose: a criterion's
         // prose words that happen to be symbol names (`tests`, `run`, `parse`) would otherwise pull
         // every file defining or referencing them into the radius.
@@ -769,7 +782,7 @@ impl Grounder for Symbols {
         // search and the path checks read it too.
         let worktree = head.map_or(Path::new(&self.root), |head| head.worktree.as_path());
         let ((seed, radius), _label, tree) = self.read_head(head, |sight| {
-            let seed = self.seed_in(sight, worktree, query, k);
+            let seed = self.seed_in(sight, worktree, query);
             // The empty-terms fail-safe, applied BEFORE any text search: a query naming no code
             // (an empty query, prose only, a single character, all punctuation) grounds to the
             // empty radius - empty precise and empty safe - which the partition runs alone and
@@ -777,7 +790,7 @@ impl Grounder for Symbols {
             let radius = if terms.is_empty() {
                 BlastRadius::default()
             } else {
-                self.radius(sight, worktree, &terms, k)
+                self.radius(sight, worktree, &terms)
             };
             (seed, radius)
         });
@@ -1027,7 +1040,7 @@ fn has_strong(sight: &Sight<'_>, terms: &[&str]) -> bool {
 impl Symbols {
     /// The two views of the radius of `terms` over what `sight` serves, of the worktree at `tree`
     /// ([`Grounder::blast_radius`] states the contract).
-    fn radius(&self, sight: &Sight<'_>, tree: &Path, terms: &CodeTerms, k: usize) -> BlastRadius {
+    fn radius(&self, sight: &Sight<'_>, tree: &Path, terms: &CodeTerms) -> BlastRadius {
         let names: Vec<&str> = terms.names.iter().map(|n| n.name.as_str()).collect();
 
         // The STRUCTURAL view, ranked (definer files, then referencer files not already a
@@ -1048,9 +1061,15 @@ impl Symbols {
                 definers.insert(d.file.path);
             }
         }
+        // A referencer file holds a call to a named symbol or an implementation header naming
+        // it, so an implementing file stays in a trait's radius (spec 117, CAPTURES); no other
+        // tagged reference places a file.
         let referencers: BTreeSet<&str> = names
             .iter()
-            .flat_map(|name| sight.calls_named(name))
+            .flat_map(|name| {
+                let impls = sight.mentions_named(name).filter(|m| is_impl(&m.kind));
+                sight.calls_named(name).chain(impls)
+            })
             .map(|m| m.file.path)
             .collect();
         // A named path the view holds no facts for (`.gitignore`) still grounds on its own file
@@ -1075,11 +1094,9 @@ impl Symbols {
         // misses (a string-literal event name, a constant prefix, a name nothing defines yet). A
         // name the view resolves is grounded structurally alone: text-searching it would put
         // every file mentioning a common type name in the radius. A path is never text-searched.
-        // The search matches whole identifiers only and skips [`TEXT_SEARCH_SKIPS`]. This clone
-        // happens BEFORE `precise` is capped, so the safe view is never bounded by `k`; do not
-        // reorder the truncation below it. A `seen` set keeps the dedup O(lines) rather than
-        // O(lines * files): the search yields one hit per matching LINE and the safe view is
-        // uncapped.
+        // The search matches whole identifiers only and skips [`TEXT_SEARCH_SKIPS`]. A `seen` set
+        // keeps the dedup O(lines) rather than O(lines * files): the search yields one hit per
+        // matching LINE.
         let mut safe = structural.clone();
         let mut seen: HashSet<String> = safe.iter().cloned().collect();
         let grep = Grep {
@@ -1113,10 +1130,10 @@ impl Symbols {
         grep_tail.sort();
         safe.extend(grep_tail);
 
-        // The precise view is the ranked structural set capped at `k`; the safe view stays uncapped.
-        let mut precise = structural;
-        precise.truncate(k);
-        BlastRadius { precise, safe }
+        BlastRadius {
+            precise: structural,
+            safe,
+        }
     }
 }
 
@@ -1138,7 +1155,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.rs"), "fn foo() {}\n").unwrap();
         let g = Symbols::in_directory(dir.path().to_str().unwrap());
-        let stamp = g.blast_radius_stamped("`foo`", 8).stamp;
+        let stamp = g.blast_radius_stamped("`foo`").stamp;
         assert!(
             !stamp.is_empty(),
             "symbols is structural: the audit stamp must be non-empty so the conductor emits the audit"
@@ -1154,8 +1171,8 @@ mod tests {
         std::fs::write(dir2.path().join("b.rs"), "fn bar() {}\nfn baz() {}\n").unwrap();
         let g2 = Symbols::in_directory(dir2.path().to_str().unwrap());
         assert_ne!(
-            g.blast_radius_stamped("`foo`", 8).stamp,
-            g2.blast_radius_stamped("`foo`", 8).stamp,
+            g.blast_radius_stamped("`foo`").stamp,
+            g2.blast_radius_stamped("`foo`").stamp,
             "distinct index content must yield a distinct provenance stamp"
         );
         // DETERMINISM (the load-bearing provenance/replay property): the SAME tree opened by a
@@ -1168,8 +1185,8 @@ mod tests {
         let g3a = Symbols::in_directory(dir3.path().to_str().unwrap());
         let g3b = Symbols::in_directory(dir3.path().to_str().unwrap());
         assert_eq!(
-            g3a.blast_radius_stamped("`foo`", 8).stamp,
-            g3b.blast_radius_stamped("`foo`", 8).stamp,
+            g3a.blast_radius_stamped("`foo`").stamp,
+            g3b.blast_radius_stamped("`foo`").stamp,
             "the same tree opened twice must yield the SAME stamp (cross-process determinism)"
         );
     }
@@ -1226,7 +1243,7 @@ mod tests {
         .unwrap();
         let g = Symbols::in_directory(dir.path().to_str().unwrap());
 
-        let br = g.blast_radius("apply_damage", 8);
+        let br = g.blast_radius("apply_damage");
         // The precise view IS the structural cross-reference graph: the definer and the real call
         // site, ranked - and NOT the comment-only mention (which is no symbol).
         assert!(
@@ -1288,7 +1305,6 @@ mod tests {
         let br = g.blast_radius(
             "a test proves the run reclaims space: `reclaim_space` frees what tests and parse \
              leave behind, asserted in the run's tests",
-            8,
         );
         let mut safe = br.safe.clone();
         safe.sort();
@@ -1298,7 +1314,7 @@ mod tests {
             "the radius is the named span's alone, never the prose words'; got {br:?}"
         );
 
-        let prose = g.blast_radius("the run parses its tests and reclaims one of them", 8);
+        let prose = g.blast_radius("the run parses its tests and reclaims one of them");
         assert_eq!(
             prose,
             BlastRadius::default(),
@@ -1309,7 +1325,7 @@ mod tests {
     /// Over a tree holding `files`, `query`'s safe view is exactly `expected`.
     fn assert_safe(files: &[(&str, &str)], query: &str, expected: &[&str], why: &str) {
         let (_tree, g) = grounder_over(files);
-        let br = g.blast_radius(query, 8);
+        let br = g.blast_radius(query);
         assert_eq!(br.safe, expected, "{why}; got {br:?}");
     }
 
@@ -1318,7 +1334,7 @@ mod tests {
     fn assert_grounds_nothing(files: &[(&str, &str)], queries: &[&str]) {
         let (_tree, g) = grounder_over(files);
         for query in queries {
-            let br = g.blast_radius(query, 8);
+            let br = g.blast_radius(query);
             assert_eq!(
                 br,
                 BlastRadius::default(),
@@ -1486,7 +1502,7 @@ mod tests {
             ("`store.open()`", "member.rs"),
             ("`call.rs`", "call.rs"),
         ] {
-            let br = g.blast_radius(query, 8);
+            let br = g.blast_radius(query);
             assert!(
                 br.safe.contains(&file.to_string()),
                 "{query} names the code in {file}; got {br:?}"
@@ -1496,7 +1512,7 @@ mod tests {
         let store_dir = tempfile::tempdir().unwrap();
         std::fs::write(store_dir.path().join("handle.rs"), "fn db() {}\n").unwrap();
         let g = Symbols::in_directory(store_dir.path().to_str().unwrap());
-        let br = g.blast_radius("`graph.db`", 8);
+        let br = g.blast_radius("`graph.db`");
         assert!(
             !br.safe.contains(&"handle.rs".to_string()),
             "a .db file name never grounds on a symbol named db; got {br:?}"
@@ -1522,7 +1538,7 @@ mod tests {
         let g = Symbols::in_directory(dir.path().to_str().unwrap());
 
         // A SMALL cap proves the safe view is uncapped: there are 13 `spawn` files, more than k=8.
-        let br = g.blast_radius("`spawn`", 8);
+        let br = g.blast_radius("`spawn`");
         for f in &expected {
             assert!(
                 br.safe.contains(f),
@@ -1539,11 +1555,9 @@ mod tests {
 
     /// The blast-radius fail-safe paths (spec 16 unit 1): an empty query and a no-match query each
     /// return EMPTY views (unit 3 routes an empty radius to the full,
-    /// unpartitioned panel). A `k=0` cap collapses the PRECISE view to empty, but the SAFE view is
-    /// UNCAPPED by design - it still carries the full safe radius (addendum 2.4) so the
-    /// partitioning consumer can never under-include just because the prompt budget was zero.
+    /// unpartitioned panel).
     #[test]
-    fn blast_radius_empty_and_no_match_are_the_empty_failsafe_and_k0_keeps_safe_uncapped() {
+    fn blast_radius_empty_and_no_match_are_the_empty_failsafe() {
         let dir = tempfile::tempdir().unwrap();
         // A definer and a real referencer of `parse`, so the radius is non-empty for a real query.
         std::fs::write(dir.path().join("def.rs"), "fn parse() {}\n").unwrap();
@@ -1551,28 +1565,17 @@ mod tests {
         let g = Symbols::in_directory(dir.path().to_str().unwrap());
 
         // Empty query -> no terms -> empty views.
-        let empty = g.blast_radius("", 8);
+        let empty = g.blast_radius("");
         assert!(
             empty.precise.is_empty() && empty.safe.is_empty(),
             "an empty query is the empty fail-safe: both views empty; got {empty:?}"
         );
 
         // A name that appears nowhere -> nothing structural AND nothing grep -> empty views.
-        let none = g.blast_radius("nonexistent_symbol_zzz", 8);
+        let none = g.blast_radius("nonexistent_symbol_zzz");
         assert!(
             none.precise.is_empty() && none.safe.is_empty(),
             "a no-match query is the empty fail-safe: both views empty; got {none:?}"
-        );
-
-        // k=0 caps the PRECISE view to empty; the SAFE view is uncapped and still carries the radius.
-        let k0 = g.blast_radius("`parse`", 0);
-        assert!(
-            k0.precise.is_empty(),
-            "k=0 caps the precise view to empty; got {k0:?}"
-        );
-        assert!(
-            k0.safe.contains(&"def.rs".to_string()) && k0.safe.contains(&"call.rs".to_string()),
-            "the safe view is uncapped even at k=0 - it carries the full radius; got {k0:?}"
         );
     }
 
@@ -1612,7 +1615,7 @@ mod tests {
             "a degenerate single-char query grounds to nothing"
         );
         // ...and `blast_radius` must be the IDENTICAL empty radius - not a whole-repo grep for "a".
-        let one_char = g.blast_radius("a", 8);
+        let one_char = g.blast_radius("a");
         assert_eq!(
             one_char,
             BlastRadius::default(),
@@ -1633,7 +1636,7 @@ mod tests {
         // ...and `blast_radius` must be the IDENTICAL empty radius, NOT a whole-repo grep for the
         // 2-byte character. This arm is RED under a byte-length filter (safe = both files) and
         // GREEN once the filter counts CHARACTERS.
-        let one_multibyte = g.blast_radius(multibyte, 8);
+        let one_multibyte = g.blast_radius(multibyte);
         assert_eq!(
             one_multibyte,
             BlastRadius::default(),
@@ -1647,7 +1650,7 @@ mod tests {
             g.ground("!!!", 8).is_empty(),
             "an all-punctuation query grounds to nothing"
         );
-        let punct = g.blast_radius("!!!", 8);
+        let punct = g.blast_radius("!!!");
         assert_eq!(
             punct,
             BlastRadius::default(),
@@ -1677,7 +1680,7 @@ mod tests {
         .unwrap();
         let g = Symbols::in_directory(dir.path().to_str().unwrap());
 
-        let br = g.blast_radius("`render`", 8);
+        let br = g.blast_radius("`render`");
         // The Rust definer is present (the precise structural view).
         assert!(
             br.precise.contains(&"view.rs".to_string()),
@@ -1703,75 +1706,63 @@ mod tests {
         }
     }
 
-    /// Over a tree holding `files`, `query`'s prompt seed at cap `k` is exactly `expected`.
-    fn assert_seed(files: &[(&str, &str)], query: &str, k: usize, expected: &[&str], why: &str) {
+    /// Over a tree holding `files`, `query`'s prompt seed is exactly `expected`.
+    fn assert_seed(files: &[(&str, &str)], query: &str, expected: &[&str], why: &str) {
         let (_tree, g) = grounder_over(files);
-        assert_eq!(g.seed(query, k), expected, "{why}");
+        assert_eq!(g.seed(query), expected, "{why}");
     }
 
     crate::test_cases! {
-        /// A backticked identifier seeds its definition file ahead of a name that merely covers
-        /// more of the criterion's prose words.
-        seed_puts_a_named_identifier_s_definition_file_before_any_prose_match: assert_seed(
+        /// A backticked identifier seeds its definition file; a name that holds only some of the
+        /// criterion's prose words never fills.
+        seed_puts_a_named_identifier_s_definition_file_and_no_partial_prose_match: assert_seed(
             &[
                 ("src/conductor.rs", "fn write_lookup_pointer() {}\n"),
                 ("src/pointer_names.rs", "fn names_the_tools() {}\n"),
             ],
             "`write_lookup_pointer` names the tools",
-            8,
-            &["src/conductor.rs", "src/pointer_names.rs"],
-            "the named definition comes first, the prose match fills after it",
+            &["src/conductor.rs"],
+            "the named definition seeds, the partial prose match does not",
         );
-        /// A path the criterion spells out, bare in its prose, seeds that file first.
+        /// A path the criterion spells out, bare in its prose, seeds that file.
         seed_resolves_a_path_the_criterion_spells_bare_to_that_file: assert_seed(
             &[
                 ("crates/dash/src/mcpserver.rs", "fn tool_list() {}\n"),
                 ("src/listing.rs", "fn lists_every_tool() {}\n"),
             ],
             "crates/dash/src/mcpserver.rs lists every tool",
-            8,
-            &["crates/dash/src/mcpserver.rs", "src/listing.rs"],
-            "the spelled path comes first, the prose match fills after it",
+            &["crates/dash/src/mcpserver.rs"],
+            "the spelled path seeds, the partial prose match does not",
         );
-        /// A test file the criterion names explicitly still seeds: only the prose fill skips test
-        /// code.
+        /// A test file the criterion names explicitly still seeds: only the fill skips test code.
         seed_takes_a_test_file_the_criterion_names_explicitly: assert_seed(
             &[("tests/guard.rs", "fn awk_is_held() {}\n")],
             "`tests/guard.rs` holds the awk case",
-            8,
             &["tests/guard.rs"],
             "a named test path seeds its file",
         );
-        /// Prose words never match a test function's sentence name, in a test directory or in a
-        /// test module of a product file.
-        seed_never_matches_prose_against_test_function_names: assert_seed(
+        /// The fill takes a name the query names whole, in product code alone: never a test
+        /// directory's or a test module's namesake.
+        seed_fills_with_a_product_name_the_query_names_whole: assert_seed(
             &[
-                ("tests/notes.rs", "fn the_rebuild_owed_note_speaks_only_for_a_graph_db() {}\n"),
-                ("src/note.rs", "fn rebuild_note() {}\n"),
-                (
-                    "src/lib.rs",
-                    "#[cfg(test)]\nmod tests {\n    fn the_note_speaks_for_the_graph() {}\n}\n",
-                ),
+                ("tests/notes.rs", "fn note() {}\n"),
+                ("src/note.rs", "fn note() {}\n"),
+                ("src/lib.rs", "#[cfg(test)]\nmod tests {\n    fn note() {}\n}\n"),
             ],
-            "the rebuild owed note speaks only for a graph db",
-            8,
+            "note",
             &["src/note.rs"],
-            "the prose fill holds product code alone",
+            "the fill holds product code alone",
         );
-        /// The named code fills the cap before any prose match does.
-        seed_caps_at_k_with_the_named_code_first: assert_seed(
-            &[
-                ("a_prose.rs", "fn wires_every_spawn_gate() {}\n"),
-                ("z.rs", "fn arm() {}\n"),
-            ],
-            "`arm` wires every spawn gate",
-            1,
-            &["z.rs"],
-            "a cap of one keeps the named definition alone",
+        /// A query word that merely occurs in a longer name never seeds.
+        seed_never_fills_with_a_longer_name_holding_the_word: assert_seed(
+            &[("src/note.rs", "fn rebuild_note() {}\n")],
+            "note",
+            &[],
+            "a containing name is no exact match",
         );
-        /// Among named identifiers, the one fewer files define seeds first, so a widely defined
-        /// name cannot crowd out a specific one.
-        seed_puts_a_rarely_defined_name_before_a_widely_defined_one: assert_seed(
+        /// Among named identifiers, the one fewer files define seeds first, and every definer of
+        /// every named identifier seeds: the named set is never truncated.
+        seed_puts_a_rarely_defined_name_first_and_keeps_every_definer: assert_seed(
             &[
                 ("r1.rs", "fn run() {}\n"),
                 ("r2.rs", "fn run() {}\n"),
@@ -1779,9 +1770,8 @@ mod tests {
                 ("combat.rs", "fn apply_damage() {}\n"),
             ],
             "`run` before `apply_damage`",
-            2,
-            &["combat.rs", "r1.rs"],
-            "the one-definer name seeds before the three-definer name",
+            &["combat.rs", "r1.rs", "r2.rs", "r3.rs"],
+            "the one-definer name seeds before the three-definer name, all four seed",
         );
     }
 
@@ -2385,6 +2375,7 @@ mod tests {
                 compared,
                 behind: None,
                 worktree: worktree.to_path_buf(),
+                extract: None,
             })
         }
     }
@@ -2439,6 +2430,7 @@ mod tests {
             end_line: line,
             parent: None,
             test: false,
+            doc: None,
         }
     }
 
@@ -2760,7 +2752,7 @@ mod tests {
                 .collect();
             assert_eq!(hits, ground, "{name}: ground");
             assert_eq!(
-                g.blast_radius("`apply_damage`", 8).precise,
+                g.blast_radius("`apply_damage`").precise,
                 precise,
                 "{name}: blast radius"
             );
@@ -2792,7 +2784,7 @@ mod tests {
             rows: hits, label, ..
         } = g.ground_labelled("apply_damage", 8, Tests::Include);
         assert!(hits.is_empty(), "nothing is served");
-        let radius = g.blast_radius("`apply_damage`", 8);
+        let radius = g.blast_radius("`apply_damage`");
         assert!(radius.precise.is_empty(), "no structural view");
         let mut safe = radius.safe;
         safe.sort();
@@ -2891,6 +2883,7 @@ mod tests {
                 compared: Compared::Overlaid(0),
                 behind: None,
                 worktree: worktree.to_path_buf(),
+                extract: None,
             })
         }
     }
@@ -2958,7 +2951,7 @@ mod tests {
 
         let opens = Arc::new(AtomicUsize::new(0));
         let g = Symbols::over("W", Box::new(Advancing(opens.clone())));
-        let stamped = g.blast_radius_stamped("`apply_damage`", 8);
+        let stamped = g.blast_radius_stamped("`apply_damage`");
         assert_eq!(stamped.seed, ["open1.rs"], "the seed reads the first open");
         assert!(
             stamped.radius.precise.contains(&"open1.rs".to_string()),
@@ -3130,7 +3123,7 @@ mod tests {
                     worktree,
                 }),
             );
-            let br = g.blast_radius("`spawn`", 8);
+            let br = g.blast_radius("`spawn`");
             assert_eq!(br.precise, precise, "{name}: precise");
             assert_eq!(br.safe, safe, "{name}: safe");
         }
@@ -3190,12 +3183,13 @@ mod tests {
         }
     }
 
-    /// Spec 117 criterion 6: a type reference, a const read and a `use` move no count, rank or
-    /// radius - [`Sight::reference_degree`], [`Sight::occurrences`], [`scored_hits`],
-    /// [`Symbols::ground_ranked`] and [`Symbols::blast_radius`] count call references alone - over
-    /// a view holding one of each beside a call.
+    /// Spec 117 (CAPTURES): a type reference, a const read and a `use` move no count, rank or
+    /// radius - [`Sight::reference_degree`], [`Sight::occurrences`], [`scored_hits`] and
+    /// [`Symbols::ground_ranked`] count call references alone, and [`Symbols::blast_radius`]
+    /// places a file by a call or an implementation header alone - over a view holding one of
+    /// each beside a call.
     #[test]
-    fn tagged_references_move_no_degree_commonness_rank_or_radius() {
+    fn type_const_and_use_references_move_no_degree_commonness_rank_or_radius() {
         use crate::rust_definition_sources::{
             REFERENCE_KINDS_DEFINER as DEFINER, REFERENCE_KINDS_TREE, REFERENCE_KINDS_USER as USER,
         };
@@ -3270,9 +3264,174 @@ mod tests {
             ("`Kestrel` `QUOTA_CAP`", &[DEFINER][..]),
             ("`draw`", &[DEFINER, USER][..]),
         ] {
-            let br = g.blast_radius(query, 8);
+            let br = g.blast_radius(query);
             let radius: Vec<String> = radius.iter().map(|f| f.to_string()).collect();
             assert_eq!((br.precise, br.safe), (radius.clone(), radius), "{query}");
+        }
+    }
+
+    /// Spec 117 (CAPTURES), AN IMPLEMENTING FILE STAYS IN THE BLAST RADIUS: under a fixture tags
+    /// query staging a Python class's base as an `impl` mention, `circle.py`, which names `Shape`
+    /// as its base and nothing else of it, is among `Shape`'s radius referencer files beside
+    /// `make.py`, which calls it, while `Shape`'s reference degree counts the call alone.
+    #[test]
+    fn an_implementing_file_stays_in_the_blast_radius() {
+        use crate::facts::tests::facts_under;
+        use crate::grounder::symbols::extract::tests::compiled;
+        use crate::grounder::symbols::model::Lang;
+        let query = "(class_definition name: (identifier) @name) @definition.class\n\
+                     (class_definition superclasses: \
+                     (argument_list (identifier) @name) @reference.implementation)\n\
+                     (call function: (identifier) @name) @reference.call\n";
+        let tags = compiled(&tree_sitter_python::LANGUAGE.into(), query);
+        let files: Vec<FileFacts> = [
+            ("shapes.py", "class Shape:\n    pass\n"),
+            ("circle.py", "class Circle(Shape):\n    pass\n"),
+            ("make.py", "shape = Shape()\n"),
+        ]
+        .into_iter()
+        .map(|(path, source)| facts_under(path, source, Lang::Python, &tags))
+        .collect();
+        let circle: Vec<(&str, &MentionKind, u32)> = files[1]
+            .mentions
+            .iter()
+            .map(|m| (m.name.as_str(), &m.kind, m.line))
+            .collect();
+        let implementing = MentionKind::Tagged("impl".to_string());
+        assert_eq!(
+            circle,
+            [("Shape", &implementing, 1)],
+            "circle.py's mentions"
+        );
+        let view = view_of(files.clone());
+        assert_eq!(agreeing(&view).reference_degree("Shape", "python"), 1);
+        let g = Symbols::over(
+            "",
+            Box::new(Fixed {
+                files,
+                worktree: agreeing_tree(),
+            }),
+        );
+        let br = g.blast_radius("`Shape`");
+        let radius: Vec<String> = ["shapes.py", "circle.py", "make.py"]
+            .map(String::from)
+            .to_vec();
+        assert_eq!((br.precise, br.safe), (radius.clone(), radius));
+    }
+
+    /// Spec 117 (CAPTURES), AN IMPLEMENTING FILE STAYS IN THE BLAST RADIUS, across the worktree a
+    /// reader's head is compared with. A file joins `Shape`'s radius by an implementation header
+    /// naming it, whether the view or the worktree's bytes serve the file, and leaves when the
+    /// worktree deletes the file or rewrites its header to name another trait. A type mention
+    /// places no file. A worktree that cannot be compared serves no code file, so the precise view
+    /// is empty, the safe view falls back to the text search of the disk, which holds
+    /// `circle.rs`, and no row is ranked. Wherever the worktree can be compared, `Shape`'s one
+    /// ranked row counts `make.rs`'s call alone. Each row: the worktree, then `Shape`'s precise and
+    /// safe views and its ranked rows as (file, line, degree).
+    #[test]
+    fn an_implementing_file_joins_and_leaves_the_radius_with_the_worktree() {
+        use crate::contextgraph::{
+            CODE_KIND_FUNCTION, CODE_KIND_IMPL, CODE_KIND_TRAIT, REF_KIND_IMPL, REF_KIND_TYPE,
+        };
+        use crate::graph_fixtures::{planted_file, with_tagged};
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("circle.rs"), "impl Shape for Circle {}\n").unwrap();
+        // A file whose one mention is the header of the `impl` block `ty`, naming `base`.
+        let implementing = |path: &str, ty: &str, base: &str| {
+            let file = planted_file(path, &[(ty, CODE_KIND_IMPL)], &[], &[]);
+            with_tagged(file, REF_KIND_IMPL, &[(ty, base)])
+        };
+        let files = vec![
+            planted_file("shape.rs", &[("Shape", CODE_KIND_TRAIT)], &[], &[]),
+            implementing("circle.rs", "Circle", "Shape"),
+            planted_file(
+                "make.rs",
+                &[("make", CODE_KIND_FUNCTION)],
+                &[("make", "Shape")],
+                &[],
+            ),
+        ];
+        let typed = with_tagged(
+            planted_file("hold.rs", &[("hold", CODE_KIND_FUNCTION)], &[], &[]),
+            REF_KIND_TYPE,
+            &[("hold", "Shape")],
+        );
+        let shape_row = &[("shape.rs", 1, 1)][..];
+        let cases = [
+            (
+                "a worktree that agrees with the view",
+                agreeing_tree(),
+                &["shape.rs", "circle.rs", "make.rs"][..],
+                &["shape.rs", "circle.rs", "make.rs"][..],
+                shape_row,
+            ),
+            (
+                "an untracked file implementing it joins",
+                differing(
+                    Vec::new(),
+                    &[],
+                    vec![implementing("square.rs", "Square", "Shape")],
+                ),
+                &["shape.rs", "circle.rs", "make.rs", "square.rs"][..],
+                &["shape.rs", "circle.rs", "make.rs", "square.rs"][..],
+                shape_row,
+            ),
+            (
+                "an untracked file naming it as a type alone stays out",
+                differing(Vec::new(), &[], vec![typed]),
+                &["shape.rs", "circle.rs", "make.rs"][..],
+                &["shape.rs", "circle.rs", "make.rs"][..],
+                shape_row,
+            ),
+            (
+                "the implementing file deleted leaves",
+                differing(Vec::new(), &["circle.rs"], Vec::new()),
+                &["shape.rs", "make.rs"][..],
+                &["shape.rs", "make.rs"][..],
+                shape_row,
+            ),
+            (
+                "the implementing file rewritten to implement another trait leaves",
+                differing(
+                    vec![implementing("circle.rs", "Circle", "Area")],
+                    &[],
+                    Vec::new(),
+                ),
+                &["shape.rs", "make.rs"][..],
+                &["shape.rs", "make.rs"][..],
+                shape_row,
+            ),
+            (
+                "a worktree that cannot be compared falls back to the text search",
+                None,
+                &[][..],
+                &["circle.rs"][..],
+                &[][..],
+            ),
+        ];
+        for (name, worktree, precise, safe, ranked) in cases {
+            let g = Symbols::over(
+                root.path().to_str().unwrap(),
+                Box::new(Fixed {
+                    files: files.clone(),
+                    worktree,
+                }),
+            );
+            let br = g.blast_radius("`Shape`");
+            let ranked_rows = g.ground_ranked("Shape", 8);
+            let rows: Vec<(&str, u32, usize)> = ranked_rows
+                .iter()
+                .map(|r| (r.loc.file.as_str(), r.loc.line, r.degree))
+                .collect();
+            assert_eq!(
+                (
+                    br.precise.iter().map(String::as_str).collect::<Vec<_>>(),
+                    br.safe.iter().map(String::as_str).collect::<Vec<_>>(),
+                    rows
+                ),
+                (precise.to_vec(), safe.to_vec(), ranked.to_vec()),
+                "{name}"
+            );
         }
     }
 }

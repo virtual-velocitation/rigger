@@ -14,6 +14,16 @@
 //! without that read: the host decided the run held once, and a release landing after its read
 //! relaunches the interrupted session instead of reaching the conductor.
 //!
+//! A spawn the API refused (an error of a class whose row rejects,
+//! [`Disposition::Rejected`](rigger_domain::agent::Disposition::Rejected), the host closed `fault`)
+//! is the conductor's fault, never the API's: the decorator holds the run for the orchestrator on
+//! it ([`crate::run_store::hold_on_a_fault`], naming the spawn and its unit on the fault's first
+//! line, its prompt's size and the refusal after), for a person when the same refusal recurs
+//! after a release, and parks the spawn, recording nothing, so the drive ends with no attempt
+//! charged and no lesson, every later spawn of the drive parks on that hold too, and `rigger
+//! release` continues the run.
+//! A hold it cannot write leaves the refusal to its spawn site.
+//!
 //! Four errors reach the conductor unchanged, held or not: one carrying a conductor marker, a store
 //! fault ([`STORE_FAULT_MARKER`](rigger_domain::agent::STORE_FAULT_MARKER): a store read that
 //! failed before the launch, the host's or this decorator's own hold read), one for a spawn the
@@ -26,8 +36,8 @@
 //! not ended is recorded as that spawn's result, so a restarted run answers the spawn from the
 //! log instead of launching it again: any error but a park, an emit refusal or a store fault, and
 //! an interrupted one only once its spawn id has no relaunch left. A store fault ended no launched
-//! spawn, so it records nothing and a restart relaunches the spawn. It writes no other event: a hold,
-//! a release and a spawn's close each have their author. Its count of relaunches lives in memory
+//! spawn, so it records nothing and a restart relaunches the spawn. It writes no other event but
+//! the hold on a refusal: any other hold, a release and a spawn's close each have their author. Its count of relaunches lives in memory
 //! over one supervisor's life, so a restarted supervisor starts it again.
 
 use std::collections::HashMap;
@@ -35,8 +45,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use rigger_domain::agent::{
-    failure_class, parked_spawn, store_fault, AgentDriver, AgentResult, Error, SpawnOpts,
-    EMIT_REFUSED_MARKER,
+    failure_class, parked_spawn, store_fault, strip_failure_marker, AgentDriver, AgentFailure,
+    AgentResult, Error, SpawnOpts,
 };
 use serde_json::Value;
 
@@ -64,9 +74,12 @@ pub struct HeldDriver<'a> {
     /// Each spawn id's relaunches since its last non-error outcome.
     relaunch_counts: Mutex<HashMap<String, u32>>,
     /// Whether an operator hold parks a spawn ([`Self::parking_on_an_operator_hold`]), and
-    /// whether one did.
+    /// whether a spawn parked, on an operator hold or on the API's refusal; once one has, every
+    /// manual hold parks the drive's later spawns.
     parks_on_an_operator_hold: bool,
     parked: AtomicBool,
+    /// The fault this decorator last held the run on for a spawn the API refused.
+    rejected: Mutex<Option<String>>,
 }
 
 impl<'a> HeldDriver<'a> {
@@ -87,6 +100,7 @@ impl<'a> HeldDriver<'a> {
             relaunch_counts: Mutex::new(HashMap::new()),
             parks_on_an_operator_hold: false,
             parked: AtomicBool::new(false),
+            rejected: Mutex::new(None),
         }
     }
 
@@ -100,10 +114,36 @@ impl<'a> HeldDriver<'a> {
         }
     }
 
-    /// Whether this decorator parked a spawn on an operator hold since the last take, which
-    /// clears it, so a driver that drives again after the hold's release parks anew.
-    pub fn take_parked_on_an_operator_hold(&self) -> bool {
+    /// Whether this decorator parked a spawn, on an operator hold or on the API's refusal, since
+    /// the last take, which clears it, so a driver that drives again after the hold's release
+    /// parks anew.
+    pub fn take_parked(&self) -> bool {
         self.parked.swap(false, Ordering::SeqCst)
+    }
+
+    /// The fault this decorator held the run on for a spawn the API refused, since the last take,
+    /// which clears it.
+    pub fn take_rejected_spawn(&self) -> Option<String> {
+        self.rejected.lock().expect("rejected spawn lock").take()
+    }
+
+    /// Hold the run on `e`, the API's refusal of the spawn `opts` names with `prompt`, as a fault
+    /// of the conductor's ([`crate::run_store::hold_on_a_fault`]), and park that spawn: the
+    /// fault's first line names the spawn and its unit, the line the same refusal recurring after a
+    /// release is told apart by, and the next the prompt's size in characters and the refusal.
+    /// `None` when the hold cannot be written, leaving `e` to its spawn site.
+    fn park_the_refused(&self, e: &Error, prompt: &str, opts: &SpawnOpts) -> Option<Error> {
+        let fault = format!(
+            "the API refused spawn {} of unit {}\na prompt of {} characters: {}",
+            opts.id,
+            opts.unit,
+            prompt.chars().count(),
+            strip_failure_marker(e)
+        );
+        crate::run_store::hold_on_a_fault(self.store, &fault).ok()?;
+        self.parked.store(true, Ordering::SeqCst);
+        *self.rejected.lock().expect("rejected spawn lock") = Some(fault);
+        Some(parked_spawn(&opts.id))
     }
 
     /// The current run's slice of the log.
@@ -115,8 +155,8 @@ impl<'a> HeldDriver<'a> {
     /// Return once the run is not held, for spawn `id`. A failed read of the run ends the wait
     /// with `relaunched`, the error of the spawn this wait relaunches, or with the read's own error
     /// marked a store fault ([`store_fault`]) before a first launch, since a run not proved
-    /// unheld launches nothing. An operator hold ends it with `id` parked when this decorator
-    /// parks on one.
+    /// unheld launches nothing. A manual hold ends it with `id` parked when this decorator
+    /// parks on an operator hold or has parked a spawn already.
     fn wait_out_the_hold(&self, id: &str, mut relaunched: Option<Error>) -> Result<(), Error> {
         loop {
             let hold = read_current_hold(self.store, STREAM).map_err(|read| {
@@ -126,7 +166,11 @@ impl<'a> HeldDriver<'a> {
             })?;
             match hold {
                 None => return Ok(()),
-                Some(hold) if hold.operator && self.parks_on_an_operator_hold => {
+                Some(hold)
+                    if hold.manual
+                        && (self.parks_on_an_operator_hold
+                            || self.parked.load(Ordering::SeqCst)) =>
+                {
                     self.parked.store(true, Ordering::SeqCst);
                     return Err(parked_spawn(id));
                 }
@@ -142,7 +186,7 @@ impl<'a> HeldDriver<'a> {
     /// a read of the hold, since the host's own read decided it. Spends nothing: the relaunch it
     /// answers true for is spent by [`Self::try_spend_relaunch`].
     fn carries_across(&self, e: &Error, id: &str) -> bool {
-        if is_parked_or_refused(e, EMIT_REFUSED_MARKER) || is_store_fault(e) {
+        if is_parked_or_refused(e) || is_store_fault(e) {
             return false;
         }
         let Ok(slice) = self.run_slice() else {
@@ -181,7 +225,7 @@ impl<'a> HeldDriver<'a> {
     /// ([`spawn_store::record_result_unless_ended`]), never beside a result that ended the spawn.
     /// Best-effort: a failed read or write leaves `e` to reach the conductor unchanged.
     fn record_error(&self, e: &Error, id: &str) {
-        if is_parked_or_refused(e, EMIT_REFUSED_MARKER) || is_store_fault(e) {
+        if is_parked_or_refused(e) || is_store_fault(e) {
             return;
         }
         if is_interrupted(e)
@@ -204,6 +248,12 @@ impl<'a> HeldDriver<'a> {
     }
 }
 
+/// Whether `e` is the API's refusal of a spawn the host closed `fault`: its class's row rejects. A
+/// refusal the host marked interrupted is carried across like any interrupted error.
+fn is_rejected(e: &Error) -> bool {
+    !is_interrupted(e) && failure_class(e).is_some_and(AgentFailure::is_rejected)
+}
+
 /// Whether spawn `id` has a relaunch left under [`RELAUNCH_BOUND`] in `counts`.
 fn relaunch_owed(counts: &HashMap<String, u32>, id: &str) -> bool {
     counts.get(id).is_none_or(|count| *count < RELAUNCH_BOUND)
@@ -221,6 +271,13 @@ impl AgentDriver for HeldDriver<'_> {
         loop {
             self.wait_out_the_hold(&opts.id, relaunched.take())?;
             match self.inner.spawn(agent, prompt, opts, emit) {
+                Err(e) if is_rejected(&e) => match self.park_the_refused(&e, prompt, opts) {
+                    Some(parked) => return Err(parked),
+                    None => {
+                        self.record_error(&e, &opts.id);
+                        return Err(e);
+                    }
+                },
                 Ok(result) => {
                     self.relaunch_counts
                         .lock()
@@ -249,8 +306,9 @@ mod tests {
     use std::sync::Mutex;
 
     use rigger_domain::agent::{
-        launch_interrupted, no_result_error, parked_spawn, store_fault, AgentDriver, AgentFailure,
-        AgentResult, Error, SpawnOpts, API_UNSTABLE, EMIT_REFUSED_MARKER,
+        launch_interrupted, no_result_error, parked_spawn, store_fault, strip_failure_marker,
+        AgentDriver, AgentFailure, AgentResult, Error, SpawnOpts, API_UNSTABLE,
+        EMIT_REFUSED_MARKER,
     };
     use serde_json::Value;
 
@@ -262,8 +320,8 @@ mod tests {
     use crate::run_store;
     use crate::spawn::{SpawnEvent, SpawnRequest, SpawnResult, TYPE_SPAWN_RESULT};
     use crate::test_support::{
-        agent, ev, held_event, implementer_opts, no_emit, placed_positions, released_event,
-        run_started, spawn_result_rows, ReadsFailWhenArmed,
+        agent, conductor_fault_hold, ev, held_event, holds_in, implementer_opts, no_emit,
+        placed_positions, released_event, run_started, spawn_result_rows, ReadsFailWhenArmed,
     };
 
     /// The spawn each row launches, and a second spawn id for the rows the bound keeps apart.
@@ -279,9 +337,10 @@ mod tests {
         invalid type: integer `1`, expected a string at line 1 column 7";
 
     /// A category of each disposition.
-    const FAULT: AgentFailure = AgentFailure::InvalidRequest;
+    const FAULT: AgentFailure = AgentFailure::MaxOutputTokens;
     const WAIT: AgentFailure = AgentFailure::RateLimit;
     const HOLD: AgentFailure = AgentFailure::BillingError;
+    const REJECTED: AgentFailure = AgentFailure::InvalidRequest;
 
     /// The error a session ending on `class` returns.
     fn classed(class: AgentFailure) -> Error {
@@ -328,6 +387,15 @@ mod tests {
         }
         .to_event()
         .unwrap()
+    }
+
+    /// The fault the decorator holds the run on when the API refuses spawn [`ID`] of unit `solo`
+    /// with `e`, the four characters of the prompt [`check`] hands it named.
+    fn refusal(e: &Error) -> String {
+        format!(
+            "the API refused spawn {ID} of unit solo\na prompt of 4 characters: {}",
+            strip_failure_marker(e)
+        )
     }
 
     /// The result row ([`spawn_result_rows`]) of spawn [`ID`] ending on `e`.
@@ -457,6 +525,9 @@ mod tests {
         /// ([`HeldDriver::parking_on_an_operator_hold`]), and whether it must say it parked.
         parks: bool,
         parked: bool,
+        /// The fault the decorator must hold the run on for a spawn the API refused, and say it
+        /// held it on.
+        rejected: Option<String>,
     }
 
     impl Default for Row {
@@ -474,6 +545,7 @@ mod tests {
                 results: Vec::new(),
                 parks: false,
                 parked: false,
+                rejected: None,
             }
         }
     }
@@ -487,7 +559,8 @@ mod tests {
 
     /// Run `rows` through the real decorator over a real store and assert each exactly: every
     /// spawn's output or error byte for byte, the ordered launches, the launches standing at
-    /// each pause, and the results the decorator recorded.
+    /// each pause, whether it parked, the fault it held the run on, and the results and holds the
+    /// decorator recorded. Each spawn is of unit `solo` and of the prompt `task`.
     fn check(rows: Vec<Row>) {
         for row in rows {
             let name = row.name;
@@ -539,7 +612,10 @@ mod tests {
                     .spawn(
                         &agent("implementer"),
                         "task",
-                        &implementer_opts(id),
+                        &SpawnOpts {
+                            unit: "solo".to_string(),
+                            ..implementer_opts(id)
+                        },
                         &no_emit,
                     )
                     .map(|result| result.output)
@@ -557,12 +633,14 @@ mod tests {
             );
             assert_eq!(*paused_at.lock().unwrap(), row.paused_at, "{name}: pauses");
             assert_eq!(
-                (
-                    held.take_parked_on_an_operator_hold(),
-                    held.take_parked_on_an_operator_hold()
-                ),
+                (held.take_parked(), held.take_parked()),
                 (row.parked, false),
-                "{name}: whether it parked on an operator hold, and that the take cleared it"
+                "{name}: whether it parked, and that the take cleared it"
+            );
+            assert_eq!(
+                (held.take_rejected_spawn(), held.take_rejected_spawn()),
+                (row.rejected.clone(), None),
+                "{name}: the fault it held the run on, and that the take cleared it"
             );
             let authored = authored.into_inner().unwrap();
             let recorded: Vec<Event> = store
@@ -576,7 +654,77 @@ mod tests {
                 row.results,
                 "{name}: the results the decorator recorded"
             );
+            assert_eq!(
+                holds_in(&recorded),
+                Vec::from_iter(row.rejected.as_deref().map(conductor_fault_hold)),
+                "{name}: the holds the decorator recorded"
+            );
         }
+    }
+
+    /// A SPAWN THE API REFUSES IS THE CONDUCTOR'S FAULT: an error of the `invalid_request` class
+    /// the host closed `fault` holds the run for the orchestrator, naming the spawn, its unit and
+    /// its prompt's size, and parks the spawn with nothing recorded, so the run's drive ends with no
+    /// attempt charged and `rigger release` continues it; a later spawn of the drive parks on that
+    /// hold too, a driver that does not park on an operator hold included. A refusal the host
+    /// closed `interrupted` on a held run is carried across like any interrupted error, and a
+    /// hold the decorator cannot write leaves the refusal to its spawn site.
+    #[test]
+    fn a_spawn_the_api_refuses_parks_and_holds_the_run_for_the_orchestrator() {
+        let refused_close = || classed(REJECTED);
+        check(vec![
+            Row {
+                name: "a refused spawn parks and holds the run",
+                seeded: vec![requested()],
+                script: vec![fails(refused_close())],
+                calls: one_call(Err(parked_spawn(ID))),
+                launched: vec![ID],
+                parked: true,
+                rejected: Some(refusal(&refused_close())),
+                ..Row::default()
+            },
+            Row {
+                name: "a parking driver's refused spawn parks and holds the run",
+                seeded: vec![requested()],
+                parks: true,
+                script: vec![fails(refused_close())],
+                calls: one_call(Err(parked_spawn(ID))),
+                launched: vec![ID],
+                parked: true,
+                rejected: Some(refusal(&refused_close())),
+                ..Row::default()
+            },
+            Row {
+                name: "a later spawn of the drive parks on the refusal's hold",
+                script: vec![fails(refused_close())],
+                calls: vec![
+                    (ID, Err(parked_spawn(ID))),
+                    (SIBLING, Err(parked_spawn(SIBLING))),
+                ],
+                launched: vec![ID],
+                parked: true,
+                rejected: Some(refusal(&refused_close())),
+                ..Row::default()
+            },
+            Row {
+                name: "a refused spawn the host closed interrupted is carried across",
+                script: vec![
+                    held_then_fails(launch_interrupted(REJECTED, "refused".into())),
+                    done(),
+                ],
+                calls: one_call(Ok(OUTPUT)),
+                launched: vec![ID, ID],
+                paused_at: vec![1],
+                ..Row::default()
+            },
+            Row {
+                name: "a hold the decorator cannot write passes the refusal",
+                script: vec![fails(refused_close()).breaking_reads()],
+                calls: one_call(Err(refused_close())),
+                launched: vec![ID],
+                ..Row::default()
+            },
+        ]);
     }
 
     /// AN OPERATOR HOLD IS THE STOP OF AN ADOPTING DRIVER: a decorator parking on an operator hold

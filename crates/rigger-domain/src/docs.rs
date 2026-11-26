@@ -181,11 +181,14 @@ fn discipline_body(ctx: &DocsContext) -> String {
         "The knowledge graph is the lookup surface - reach for it before grepping the project's \
          sources. One call answers most lookups: `rigger graph --lookup <term>...` (the \
          `rigger_graph` tool's `lookup`) answers each term at once from the graph (definition \
-         site, callers, callees), a live scan of your working tree and the project's ranked prose \
+         site, the doc's first line, the referrers on one line per label - `called by`, `reads`, \
+         `type use` and the rest - and the callees), a live scan of your working tree and the \
+         project's ranked prose \
          (specs, criteria, decisions, findings, lessons, docs), each section labelled by its \
          source. Three verbs answer the narrower questions you have about the code: `rigger graph \
          --around <file|entity>` (structure: who calls X, and the caller/callee neighborhood), \
-         `rigger graph --show <entity>` (text: an entity's definition site and its body, or for a \
+         `rigger graph --show <entity>` (text: an entity's definition site, doc, referrers and \
+         body, or for a \
          name no entity carries, the names it is nearest to), and \
          `rigger peers <file>...` (memory: the prior decisions, findings, and lessons about the \
          files). Grep over the project's sources is a fallback worth reporting, not a habit: if the \
@@ -319,7 +322,17 @@ fn discipline_body(ctx: &DocsContext) -> String {
          refuses, recording nothing, when no run is live: none has started, or the current run \
          is done. `rigger release` ends the current run's hold, whichever \
          writer declared it, an outage hold included, so the next launch goes at once instead of \
-         after the next probe. With no hold open it records nothing and says so. {stop}\n",
+         after the next probe. With no hold open it records nothing and says so. Any error but a \
+         park that ends a run's drive, a step git refused over a unit's work and a spawn the API \
+         refused included, holds the run for the orchestrator, the session that launched the \
+         run and watches it, naming the fault, and its driver exits non-zero: `rigger watch` \
+         reports the hold, `rigger status` prints the fault under it, and once the cause is \
+         fixed at its root `rigger release` relaunches the run. When a unit's checkpoint commit or \
+         the merge of the run branch into its worktree is refused, the attempt that step ended is \
+         charged and the release retries the unit, its next attempt told the refusal. A \
+         `model_not_found` hold is the orchestrator's too. When the same fault holds the run \
+         again after that release, the hold is for a person, and `rigger status` lists it under \
+         what needs you. {stop}\n",
         stop = DRIVER_STOP_RULE
     );
 
@@ -479,7 +492,7 @@ only.
 Design and Global constraints only - criteria checkboxes are the run's identity (editing one
 orphans the live run). Commit when no step is mid-flight, then `rigger emit DecisionMade` naming
 the spec file so in-flight reviewers see the change through the graph immediately. Still
-escalates? Restart fresh: durable branches carry the work, the budget resets.
+escalates? Restart fresh: durable branches carry the work.
 
 ## Quick reference: churn signature -> planning defect
 
@@ -814,7 +827,7 @@ way). The protocol, validated in production:
    in-flight reviewers ground through the knowledge graph and see it IMMEDIATELY, ahead of
    their worktrees picking up the text.
 4. If the run still escalates, restart FRESH under the amended spec: durable unit branches
-   carry the work forward, the budget resets, and the graph's findings steer the new attempts.
+   carry the work forward, and the graph's findings steer the new attempts.
 
 ## What good looks like, measured
 
@@ -890,8 +903,8 @@ pub const DRIVER_STOP_RULE: &str = "A hold (`rigger hold --reason <text>`) stops
      relaunched by `rigger release` alone, and an interrupted driver is never relaunched. Ending a \
      driver's process any other way is a death, and the next `rigger status` (not `--line` or \
      `--json`) or session start (`rigger prime`) brings it back by adoption, as `rigger release` \
-     and `rigger resume-unit` do, each invoked from the main checkout; no other command relaunches \
-     it.";
+     and `rigger resume-unit` do, each invoked from the main checkout, and as the next login does \
+     for a run started with `--relaunch-at-login`; no other command relaunches it.";
 
 /// Render the `rigger-reset-store` skill (spec 68, criterion 2): store hygiene for the
 /// three files under `.rigger/`. `ctx` is accepted only to match the registry's uniform
@@ -1018,8 +1031,9 @@ fn render_resume_a_run_skill(_ctx: &DocsContext) -> String {
     render_operation_skill(
         "rigger-resume-a-run",
         "Continue interrupted work after a dead driver (spent quota, a crash, a \
-         laptop that slept mid-run) or `rigger status` showing an agent 'in flight' with a \
-         stale heartbeat. Read this before relaunching a run or reaching for `--fresh`.",
+         laptop that slept mid-run), `rigger status` showing an agent 'in flight' with a \
+         stale heartbeat, or a hold `rigger watch` reports for the orchestrator. Read this \
+         before relaunching a run or reaching for `--fresh`.",
         &[],
         &[
             "Diagnose first: `rigger status` (or the dashboard) shows each in-flight agent's \
@@ -1033,21 +1047,45 @@ fn render_resume_a_run_skill(_ctx: &DocsContext) -> String {
             &format!(
                 "A `rigger run` driver that died needs no hand relaunch. {stop} The relaunch \
                  adopts the run in the background, resolving the store, scratch and state roots \
-                 the dead driver resolved, and says so in one line on stderr, naming its \
+                 the dead driver resolved and finding its tools on the search path (`PATH`) it \
+                 had, and says so in one line on stderr, naming its \
                  pid and the file its output goes to (`.rigger/driver.out`, which `rigger status` \
                  names while it holds what a relaunched driver said before it ended, and a driver \
                  started by hand removes). `rigger \
                  watch` relaunches nothing: it names the dead driver and `rigger status` as what \
-                 brings it back, and under an operator hold it reports the run held and names \
-                 `rigger release`. A driver that returned is never relaunched, save one that parked on an \
-                 operator hold, which `rigger release` relaunches. A \
+                 brings it back, and it reports every open hold no probe ends, an operator hold, \
+                 the conductor's fault hold or a `model_not_found` hold, driver or no driver, naming who resolves it and \
+                 how. A driver that returned is never relaunched, save one that ended with its \
+                 run held for the orchestrator or a person, which `rigger release` relaunches: \
+                 one that parked on an operator hold, and one that ended on any error but a \
+                 park, a step git refused over a unit's work and a spawn the API refused \
+                 included, which holds the run naming the fault and exits non-zero. A \
                  driver that dies again within ten minutes of its relaunch, a relaunch that never \
                  started, or one whose recorded binary no longer exists is left stopped, and the \
                  line names the command that relaunches it by hand. A driver that gave its agents \
                  the login token in `RIGGER_CLAUDE_CODE_OAUTH_TOKEN`, or drove the server store \
                  named in `KURRENTDB_CONN` or by `--conn`, is relaunched only from an environment \
                  that sets that variable too; from any other, the line names that command and \
-                 nothing is relaunched.\n",
+                 nothing is relaunched. A run started with `--relaunch-at-login` also registers \
+                 a login entry with the OS's login-start facility (a systemd user unit on Linux, a \
+                 LaunchAgent on macOS, a script in the Startup folder on Windows) while the run is \
+                 live, so a machine that reboots mid-run brings the run back at the next login, \
+                 with no session opened: the entry runs `rigger run --at-login <project root>`, \
+                 which relaunches a dead driver as `rigger status` would and removes the entry \
+                 once no relaunch is owed. A driver that ends on its own or is refused removes \
+                 its entry as it empties its record, save one that ended with its run held for \
+                 the orchestrator or a person, whose entry stands with its record; a run started \
+                 without the flag registers nothing, \
+                 and a login removes the entry an earlier launch of it left. A login also removes \
+                 the entry of a project on a volume not mounted at that login; its run comes back \
+                 by the usual relaunch at the next session start or `rigger status`, and registers \
+                 its entry again. Each launch with the flag and `rigger setup` remove an entry \
+                 whose program was since uninstalled or moved, one line naming its key and \
+                 program, and name in one line, leaving it, an entry under rigger's key that is \
+                 not in the form rigger writes; an entry they cannot read is named in one line \
+                 with its path and the error and left while the rest are swept, and a directory \
+                 they cannot list is named the same way and none is swept, failing neither, and \
+                 a host with no login-start facility leaves `rigger setup` silent.\n",
                 stop = DRIVER_STOP_RULE
             ),
             "When that line says the run was left stopped, or a driver was stopped on purpose, \
@@ -1073,7 +1111,28 @@ fn render_resume_a_run_skill(_ctx: &DocsContext) -> String {
              the start of a new run and a `rigger run` run reaching done. A release with no hold \
              open records nothing and says so. A hold outlives its driver: no check relaunches a \
              held run, a relaunched driver that finds an operator hold parks its next launch and \
-             ends, and `rigger release` relaunches the run.\n",
+             ends, and `rigger release` relaunches the run. Any error but a park that ends its \
+             drive (a plan landing that fails, a unit worktree it cannot make, a step git refuses \
+             over a unit's work, a spawn the API refuses) holds the run the same way, naming the \
+             fault, and the driver exits non-zero.\n",
+            "A hold for a conductor fault, a refused request or a `model_not_found` is YOURS to \
+             resolve first, as the orchestrator, the session that launched the run and watches it: `rigger watch` \
+             reports it as a hold for the orchestrator, and `rigger status` prints the fault \
+             under it. Read that fault. Fix its cause at the root, and never weaken a guard, a \
+             gate or a criterion to get past it. Then run `rigger release`, which relaunches the \
+             run. If the same fault holds the run again after your release (the same cause and \
+             the same first line of the fault, or `model_not_found` again), your fix did not hold and the hold is now for a \
+             person: `rigger status` lists it under what needs you, so stop and tell them exactly \
+             what you tried. That holds however many holds of other faults you released \
+             since; a fault no hold you released named is yours to resolve again.\n",
+            "A hold whose fault begins `unit \"<name>\" attempt <n> was refused:` is the one a \
+             release itself resolves: that unit's checkpoint commit or the merge of the run branch \
+             into its worktree was refused, the refused attempt is charged to the unit, and \
+             `rigger release` launches its next attempt, the refusal in that attempt's prompt \
+             and the work the refused tree held still in its worktree. Fix the \
+             tree first only if the fault shows no agent session can change it. Each attempt's \
+             refusal is its own fault, so the unit's retry bound, not a recurrence, decides when \
+             the unit escalates.\n",
         ],
         "Do not reach for `--fresh` reflexively just because a run looks stuck: on a merely-interrupted run it abandons the \
          adoptable state your relaunch would otherwise have continued from, in exchange for \
@@ -1110,7 +1169,29 @@ fn render_handle_an_escalation_skill(ctx: &DocsContext) -> String {
             &format!(
                 "Apply EXACTLY that remedy on the unit's durable branch (`rigger/u/<unit-id>`, the \
              branch rigger itself created and kept for this unit's committed work across every \
-             attempt) - nothing more, nothing less. Then relaunch the run fresh - `rigger run \
+             attempt) - nothing more, nothing less. When the last attempt left work outside a \
+             commit - work git refused a step on, or a plan its planner did not commit - the tree \
+             that attempt left is kept as one commit on the unit's kept ref \
+             (`rigger/kept/<unit-id>`), the escalation lesson naming the commit and the ref, and \
+             the tree itself is removed. A unit whose speculation lanes all lost keeps each lane \
+             git refused the same way, lane 0 on `rigger/kept/<unit-id>` and lane n on \
+             `rigger/kept/<unit-id>-spec<n>`, the lesson naming each; a lane whose HEAD had \
+             left its branch keeps that branch's commits too, as the keep's second parent. That \
+             commit carries the \
+             tree exactly as the attempt left \
+             it, refused content and conflict markers included, and it is never on the unit's \
+             branch: read it (`git show rigger/kept/<unit-id>`, or a worktree of your own on it) \
+             and bring onto the unit's branch only what the remedy keeps, as a commit git's own \
+             checks accept (`git checkout rigger/kept/<unit-id> -- <path>` in a tree on \
+             `rigger/u/<unit-id>`, then commit). Free the branch from that tree before the \
+             relaunch (`git -C <tree> switch --detach`, or remove the tree), since a run that \
+             finds the unit's branch checked out outside rigger's work root holds and names the \
+             tree. The kept refs go when the unit integrates. A run \
+             of another spec that plans a unit of the same name first sets it aside to \
+             `rigger/orphaned/<unit-id>-<sha>`, where the commit stays, and while a worktree has \
+             it checked out rigger never moves or deletes it, a later keep standing under \
+             `rigger/orphaned/` instead. Then relaunch the run \
+             fresh - `rigger run \
              <spec> --base <ref> --fresh` - against the same, otherwise-unchanged spec: the \
              conductor mints a new run boundary, and the loop picks the escalated unit back up \
              with a clean remediation budget. Stop the old driver first if it still runs, so the \
@@ -1188,7 +1269,10 @@ fn render_watch_a_run_skill(ctx: &DocsContext) -> String {
                 "FIRST instruction, every time: on launch, ARM `rigger watch` under the harness's \
                  background monitor - it polls store and status on its own (default every {}s, \
                  `--interval <s>` to change it) and folds these same five signals, plus a sixth \
-                 store-integrity check of its own, into one printed line per anomaly. The manual look \
+                 store-integrity check of its own, into one printed line per anomaly. It also \
+                 prints a line for every open hold no probe will end, driver or no driver, naming \
+                 who resolves it (you, the orchestrator, first; a person once your fix has not \
+                 held) and its response. The manual look \
                  above is the FALLBACK for when nothing is armed, exercised at least once per \
                  remediation cycle even while `rigger watch` is running.\n",
                 ctx.watch_poll_interval_secs

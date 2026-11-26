@@ -1,12 +1,13 @@
 //! THE EXTRACTOR PROTOCOL's stub extractor (spec 125, criterion 8): a POSIX shell script a test
 //! declares as an extractor's `run`. It answers each request line with the one line a test wrote
 //! for the request's path, and records the directory it started in, every request it read and
-//! each time its input ended, so a test pins what the code store asked and how many sessions it
-//! started and closed. It lives in its own directory, outside the project it serves, so no walk
-//! of the project reads it. It runs under `sh`, so only a unix test starts it. Beside it lie the
-//! request line it reads for a file, the one-function answer line a test writes for it, the
-//! physical root it records as its start and the identity facts a declared file holds when it
-//! holds no symbols.
+//! each time its input ended, once it has waited out the linger a test may set, so a test pins
+//! what the code store asked, how many sessions it started and closed and whether the reader
+//! waited for each to exit. It lives in its own directory, outside the project it serves, so no
+//! walk of the project reads it. It runs under `sh`, so only a unix test starts it. Beside it lie
+//! the request line it reads for a file, the one-function and the references-only answer lines a
+//! test writes for it, the physical root it records as its start and the identity facts a
+//! declared file holds when it holds no symbols.
 
 use std::path::{Path, PathBuf};
 
@@ -15,8 +16,9 @@ use rigger_domain::code_facts::{FileFacts, Half};
 /// The stub's script, run as `sh <script> <dir>`. It appends the physical directory it started
 /// in to `<dir>/starts`; for each request line it appends the line to `<dir>/requests` and prints
 /// `<dir>/answers/<the request's path>`, ending without a line when that file is missing; and
-/// when its input ends it appends a line to `<dir>/ends`. The request's path is read off the
-/// line's head, `{"path":"`, up to the next `"`.
+/// when its input ends it sleeps the seconds `<dir>/linger` holds, when that file exists, then
+/// appends a line to `<dir>/ends`. The request's path is read off the line's head, `{"path":"`,
+/// up to the next `"`.
 const STUB_SCRIPT: &str = r#"dir=$1
 pwd -P >> "$dir/starts"
 while IFS= read -r request; do
@@ -25,6 +27,7 @@ while IFS= read -r request; do
   path=${path%%'"'*}
   cat "$dir/answers/$path" 2>/dev/null || exit 1
 done
+if [ -f "$dir/linger" ]; then sleep "$(cat "$dir/linger")"; fi
 echo ended >> "$dir/ends"
 "#;
 
@@ -69,6 +72,12 @@ impl StubExtractor {
         std::fs::write(file, format!("{answer}\n")).expect("write the answer");
     }
 
+    /// Makes each session of the stub whose input ends from now on wait `seconds` before it
+    /// records that end and exits, so whether a reader waited for it shows in [`Self::ends`].
+    pub fn lingers(&self, seconds: u32) {
+        std::fs::write(self.dir.join("linger"), seconds.to_string()).expect("write the linger");
+    }
+
     /// The physical directory of each start of the stub, in start order.
     pub fn starts(&self) -> Vec<String> {
         self.recorded("starts")
@@ -79,7 +88,8 @@ impl StubExtractor {
         self.recorded("requests")
     }
 
-    /// One line for each session of the stub whose input ended, in the order they ended.
+    /// One line for each session of the stub whose input ended, in the order they ended, each
+    /// written once the session has waited out its linger ([`Self::lingers`]).
     pub fn ends(&self) -> Vec<String> {
         self.recorded("ends")
     }
@@ -114,6 +124,12 @@ pub fn answer_defining_at(path: &str, leaf: &str, line: u32, end_line: u32) -> S
     format!(
         r#"{{"path":"{path}","defs":[{{"kind":"Function","name":"{leaf}","line":{line},"end_line":{end_line},"path":"{leaf}"}}],"refs":[]}}"#
     )
+}
+
+/// The answer line giving the file `path` no definitions and the references `refs`, JSON objects
+/// comma-separated.
+pub fn answer_with_refs(path: &str, refs: &str) -> String {
+    format!(r#"{{"path":"{path}","defs":[],"refs":[{refs}]}}"#)
 }
 
 /// The physical directory of the project at `root`, as the stub records where it started.

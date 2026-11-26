@@ -5,18 +5,21 @@
 //! seam means one place owning how a child is launched: the program a name resolves to on
 //! Windows ([`command`], through [`find_executable`]), the working-directory rule every caller
 //! shares ([`command_in`]), the host's shell given a project's command line whole
-//! ([`shell_command`]), the one open file a child inherits across its exec ([`inherit_on_exec`])
-//! and the `git -C <dir>` shape nearly every git call takes, its repository found from `dir`
-//! alone ([`git_in`]). Beyond those rules it adds no policy of its own: the caller still picks
-//! the arguments, the environment, the stdio and how the child is waited on, and a child is only
-//! ever ended through its own spawning handle.
+//! ([`shell_command`]), the one open file a child inherits across its exec ([`inherit_on_exec`]),
+//! the `git -C <dir>` shape nearly every git call takes, its repository found from `dir` alone
+//! ([`git_in`]), and the agents' login token no child inherits ([`command`]). Beyond those rules
+//! it adds no policy of its own: the caller still picks the arguments, the rest of the
+//! environment, the stdio and how the child is waited on, and a child is only ever ended through
+//! its own spawning handle.
 
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// A fresh command for `program`, inheriting this process's environment, working directory
-/// and stdio exactly as [`Command::new`] does. On Windows a program name holding no path
+/// and stdio exactly as [`Command::new`] does, but for the agents' login token
+/// ([`RIGGER_AGENT_TOKEN_VAR`](rigger_domain::spawn::RIGGER_AGENT_TOKEN_VAR)): no child inherits
+/// it, so the one spawn that needs it sets it itself. On Windows a program name holding no path
 /// separator is spawned at the path [`find_executable`] resolves it to over
 /// [`SearchPath::ambient`], and as given when that resolves nothing; elsewhere `program` goes
 /// to [`Command::new`] unchanged.
@@ -29,11 +32,16 @@ pub fn command(program: impl AsRef<OsStr>) -> Command {
     } else {
         None
     };
-    match resolved {
+    let mut cmd = match resolved {
         Some(path) => Command::new(path),
         None => Command::new(program),
-    }
+    };
+    cmd.env_remove(rigger_domain::spawn::RIGGER_AGENT_TOKEN_VAR);
+    cmd
 }
+
+/// The variable the directories a program name is looked up in are read from.
+pub const PATH_ENV: &str = "PATH";
 
 /// Where a program name is looked up: `dirs`, a `PATH`-style directory list joined by the
 /// platform's separator, and `pathext`, a `PATHEXT`-style list of `;`-separated extensions,
@@ -50,7 +58,7 @@ impl SearchPath {
     /// through.
     pub fn ambient() -> Self {
         Self {
-            dirs: std::env::var_os("PATH").unwrap_or_default(),
+            dirs: std::env::var_os(PATH_ENV).unwrap_or_default(),
             pathext: std::env::var("PATHEXT").unwrap_or_default(),
         }
     }
@@ -164,7 +172,7 @@ std::cfg_select! {
 
 /// The host's shell given the command line `run` whole, as a project writes one (a declared
 /// extractor's `run`, say), running in `dir`: `cmd` and [`cmd_argument`] on Windows, `sh -c
-/// <run>` elsewhere. The caller adds the stdio and the environment.
+/// <run>` elsewhere. The caller adds the stdio and the rest of the environment.
 pub fn shell_command(run: &str, dir: &Path) -> Command {
     let mut cmd = host_shell(run);
     cmd.current_dir(dir);
@@ -216,15 +224,34 @@ const GIT_REPOSITORY_VARIABLES: [&str; 6] = [
 /// with none of [`GIT_REPOSITORY_VARIABLES`] passed on, so the repository git finds from `dir` is
 /// the one it operates on whatever repository this process's environment names (the convention
 /// git documents for a hook that operates on another repository). A caller may still set one of
-/// them on the command it is handed.
-pub fn git_in(dir: impl AsRef<OsStr>) -> Command {
+/// them on the command it is handed. Git speaks in the C locale (`LC_ALL=C`), so the English refusals a caller matches
+/// (a merge refused over local changes, a revert with nothing to commit) read the same on every
+/// host whatever language its user chose; a hook git runs inherits that locale.
+///
+/// The one place a production git command is built, so the one place an empty `dir` is refused:
+/// git reads `-C ""` as the process's own working directory, which for a caller holding no
+/// repository (a repo-less run) is whatever repository the process happens to sit in, never one
+/// the caller chose. Every git call of such a caller fails here instead of acting there.
+pub fn git_in(dir: impl AsRef<OsStr>) -> std::io::Result<Command> {
+    let dir = dir.as_ref();
+    if dir.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            NO_REPOSITORY,
+        ));
+    }
     let mut cmd = command("git");
     cmd.arg("-C").arg(dir);
     for variable in GIT_REPOSITORY_VARIABLES {
         cmd.env_remove(variable);
     }
-    cmd
+    cmd.env("LC_ALL", "C");
+    Ok(cmd)
 }
+
+/// Why [`git_in`] refuses an empty repository path.
+pub const NO_REPOSITORY: &str =
+    "no repository: an empty repository path names the process's working directory";
 
 #[cfg(test)]
 mod tests {
@@ -243,22 +270,55 @@ mod tests {
             assert_eq!(cwd_of(&command_in("sh", "/x")), Some(std::path::Path::new("/x")));
     }
 
-    /// `git_in` is exactly `git -C <dir>` with every variable naming a repository removed from
-    /// the child's environment, and nothing else added.
+    /// `git_in` is exactly `git -C <dir>` with every variable naming a repository, and the one
+    /// carrying the agents' login token, removed from the child's environment, the C locale set,
+    /// and nothing else added: no git child rigger starts, nor any hook git runs, is handed the
+    /// token, and every git refusal a caller matches is in English.
     #[test]
     fn git_in_anchors_git_at_the_directory() {
-        let cmd = git_in("/repo");
+        let cmd = git_in("/repo").unwrap();
         assert_eq!(cmd.get_program(), "git");
         let args: Vec<&OsStr> = cmd.get_args().collect();
         assert_eq!(args, vec![OsStr::new("-C"), OsStr::new("/repo")]);
         assert_eq!(cwd_of(&cmd), None);
         let envs: Vec<(&OsStr, Option<&OsStr>)> = cmd.get_envs().collect();
-        let mut removed: Vec<(&OsStr, Option<&OsStr>)> = GIT_REPOSITORY_VARIABLES
+        let mut expected: Vec<(&OsStr, Option<&OsStr>)> = GIT_REPOSITORY_VARIABLES
             .iter()
+            .chain([&rigger_domain::spawn::RIGGER_AGENT_TOKEN_VAR])
             .map(|variable| (OsStr::new(variable), None))
+            .chain([(OsStr::new("LC_ALL"), Some(OsStr::new("C")))])
             .collect();
-        removed.sort();
-        assert_eq!(envs, removed);
+        expected.sort();
+        assert_eq!(envs, expected);
+    }
+
+    /// No child this interface builds is handed the agents' login token: every constructor, the
+    /// base one included, removes it from the child's environment, so a spawn passes it on only
+    /// by setting it again itself.
+    #[test]
+    fn no_constructor_passes_the_agents_login_token_on() {
+        let removed = (
+            OsStr::new(rigger_domain::spawn::RIGGER_AGENT_TOKEN_VAR),
+            None,
+        );
+        let rows = [
+            ("command", command("x")),
+            ("command_in", command_in("x", "/d")),
+            ("shell_command", shell_command("true", Path::new("/d"))),
+            ("git_in", git_in("/repo").unwrap()),
+        ];
+        for (name, cmd) in rows {
+            assert!(cmd.get_envs().any(|env| env == removed), "{name}");
+        }
+    }
+
+    /// An empty repository path builds no git command: git would read it as this process's own
+    /// working directory.
+    #[test]
+    fn git_in_refuses_an_empty_repository_path() {
+        let refused = git_in("").unwrap_err();
+        assert_eq!(refused.kind(), std::io::ErrorKind::InvalidInput);
+        assert_eq!(refused.to_string(), NO_REPOSITORY);
     }
 
     /// `cmd_argument` is cmd's switches - no AutoRun, the outer quotes stripped, run then end -
@@ -276,7 +336,8 @@ mod tests {
     }
 
     /// `shell_command` is the host's shell given the run whole - `cmd` and its one raw argument
-    /// on Windows, `sh -c <run>` elsewhere - in the directory, and nothing else.
+    /// on Windows, `sh -c <run>` elsewhere - in the directory, with the agents' login token
+    /// removed from its environment, and nothing else.
     #[test]
     fn shell_command_is_the_hosts_shell_given_the_run_in_the_directory() {
         let run = r#"cargo test "a b""#;
@@ -292,13 +353,16 @@ mod tests {
                 cmd.get_program(),
                 cmd.get_args().collect::<Vec<_>>(),
                 cwd_of(&cmd),
-                cmd.get_envs().count()
+                cmd.get_envs().collect::<Vec<_>>()
             ),
             (
                 OsStr::new(program),
                 args.iter().map(OsStr::new).collect::<Vec<_>>(),
                 Some(dir),
-                0
+                vec![(
+                    OsStr::new(rigger_domain::spawn::RIGGER_AGENT_TOKEN_VAR),
+                    None
+                )]
             )
         );
     }

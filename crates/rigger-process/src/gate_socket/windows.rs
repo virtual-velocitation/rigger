@@ -334,9 +334,10 @@ impl GateChannel for GateSocket {
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         // The connect is waited for one poll at a time, so the loop sees the flag within one poll
-        // whether or not any client connects.
+        // whether or not any client connects. Ending clears the flag, so a later drive on this
+        // pipe serves again.
         std::thread::scope(|s| {
-            while !self.closed.load(Ordering::SeqCst) {
+            while !self.closed.swap(false, Ordering::SeqCst) {
                 let connected = match listening.connected_within(millis(ACCEPT_POLL)) {
                     Ok(false) => continue,
                     Ok(true) => true,
