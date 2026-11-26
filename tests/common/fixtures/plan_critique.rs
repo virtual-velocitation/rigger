@@ -111,6 +111,14 @@ pub const DAG_PRIOR_REJECT_HEADER: &str = "A prior plan-critique REJECTED this d
 /// The complexity a DAG critique row shows for a stage the planner gave no step.
 pub const DAG_UNASSESSED: &str = "unassessed";
 
+/// The blast radius a DAG critique row lists for a unit of a project with no grounded source.
+pub const DAG_NONE_GROUNDED: &str = "(none grounded)";
+
+/// The sentence a re-plan's task asks the planner to revise its DAG with, after the reject it
+/// quotes: every unit again, each with its step and reason.
+pub const REPLAN_REVISE: &str =
+    "Revise the unit DAG to resolve it, then re-emit every unit with its step and reason. ";
+
 /// The complexity a DAG critique row shows for a stage at `step` for `reason`: the step's name
 /// and the reason quoted, escaped as its `Debug` form prints it.
 pub fn dag_complexity(step: Complexity, reason: &str) -> String {

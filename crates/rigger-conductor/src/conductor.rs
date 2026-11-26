@@ -17991,8 +17991,8 @@ mod tests {
         keyed_index, keyed_payload, pair_of, payloads_of_type, plan_protocol_text, policy_counts,
         run_log, spec_defect_halt_text, stop_records, the_stop_records,
         unassessed_complexity_record, unknown_step, wave_lessons, DAG_DISJOINT_OVERLAP,
-        DAG_PRIOR_REJECT_HEADER, DAG_UNASSESSED, STOP_ESCALATED_KEY, STOP_LESSON_KEY,
-        STOP_SPEC_DEFECT_KEY, WIDGET_CRITERION,
+        DAG_PRIOR_REJECT_HEADER, DAG_UNASSESSED, REPLAN_REVISE, STOP_ESCALATED_KEY,
+        STOP_LESSON_KEY, STOP_SPEC_DEFECT_KEY, WIDGET_CRITERION,
     };
     use crate::test_support::{
         critique_stage, fan_out_stage, plan_stage, review_stage_cfg, workflow_cfg,
@@ -61502,10 +61502,7 @@ stage "implement" adjudicator "adj" failed
         );
         // The re-emit asks for every unit again, each with its step and reason (spec 135).
         assert!(
-            re_plan_prompt.contains(
-                "Revise the unit DAG to resolve it, then re-emit every unit with its step and \
-                 reason. "
-            ),
+            re_plan_prompt.contains(REPLAN_REVISE),
             "the re-emit directive must ask for every unit with its step and reason; got:\n{re_plan_prompt}"
         );
         // The refine directive: re-emit under the EXACT existing id updates in place.
