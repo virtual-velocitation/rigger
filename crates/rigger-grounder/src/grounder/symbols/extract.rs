@@ -5156,7 +5156,8 @@ fn product() {}
     /// THE LEAF SPLIT (spec 117, CAPTURES): a C# base type the fixture query names whole is a
     /// reference to its last leaf, qualified by the text before that leaf's separator. The text
     /// of a type-argument kind is left out of a separator and kept in a qualifier
-    /// (`Outer<T>.Inner`), a separator and a qualifier are read trimmed (`Ns . IShape`), and the
+    /// (`Outer<T>.Inner`), a comment inside the chain is left out of both (`Ns./*x*/IShape`,
+    /// `Ns /* c */ . IShape`), a separator and a qualifier are read trimmed (`Ns . IShape`), and the
     /// last separator decides a path or a member access (`global::Ns.IShape`). A name whose
     /// leaves meet with no separator between them (`int[]`) is no chain and names no reference,
     /// and neither is one whose every named child is of a type-argument kind.
@@ -5172,7 +5173,7 @@ fn product() {}
             &'static str,
             Vec<(&'static str, Option<Qualifier>)>,
         );
-        let table: [Row; 5] = [
+        let table: [Row; 7] = [
             (
                 &["type_argument_list"],
                 "class A : Outer<T>.Inner { }\n",
@@ -5181,6 +5182,16 @@ fn product() {}
             (
                 &["type_argument_list"],
                 "class A : Ns . IShape { }\n",
+                vec![("IShape", member("Ns"))],
+            ),
+            (
+                &["type_argument_list"],
+                "class A : Ns./*x*/IShape { }\n",
+                vec![("IShape", member("Ns"))],
+            ),
+            (
+                &["type_argument_list"],
+                "class A : Ns /* c */ . IShape { }\n",
                 vec![("IShape", member("Ns"))],
             ),
             (
