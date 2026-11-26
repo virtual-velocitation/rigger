@@ -70,8 +70,7 @@ pub struct Def {
     /// or TS named value takes its container's parent, being one definition with it, and a Go
     /// method the path of its receiver base type when a definition of the file sits there; `None`
     /// where that names no definition, the file containing it. Serde-defaulted and omitted when
-    /// `None`; an index persisted before it existed is of an older [`GRAMMAR_TAGS_VERSION`], so it
-    /// loads as absent.
+    /// `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
     /// Spec 86 criterion 1: whether this definition is TEST code - directly annotated

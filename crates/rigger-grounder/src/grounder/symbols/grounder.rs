@@ -3277,14 +3277,13 @@ mod tests {
     #[test]
     fn an_implementing_file_stays_in_the_blast_radius() {
         use crate::facts::tests::facts_under;
-        use crate::grounder::symbols::extract::CompiledTags;
+        use crate::grounder::symbols::extract::tests::compiled;
         use crate::grounder::symbols::model::Lang;
         let query = "(class_definition name: (identifier) @name) @definition.class\n\
                      (class_definition superclasses: \
                      (argument_list (identifier) @name) @reference.implementation)\n\
                      (call function: (identifier) @name) @reference.call\n";
-        let tags = CompiledTags::compile(&tree_sitter_python::LANGUAGE.into(), query, &[], &[])
-            .expect("the fixture query compiles");
+        let tags = compiled(&tree_sitter_python::LANGUAGE.into(), query);
         let files: Vec<FileFacts> = [
             ("shapes.py", "class Shape:\n    pass\n"),
             ("circle.py", "class Circle(Shape):\n    pass\n"),

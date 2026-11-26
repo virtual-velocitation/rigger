@@ -337,10 +337,11 @@ impl Extract for FactsExtractor {
 /// `*/` that closes it ([`until_block_closer`]). `/**` (not `/***` nor `/**/`) and `/*!` open a doc
 /// block ([`opens_doc_block`]) that gives its lines ([`doc_block_lines`]); any other block comment
 /// is dropped whole, a `///` inside it included. A name-value `#[doc = ..]` or `#![doc = ..]` gives
-/// each line of its string literal's body, trimmed ([`doc_attribute_text`]). Every other token is
-/// dropped ([`after_token`]): another attribute, `#[doc(..)]` included, code and every other
-/// literal, read whole so that no comment marker or quote inside a literal is read. Whatever
-/// follows a comment or a literal is read on, and the kept lines join by `\n`.
+/// each line of its string literal's body, trimmed ([`doc_attribute_text`]), when only whitespace
+/// separates its tokens; one with a comment between them, documentation to Rust, gives no text.
+/// Every other token is dropped ([`after_token`]): another attribute, `#[doc(..)]` included, code
+/// and every other literal, read whole so that no comment marker or quote inside a literal is
+/// read. Whatever follows a comment or a literal is read on, and the kept lines join by `\n`.
 fn rust_doc_text(raw: &str) -> String {
     let mut text = Vec::new();
     let mut rest = raw.strip_suffix('\n').unwrap_or(raw);
@@ -642,6 +643,18 @@ struct CodeSymbols {
     doc: Option<(u32, u32)>,
 }
 
+/// The symbols the bundled grammars' extraction gives a file, field for field.
+impl From<model::FileSymbols> for CodeSymbols {
+    fn from(symbols: model::FileSymbols) -> Self {
+        CodeSymbols {
+            defs: symbols.defs,
+            refs: symbols.refs,
+            partial: symbols.partial,
+            doc: symbols.doc,
+        }
+    }
+}
+
 /// A code file as an extraction reads it: the language it is read as and its symbols, none when
 /// there is no text or a declared extractor's answer failed, and why when the bundled grammar
 /// cannot tag the text.
@@ -706,14 +719,7 @@ fn bundled_code(path: &str, text: Option<&str>) -> Option<CodeFile> {
         lang: lang_str(grammar.lang).to_string(),
         symbols: extracted(path, || text, None)
             .flatten()
-            .map(|(_, symbols)| {
-                symbols.map(|symbols| CodeSymbols {
-                    defs: symbols.defs,
-                    refs: symbols.refs,
-                    partial: symbols.partial,
-                    doc: symbols.doc,
-                })
-            }),
+            .map(|(_, symbols)| symbols.map(CodeSymbols::from)),
     })
 }
 
@@ -952,12 +958,7 @@ pub(crate) mod tests {
         file_facts(&entry_of(path), source.as_bytes(), |_, _| {
             Some(CodeFile {
                 lang: lang_str(lang).to_string(),
-                symbols: Some(Ok(CodeSymbols {
-                    defs: symbols.defs,
-                    refs: symbols.refs,
-                    partial: symbols.partial,
-                    doc: symbols.doc,
-                })),
+                symbols: Some(Ok(CodeSymbols::from(symbols))),
             })
         })
     }
@@ -1278,7 +1279,7 @@ pub(crate) mod tests {
     /// times holds one `const` mention, at the first read's line, while its three calls to one
     /// function stay three call mentions, one per call's line.
     #[test]
-    fn one_tagged_mention_per_site_kind() {
+    fn a_constant_read_three_times_is_one_mention_and_three_calls_are_three() {
         let facts = facts_of("src/lib.rs", THREE_READS_AND_THREE_CALLS_SOURCE.as_bytes());
         assert_eq!(
             facts
@@ -2185,7 +2186,7 @@ pub(crate) mod tests {
         // A code fixture's path counts its index among its own extension's fixtures, so a fixture
         // added for one language moves no other language's paths.
         let mut code: Vec<(&str, FileFacts)> = Vec::new();
-        for (ext, source) in GOLDEN_SOURCES {
+        for &(ext, source) in GOLDEN_SOURCES {
             let i = code.iter().filter(|(keyed, _)| *keyed == ext).count();
             code.push((
                 ext,
@@ -3093,6 +3094,8 @@ Unclosed"#,
             "```\n/* set up */\nlet x = 1;\n```",
         ),
         ("rust", "/** a /* b */ c */", "a /* b */ c"),
+        ("rust", "/** a /*/ b */ c */", "a /*/ b */ c"),
+        ("rust", "#! [doc = \"Inner.\"]", "Inner."),
         (
             "rust",
             "/// a\n/* commented out\n/// not doc\n*/\n/// b",
@@ -3140,6 +3143,7 @@ Unclosed"#,
             "//// four\n// plain\n/* block */\n///tight\n///\n/// After.",
             "tight\nAfter.",
         ),
+        ("csharp", "/// See <see cref=\"X\"/>", "See"),
         ("csharp", "", ""),
     ];
 

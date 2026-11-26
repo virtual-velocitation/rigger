@@ -188,13 +188,17 @@ const CSHARP_DEFINITION_TAGS: [&str; 18] = [
 ///   `case !(A && ok):`; a relational pattern's operand, a qualified one the field it names; a
 ///   `var` pattern and a discard; a property subpattern's name, an extended one the field it
 ///   names; a tuple pattern's elements; and a list after `is` whose slice holds a pattern or
-///   precedes one, which the grammar fails to parse;
-/// - a left operand past the bound above; and a generic name of two or more type arguments the
-///   grammar splits at its commas into elements of a list, an argument list, an index, an
-///   initializer, a collection, a `for` update, an interpolation or parentheses it then reads as
-///   a tuple, as `F(x is Gen<A, B> & s is null)` is, whose kept `Gen < A` is a relational
-///   expression, while `F(x is Gen<A, B> & ok)`, kept whole, is the left operand above. The
-///   cause is the grammar splitting the generic at its comma, a misparse that decision
+///   precedes one, and a case label's list whose slice precedes a positional pattern with a
+///   property clause, `case [.., Pt(var x, 0) { }]:`, which the grammar fails to parse;
+/// - a left operand past the bound above; one a comment precedes inside the parentheses holding
+///   its chain in a switch case, `A` of `case (/* c */ A | B):` and of `case !(/* c */ A && ok):`,
+///   since each node of the chain is matched holding the next as its first named child
+///   ([`first_child`]) and the comment stands first there; and a generic name of two or more
+///   type arguments the grammar splits at its commas into elements of a list, an argument list,
+///   an index, an initializer, a collection, a `for` update, an interpolation or parentheses it
+///   then reads as a tuple, as `F(x is Gen<A, B> & s is null)` is, whose kept `Gen < A` is a
+///   relational expression, while `F(x is Gen<A, B> & ok)`, kept whole, is the left operand
+///   above. The cause is the grammar splitting the generic at its comma, a misparse that decision
 ///   `op-s117c31-split-generic-is-a-grammar-misparse-not-required` leaves unstaged;
 /// - a call in a case's body or `when` or in an expression's collection; a positional pattern
 ///   directly in a second pair of parentheses, which the grammar nests as a further expression,
@@ -400,16 +404,15 @@ const CONSTANT_TAGS_CLOSE: &str = "]) @definition.constant";
 /// last property is capitalised, is a call of the leaf `f` written `Obj.f`, so `Square.make()` is
 /// the call `Square.make` and `Ns.Kit.make()` the call `Kit.make`. The upstream query's member
 /// call pattern names the same `f`, and both matches finish at the call's arguments, so the
-/// earlier pattern, this one, makes the tag. The TS and TSX queries guard it with
-/// [`TS_UNINSTANTIATED`], and [`MEMBER_CALL_TAGS_CLOSE`] ends it.
+/// earlier pattern, this one, makes the tag. A private method's call, `Square.#make()` or
+/// `this.#g()`, stages nothing: neither call pattern takes a private name, and the field
+/// patterns of [`JS_REFERENCE_TAGS`] leave out a callee. The TS and TSX queries guard this
+/// pattern with [`TS_UNINSTANTIATED`], and [`MEMBER_CALL_TAGS_CLOSE`] ends it.
 const MEMBER_CALL_TAGS_OPEN: &str = "((call_expression";
 
 /// The TS and TSX queries' guard on the qualified member call: a call with type arguments,
-/// `Square.make<T>()`, is the upstream query's call of `make` alone, unqualified. A type
-/// argument is named after the callee and its match arrives first, so the callee's tag is
-/// yielded as soon as it is queued and a second match naming the callee would make a second tag;
-/// the upstream match is the one that names a generic callee. The JS grammar has no type
-/// arguments.
+/// `Square.make<T>()`, is no qualified member call: it is the upstream query's call of `make`
+/// alone, unqualified. The JS grammar has no type arguments.
 const TS_UNINSTANTIATED: &str = "!type_arguments";
 
 /// The close of the pattern [`MEMBER_CALL_TAGS_OPEN`] opens.
@@ -425,7 +428,9 @@ const MEMBER_CALL_TAGS_CLOSE: &str = r#"
 /// The JS query's implementation patterns (spec 117, OTHER LANGUAGES: `extends`): the class a
 /// class extends, named by an identifier or a member, is an implementation reference, a member
 /// qualified by its whole object as a constructor's chain is, so `extends Ns.Base` names
-/// `Ns.Base`. Any other heritage expression (`extends mixin(Base)`) has no pattern.
+/// `Ns.Base`, whatever that object is: `extends models.Base` names `models.Base` and
+/// `extends mixin(X).Base` names `mixin(X).Base`. Any other heritage expression
+/// (`extends mixin(Base)`) has no pattern.
 const JS_HERITAGE_TAGS: &str = r#"
 (class_heritage (identifier) @name) @reference.implementation
 (class_heritage
@@ -462,7 +467,8 @@ const TS_HERITAGE_TAGS: &str = r#"
 /// `Config.MAX` is the const `Config.MAX` and `cfg.TIMEOUT` the const `TIMEOUT`. The const
 /// patterns stand before the field patterns and a qualified pattern before its plain one, because
 /// each pair names the same property node and the earlier pattern makes the tag; an identifier
-/// spelled as a constant in an expression's place is a const too. The parent's fields are tested
+/// spelled as a constant in an expression's place is a const too, while a shorthand property's,
+/// `FOO` of `{ FOO }`, a node of its own kind, stages nothing. The parent's fields are tested
 /// under a wildcard grandparent, the query language reading no negated field on a pattern's root.
 const JS_REFERENCE_TAGS: &str = r#"
 ((_ (_ !arguments !constructor
@@ -534,7 +540,8 @@ const GO_FIELD_TAGS: &str =
 // The statement a Python docstring is, spelled once for `PYTHON_TAGS`'s class, function and
 // module docstring patterns, a literal its own macro names since `concat!` takes literals alone:
 // a statement whose one named child is a string, an implicit concatenation of strings or either in
-// one pair of parentheses, so a tuple a string leads is none, each part and each comment between
+// one pair of parentheses, so a tuple a string leads with a second element is none (the
+// one-element `"a",` is the limit `PYTHON_TAGS`' doc names), each part and each comment between
 // parts a `@doc`, none of them a literal whose prefix holds `b`, `f` or `t` (a bytes, formatted or
 // template literal, which is no str). The prefix predicate sits on a group around the statement,
 // since tree-sitter drops a trailing `.` anchor that a predicate follows.
@@ -580,8 +587,10 @@ macro_rules! python_docstring {
 /// assigned and not called, on an object that is exactly a capitalised identifier, is a `field`
 /// qualified by that object, `Shape.side` and the member constant `Config.MAX` alike, since a
 /// class body's assignment is a field; any other all-caps name read, an attribute's leaf included
-/// (`cfg.TIMEOUT`), is a `constant`; and any other attribute leaf, read or assigned and not
-/// called, is a `field`.
+/// (`cfg.TIMEOUT`), is a `constant`, and so is the all-caps target a `with` or an `except`
+/// binds with `as`, `F` of `with o() as F:` and `ERR` of `except E as ERR:`, which the pattern
+/// reads as an identifier in an expression's place; and any other attribute leaf, read or
+/// assigned and not called, is a `field`.
 const PYTHON_TAGS: &str = concat!(
     r#"
 (module (expression_statement (assignment left: (identifier) @name !right) @definition.constant))
@@ -1643,7 +1652,7 @@ pub(crate) mod tests {
     /// The golden fixtures: an (extension, source) for each registry entry and a malformed Rust
     /// file, each keyed by its entry's extension in [`TAGS_GENERATIONS`]. The extraction golden
     /// and the facts golden both digest them, one row per entry ([`generation_rows`]).
-    pub(crate) const GOLDEN_SOURCES: [(&str, &str); 8] = [
+    pub(crate) const GOLDEN_SOURCES: &[(&str, &str)] = &[
         (
             "rs",
             "\

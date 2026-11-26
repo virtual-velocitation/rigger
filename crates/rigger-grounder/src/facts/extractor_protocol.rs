@@ -190,8 +190,8 @@ pub(super) fn symbols_answered(path: &str, text: &str, line: &str) -> Result<Cod
                 ));
             }
         }
-        if !(1..=last).contains(&r.line) {
-            return Err(format!("refs[{i}]: line {} is outside 1..={last}", r.line));
+        if let Some(why) = outside((r.line, r.line), last, ["line", "line"]) {
+            return Err(format!("refs[{i}]: {why}"));
         }
         if let Some(kind) = &r.ref_kind {
             if reference_candidate_kinds(kind).is_empty() {

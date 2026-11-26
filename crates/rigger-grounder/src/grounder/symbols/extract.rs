@@ -373,7 +373,7 @@ fn kept_text(
     let mut at = gap.start;
     let inside = left_out
         .iter()
-        .filter(|out| gap.start <= out.start && out.end <= gap.end)
+        .filter(|out| within(out, &gap))
         .map(|out| (out.start, out.end));
     for (until, resume) in inside.chain([(gap.end, gap.end)]) {
         let piece = source.get(at..until)?;
@@ -1590,8 +1590,8 @@ fn use_aliases(uses: &[tree_sitter::Node], source: &[u8]) -> Vec<(String, String
         .collect()
 }
 
-/// THE RUST PRELUDE (spec 117): the names a Rust file reaches with no `use` that no tagged
-/// reference stages - the 2021 prelude's types, traits and variants at toolchain 1.95.0
+/// THE RUST PRELUDE (spec 117): the names a Rust file reaches with no `use` - the 2021
+/// prelude's types, traits and variants at toolchain 1.95.0
 /// (`library/std/src/prelude/v1.rs`, `library/core/src/prelude/v1.rs`, plus 2021's `TryFrom`,
 /// `TryInto` and `FromIterator`) and the derive-macro names `Debug` and `Hash`. A project
 /// definition of one of these names gets no row, save a variant written under its enum's path
@@ -1743,10 +1743,9 @@ impl UseLeaf<'_> {
 /// generics, a reference and a pointer stripped; a tuple, slice, array, `dyn` or function type
 /// none, the types inside it staging as type references) with the root of that name's path
 /// ([`type_root`]), carrying the impl's range; a `Box<T>` self type is `Box`, which [`excluded`]
-/// holds. An attribute, a `macro_rules!`
-/// body and a visibility path stage nothing, a macro's token tree stages what its re-parse reads
-/// ([`reparse_invocations`]), and no name [`excluded`] under `scope` stages, save a variant,
-/// which its qualifier and root alone exclude.
+/// holds. An attribute, a `macro_rules!` body and a visibility path stage nothing, a macro's
+/// token tree stages what its re-parse reads ([`reparse_invocations`]), and no name [`excluded`]
+/// under `scope` stages, save a variant, which its qualifier and root alone exclude.
 fn rust_references(structure: &StructuralNodes, source: &[u8], scope: &Scope) -> Vec<TaggedRef> {
     let uses: Vec<UseLeaf> = structure
         .uses
@@ -1779,9 +1778,9 @@ fn rust_references(structure: &StructuralNodes, source: &[u8], scope: &Scope) ->
         let Ok(name) = std::str::from_utf8(&source[span.clone()]) else {
             return;
         };
-        // Only a variant row carries a qualifier, and variant_qualifier already excluded it by
-        // its qualifier and root alone; its leaf is never tested.
-        if qualifier.is_some() || !excluded(name, root_seg, node, source, scope) {
+        // variant_qualifier already excluded a variant row by its qualifier and root alone; its
+        // leaf is never tested.
+        if kind == REF_KIND_VARIANT || !excluded(name, root_seg, node, source, scope) {
             out.push(TaggedRef {
                 name: name.to_string(),
                 pos: span.start,
@@ -1835,7 +1834,7 @@ fn rust_references(structure: &StructuralNodes, source: &[u8], scope: &Scope) ->
                                         node,
                                         node.byte_range(),
                                         REF_KIND_VARIANT,
-                                        root_seg,
+                                        None,
                                         None,
                                         Some(q),
                                     ),
@@ -1884,7 +1883,7 @@ fn rust_references(structure: &StructuralNodes, source: &[u8], scope: &Scope) ->
                                 name,
                                 name.byte_range(),
                                 REF_KIND_VARIANT,
-                                root_seg,
+                                None,
                                 None,
                                 Some(q),
                             );
@@ -2314,8 +2313,9 @@ fn path_qualifier(path: tree_sitter::Node, source: &[u8], scope: &Scope) -> Opti
 /// path and a bracketed type naming no trait.
 fn qualifier_segment(path: tree_sitter::Node) -> Option<tree_sitter::Node> {
     match path.kind() {
-        "generic_type" => final_identifier(path).or_else(|| base_type_identifier(path)),
-        "generic_type_with_turbofish" => qualifier_segment(path.child_by_field_name("type")?),
+        "generic_type" | "generic_type_with_turbofish" => {
+            qualifier_segment(path.child_by_field_name("type")?)
+        }
         "type_identifier" | "scoped_type_identifier" => base_type_identifier(path),
         "bracketed_type" => {
             base_type_identifier(path.named_child(0)?.child_by_field_name("alias")?)
@@ -3381,10 +3381,10 @@ fn inline_modules(node: tree_sitter::Node, source: &[u8]) -> Vec<String> {
 /// Whether a parsed `attribute_item` node is a `#[path = "value"]` key-value attribute - the ONLY
 /// shape `path` ever takes (unlike `cfg`'s parenthesized `arguments`, `path` uses the grammar's
 /// `value` field; see `tree-sitter-rust`'s own `node-types.json`, `attribute`'s `value` field) -
-/// and if so, its string literal's content with the surrounding quote characters stripped. `None`
-/// for every other attribute name, and for a `path` attribute whose value is not a plain
-/// double-quoted string literal (round-7 scope: rustc itself requires one here, so this is
-/// defensive only, never expected to fire on real source).
+/// and if so, its value's text with every leading and trailing `"` trimmed. `None` for every other
+/// attribute name and for a `path` attribute with no `value` (`#[path]`, `#[path(..)]`); any other
+/// value is trimmed the same way, so a raw literal `r"x.rs"` gives `r"x.rs` and an escape is
+/// never unescaped.
 fn path_attribute_value(item: tree_sitter::Node, source: &[u8]) -> Option<String> {
     let (attribute, name) = named_attribute(item, source)?;
     if name != "path" {
@@ -5241,13 +5241,13 @@ fn product() {}
     /// written qualifier is a prelude name, a standard-library import or alias, or whose path is
     /// rooted at the standard library, at such an import or at a primitive type, stages no
     /// mention, a struct literal's or pattern's field under such a struct name, a macro's token
-    /// tree and a qualified-self path's trait alike, while the macro's
-    /// own call stages. An alias qualifier is written as the name it imports, exclusion read on
-    /// the alias as written first; a `Self` or `self` whose self type is excluded and an enclosing
-    /// generic parameter stage the call unqualified; a qualifier no exclusion holds (a
-    /// qualified-self path's trait over a primitive or standard-library self type among them), an
-    /// unaliased import, a module's `self` import, a path with no written segment and a call with
-    /// no path stage as before.
+    /// tree and a qualified-self path's trait alike, while the macro's own call stages. An alias
+    /// qualifier, a module's `self` import renamed (`{self as M}`) among them, is written as the
+    /// name it imports, exclusion read on the alias as written first; a `Self` or `self` whose
+    /// self type is excluded and an enclosing generic parameter stage the call unqualified; a
+    /// qualifier no exclusion holds (a qualified-self path's trait over a primitive or
+    /// standard-library self type among them), an unaliased import, a module's unrenamed `self`
+    /// import, a path with no written segment and a call with no path stage as before.
     #[test]
     fn an_excluded_qualifier_stages_nothing() {
         let cases = [
@@ -7025,10 +7025,9 @@ pub fn f() -> u8 {
     /// none. A format string's inline capture is a const read at its own line - a placeholder's
     /// argument and each width or precision `NAME$` - read from the format argument of each format
     /// macro, its arguments split where a call's are, when that argument is one string literal,
-    /// with `{{`, `}}` and escapes skipped, and a
-    /// named argument's name read neither in the string nor where it is bound; a lowercase capture,
-    /// a literal at another argument, a non-format macro's literal, a token tree read as no
-    /// argument list and an excluded name read none.
+    /// with `{{`, `}}` and escapes skipped, and a named argument's name read neither in the string
+    /// nor where it is bound; a lowercase capture, a literal at another argument, a non-format
+    /// macro's literal, a token tree read as no argument list and an excluded name read none.
     #[test]
     fn rust_reads_pattern_and_format_constants() {
         let cases = [
@@ -7438,11 +7437,10 @@ fn m(a: u8, ok: bool) {
     /// inside `json!({"k": f(x)})` and a `static` inside `thread_local!` yield a call, a const, a
     /// call and a definition at their lines, the `static` in braces or parentheses, with or
     /// without the `;` after its last declaration and with or without a line comment after that -
-    /// and a `macro_rules!` body yields nothing. A
-    /// re-parsed definition takes its doc, path, parent, test flag and inline module path as the
-    /// same item written outside a macro does, and a re-parsed reference stages with the
-    /// invocation's generic parameters, `Self`, `self` and test region; where a row writes a
-    /// plain twin beside a macro line, the two read alike.
+    /// and a `macro_rules!` body yields nothing. A re-parsed definition takes its doc, path,
+    /// parent, test flag and inline module path as the same item written outside a macro does, and
+    /// a re-parsed reference stages with the invocation's generic parameters, `Self`, `self` and
+    /// test region; where a row writes a plain twin beside a macro line, the two read alike.
     #[test]
     fn macro_token_trees_are_read() {
         let cases = [
@@ -7882,7 +7880,7 @@ fn p() {
     /// Spec 117, RUST REFERENCES: no name of [`RUST_PRELUDE`] stages a row, imported by a `use` or
     /// named as a type, and the constant holds exactly the pinned names.
     #[test]
-    fn every_rust_prelude_name_is_never_tagged() {
+    fn no_rust_prelude_name_is_tagged_as_a_use_or_a_type() {
         assert_eq!(
             RUST_PRELUDE.join(" "),
             "Copy Send Sized Sync Unpin Drop Fn FnMut FnOnce AsyncFn AsyncFnMut AsyncFnOnce Clone \
