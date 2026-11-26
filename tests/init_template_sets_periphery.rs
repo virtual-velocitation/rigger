@@ -13,15 +13,18 @@
 //! an agent file that does not parse stops every seed until it is fixed, that a persona whose
 //! declarations are incoherent with the workflow the command would leave in place stops every seed
 //! (spec 135), that `rigger setup --agents <dir>` imports a collection's agent in the place of the
-//! seed of its id and refuses a collection that would define an id twice, that a command naming no
-//! template root scaffolds no gate and keeps what an earlier root scaffolded, and that every
-//! argument and template root a command refuses is refused before any write.
+//! seed of its id, refuses a collection that would define an id twice, and imports a persona only
+//! when it is coherent with the project's workflow, refusing an incoherent one before it writes
+//! (spec 135), that a command naming no template root scaffolds no gate and keeps what an earlier
+//! root scaffolded, and that every argument and template root a command refuses, a set whose
+//! implementer declares `work` under the table-less workflow it scaffolds among them, is refused
+//! before any write.
 
 use crate::common;
 use common::cli::{build_report_lines, UNDECLARED_BUILD_REPORT};
 use common::cli::{
-    cargo_project, failure_line, loaded_config, refusal_line, run_rigger, run_rigger_ok,
-    temp_project, wall_clock_advisory_lines,
+    cargo_project, declare_default, failure_line, loaded_config, refusal_line, run_rigger,
+    run_rigger_ok, temp_project, wall_clock_advisory_lines,
 };
 use common::cli::{config_valid_lines, fresh_scaffold_valid_line};
 use common::fixtures::REFUSED_DECLARATIONS;
@@ -854,6 +857,57 @@ fn setup_agents_refuses_a_collection_that_would_define_an_id_twice() {
     }
 }
 
+/// Given a project `rigger setup` scaffolded with no template root, its workflow then declaring a
+/// `defaults.capability` table or still none, and a collection holding one persona, when the
+/// operator runs `rigger setup --agents <collection>`, then a persona `config::coherence` accepts
+/// against that workflow is imported and reported, and one it refuses fails the command on that
+/// refusal, which names the persona, before the import writes: no agent is reported imported and
+/// the project keeps exactly the agents it held.
+#[test]
+fn setup_agents_imports_a_persona_only_when_it_is_coherent_with_the_projects_workflow() {
+    for (persona, table, verdict) in persona_coherence() {
+        let dir = temp_project();
+        let root = dir.path();
+        setup_with_no_root(root);
+        if table != "~" {
+            declare_default(root, &format!("capability: {table}"));
+        }
+        write_files(&root.join(COLLECTION), &[("worker.md", persona.as_str())]);
+
+        let (out, err, ok) = run_rigger(root, &["setup", "--agents", COLLECTION]);
+        let mut listing = agents_beside("implementer.md");
+        let expected = match &verdict {
+            Ok(()) => {
+                listing.push("worker.md".to_string());
+                listing.sort();
+                (
+                    None,
+                    vec![
+                        "imported .rigger/agents/worker.md (id: worker)",
+                        "imported 1 agent file from collection into .rigger/agents/ (0 kept - \
+                         already present)",
+                    ],
+                    listing,
+                )
+            }
+            Err(refusal) => (
+                Some(refusal_line(&format!("config: {refusal}"))),
+                Vec::new(),
+                listing,
+            ),
+        };
+        assert_eq!(
+            (
+                failure_line(ok, &err),
+                import_lines(&out),
+                sorted_dir_names(&root.join(".rigger/agents")),
+            ),
+            expected,
+            "{persona}under the table {table}: stdout:\n{out}\nstderr:\n{err}"
+        );
+    }
+}
+
 /// Given a project holding `Cargo.toml`, when the operator runs `rigger init` or `rigger setup`
 /// naming no template root, then no set is loaded, so even the Rust marker matches nothing: it
 /// prints the plain workflow line followed directly by the no-root line, writes no
@@ -927,19 +981,23 @@ fn a_template_root_holding_no_scaffold_dir_is_refused_before_any_write() {
 
 /// Given a command line `rigger init` or `rigger setup` refuses - `--template` with no directory,
 /// `--agents` given to `init`, or a template root whose one set brings an implementer reusing a
-/// scaffold seed's id, declares under `env` an entry the build environment's check refuses, or
-/// declares under `env` a name one character past the longest key YAML reads plain, so the
-/// workflow it scaffolds fails to load - when the operator runs it, then the command fails on the
-/// refusal naming what is wrong - for a set, the set's key, for a refused `env` entry, the check's
-/// own refusal naming the variable after it, and for the overlong name, the load error at the
-/// line a scaffold writes its set's `env` on - before any write: nothing is reported scaffolded
-/// and the project is left as it was, with no directory made.
+/// scaffold seed's id, brings an implementer declaring `work` under the workflow it scaffolds,
+/// which declares no `defaults.capability` table, declares under `env` an entry the build
+/// environment's check refuses, or declares under `env` a name one character past the longest key
+/// YAML reads plain, so the workflow it scaffolds fails to load - when the operator runs it, then
+/// the command fails on the refusal naming what is wrong - for a set, the set's key, for the
+/// implementer declaring `work`, `config::coherence`'s refusal naming it, for a refused `env`
+/// entry, the check's own refusal naming the variable after it, and for the overlong name, the
+/// load error at the line a scaffold writes its set's `env` on - before any write: nothing is
+/// reported scaffolded and the project is left as it was, with no directory made.
 #[test]
 fn an_argument_or_a_set_the_command_refuses_writes_nothing() {
     let seeded = operator_template_root("implementer");
     let seeded = seeded.path().to_str().unwrap();
     let seed_id = "gate template set demo: implementer id implementer is a scaffold seed's id";
-    // Each refused `env`'s template root, kept alive for the rows below, and its refusal.
+    // Each refused set's template root, kept alive for the rows below, and its refusal: a set
+    // declaring a refused `env`, and one whose implementer is a persona `config::coherence`
+    // refuses under the table-less workflow the scaffold renders.
     let declaring: Vec<(tempfile::TempDir, String)> = REFUSED_DECLARATIONS
         .iter()
         .map(|refused| {
@@ -955,8 +1013,20 @@ fn an_argument_or_a_set_the_command_refuses_writes_nothing() {
                 overlong_name_refusal(scaffolded_env_line())
             ),
         )])
+        .chain(
+            persona_coherence()
+                .into_iter()
+                .filter(|(_, table, _)| table == "~")
+                .filter_map(|(persona, _, verdict)| {
+                    let refusal = verdict.err()?;
+                    Some((
+                        operator_template_root_holding(&demo_set(&persona)),
+                        format!("gate template set demo: implementer: {refusal}"),
+                    ))
+                }),
+        )
         .collect();
-    let env_rows: Vec<([&str; 3], &str)> = declaring
+    let set_rows: Vec<([&str; 3], &str)> = declaring
         .iter()
         .flat_map(|(template, refusal)| {
             let template = template.path().to_str().unwrap();
@@ -979,10 +1049,10 @@ fn an_argument_or_a_set_the_command_refuses_writes_nothing() {
         (&["init", "--template", seeded], seed_id),
         (&["setup", "--template", seeded], seed_id),
     ];
-    let env_rows = env_rows
+    let set_rows = set_rows
         .iter()
         .map(|(args, refusal)| (args.as_slice(), *refusal));
-    for (args, refusal) in rows.into_iter().chain(env_rows) {
+    for (args, refusal) in rows.into_iter().chain(set_rows) {
         assert_refused_before_any_write(args, refusal);
     }
 }
@@ -1288,10 +1358,10 @@ fn demo_implementer(id: &str) -> String {
     format!("---\nid: {id}\n---\nYou build the demo project.\n")
 }
 
-/// The operator's own `scaffold/demo/set.yml`, its implementer carrying `id`: two markers, one
-/// gate running [`DEMO_CHECK`] on both unit stages.
-fn demo_set(id: &str) -> String {
-    let persona: String = demo_implementer(id)
+/// The operator's own `scaffold/demo/set.yml`, its implementer the persona file `implementer`: two
+/// markers, one gate running [`DEMO_CHECK`] on both unit stages.
+fn demo_set(implementer: &str) -> String {
+    let persona: String = implementer
         .lines()
         .map(|line| format!("  {line}\n"))
         .collect();
@@ -1304,7 +1374,7 @@ fn demo_set(id: &str) -> String {
 /// Write under `root` a template root of the operator's own: one set, `demo`, its implementer
 /// carrying `id`, listing [`DEMO_CHECK`], which the root holds.
 fn write_operator_root(root: &Path, id: &str) {
-    let set = demo_set(id);
+    let set = demo_set(&demo_implementer(id));
     let listed = format!("{DEMO_CHECK}\n");
     write_files(
         root,
@@ -1324,12 +1394,20 @@ fn operator_template_root(id: &str) -> tempfile::TempDir {
 }
 
 /// A fresh template root of the operator's own ([`operator_template_root`], its implementer
-/// [`DEMO_IMPLEMENTER_ID`]) whose one set's `set.yml` ends with `env_line`, its `env:` line.
-fn operator_template_root_declaring(env_line: &str) -> tempfile::TempDir {
+/// [`DEMO_IMPLEMENTER_ID`]) whose one set's `set.yml` is `set`.
+fn operator_template_root_holding(set: &str) -> tempfile::TempDir {
     let dir = operator_template_root(DEMO_IMPLEMENTER_ID);
-    let set = format!("{}{env_line}", demo_set(DEMO_IMPLEMENTER_ID));
-    write_files(dir.path(), &[("scaffold/demo/set.yml", set.as_str())]);
+    write_files(dir.path(), &[("scaffold/demo/set.yml", set)]);
     dir
+}
+
+/// A fresh template root of the operator's own ([`operator_template_root_holding`]) whose one
+/// set's `set.yml` ends with `env_line`, its `env:` line.
+fn operator_template_root_declaring(env_line: &str) -> tempfile::TempDir {
+    operator_template_root_holding(&format!(
+        "{}{env_line}",
+        demo_set(&demo_implementer(DEMO_IMPLEMENTER_ID))
+    ))
 }
 
 /// The line, counted from 1, that a scaffold writes its set's `env` on: where the workflow a fresh

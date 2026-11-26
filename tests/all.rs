@@ -185,6 +185,7 @@ mod os_home_boundary;
 mod os_process_boundary;
 mod os_shell_boundary;
 mod parallel_ordered_emit;
+mod persona_coherence_periphery;
 mod persona_work_key_periphery;
 mod plan_critique_spec_defect_stop_periphery;
 mod plan_stage_commit_landing_periphery;

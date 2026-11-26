@@ -6,7 +6,8 @@
 //! personas whose declarations `config::coherence` weighs against a table or its absence (criterion
 //! THE DECLARATIONS ARE COHERENT), each with its exact verdict, read by the domain test of
 //! `config::coherence`, the test of `Config::validate`, the `src/cli/setup.rs` tests of the import
-//! and of `rigger init`, and the `rigger init` and `rigger setup` periphery suite.
+//! and of `rigger init`, and the `rigger validate`, `rigger init` and `rigger setup` periphery
+//! suites.
 
 /// The workflow text declaring the flow mapping `table` as its `defaults.capability`, on one line.
 pub fn workflow_declaring_capability(table: &str) -> String {
