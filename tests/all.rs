@@ -8,6 +8,10 @@ mod common;
 mod audit_record;
 #[path = "common/layer_cli.rs"]
 mod layer_cli;
+#[path = "common/real_driver_spy.rs"]
+mod real_driver_spy;
+#[path = "common/real_gate_run.rs"]
+mod real_gate_run;
 #[path = "common/retired_feature.rs"]
 mod retired_feature;
 #[path = "common/served_asset.rs"]
@@ -250,6 +254,7 @@ mod spawn_scratch_reap_authorized_root_periphery;
 mod spawn_timing_periphery;
 mod spec_critique_periphery;
 mod spec_lint;
+mod speculation_record_keys_periphery;
 mod statusline_command_periphery;
 mod stderr_whole_line_audit;
 mod step_sheds_the_freshen;
