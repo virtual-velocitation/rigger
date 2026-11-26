@@ -3,11 +3,12 @@
 //! one-shot read extracts each content once.
 //!
 //! An entry is a one-file snapshot with an empty code half ([`encode_without_half`]) at
-//! `memo/<fingerprint>-<path hash>-<content id>.facts`, stamped with the store's fingerprint and the content's identity (its content id,
-//! crc32 and length), published atomically and unsynced ([`write_atomic_as`]) once it reads back
-//! as the facts it holds. A read takes an entry only when it decodes whole with that stamp and
-//! holds the facts of that one path; any other entry is absent and removed, and the file is
-//! extracted again. The key is the content, so an entry is never stale; it is only unused.
+//! `memo/<fingerprint>-<path hash>-<content id>.facts`, stamped with the store's fingerprint and
+//! the content's identity (its content id, crc32 and length), published atomically and unsynced
+//! ([`write_atomic_as`]) once it reads back as the facts it holds. A read takes an entry only when
+//! it decodes whole with that stamp and holds the facts of that one path; any other entry is
+//! absent and removed, and the file is extracted again. The key is the content, so an entry is
+//! never stale; it is only unused.
 //!
 //! The memo is bounded by [`MemoCap::STATED`]: 64 MiB of entries, each counted in whole 4 KiB
 //! blocks, none unread for more than three days. Its reaper ([`reap`]) runs with the store's on
