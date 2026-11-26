@@ -950,8 +950,8 @@ pub struct Defaults {
     /// `Config::validate` refuses it at any value, naming the line to delete.
     #[serde(default)]
     pub max_unit_added_lines: Option<u32>,
-    /// The capability table ([`CapabilityTable`]): the model and effort each kind of work runs
-    /// at on each complexity step. Absent (the default), no spawn takes a table cell.
+    /// The capability table ([`CapabilityTable`]): a model and effort for each kind of work on
+    /// each complexity step. `None` (the default) when the key is absent or null.
     #[serde(default)]
     pub capability: Option<CapabilityTable>,
 }
@@ -973,8 +973,8 @@ impl Defaults {
     }
 }
 
-/// A unit's complexity, the step the planner judges it at: `routine`, `involved` or `hard`,
-/// ordered by those steps, `involved` the middle one.
+/// A unit's complexity: one of the steps `routine`, `involved` and `hard`, ordered by those
+/// steps, `involved` the middle one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Complexity {
     Routine,
@@ -996,10 +996,10 @@ impl Complexity {
     }
 }
 
-/// The workflow's `defaults.capability` table: for each kind of work, the model and effort a
-/// spawn runs at on each [`Complexity`] step. Its parse refuses shape only (a missing row or
-/// cell, an unknown key, an empty `model`), naming the path; [`CapabilityTable::validate`]
-/// holds the judging floor.
+/// The workflow's `defaults.capability` table: for each kind of work, a model and effort on
+/// each [`Complexity`] step. Its parse refuses shape only (a missing row or cell, an unknown
+/// key, an empty `model`), naming the path; [`CapabilityTable::validate`] holds the judging
+/// floor.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CapabilityTable {
@@ -1057,8 +1057,7 @@ pub struct CapabilityCell {
     /// The model, never empty.
     #[serde(deserialize_with = "non_empty_model")]
     pub model: String,
-    /// The effort; absent or empty means no effort flag, so the session runs at the host's
-    /// default effort.
+    /// The effort; an absent key reads as the empty string, which names no effort.
     #[serde(default)]
     pub effort: String,
 }
