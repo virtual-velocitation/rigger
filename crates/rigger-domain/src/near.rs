@@ -1474,8 +1474,10 @@ mod tests {
         let tiers: BTreeSet<&str> = whole_graph.edges.iter().map(|e| e.tier.as_str()).collect();
         assert!(tiers.contains(TIER_AMBIGUOUS) && tiers.contains(TIER_INFERRED));
         // (the tree, how it is made)
-        let trees: [(&str, fn() -> FactsView); 2] =
-            [("rules", view), ("qualified", narrowing_fixture)];
+        let trees = [
+            ("rules", view as fn() -> FactsView),
+            ("qualified", narrowing_fixture),
+        ];
         for (tree, make) in trees {
             let view = make();
             let ids = ids(&view);
