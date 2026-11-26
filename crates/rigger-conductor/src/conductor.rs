@@ -17907,6 +17907,10 @@ mod tests {
     use crate::test_support::{
         critique_stage, fan_out_stage, plan_stage, review_stage_cfg, workflow_cfg,
     };
+    use crate::test_support::{
+        failed_keys_beside, the_compensation, the_grant, LANE_0_BREAK_KEY,
+        TWO_LOST_GROUPS_SPLIT_BY_A_GRANT, TWO_WINNING_GROUPS_SPLIT_BY_A_COMPENSATION,
+    };
     use crate::test_support::{MergeBreakDriver, MERGE_BREAK_BASE, REJECT_FEATURE};
     use std::path::Path;
     use std::sync::atomic::AtomicU32;
@@ -32938,8 +32942,6 @@ stage "implement" adjudicator "adj" failed
         (rs.units["s"].status, implementer_lanes(&driver))
     }
 
-    /// The replay key of lane 0's broken merge in a winning group of `s` entered at no boundary.
-    const LANE_0_BREAK_KEY: &str = "s/speculation-break#none#0";
     /// The replay key an older build gave a lost group of `s` at lane base 0: no entry part.
     const OLDER_LOST_KEY: &str = "s/speculation-lost#0";
 
@@ -33014,16 +33016,6 @@ stage "implement" adjudicator "adj" failed
         grant_resume(store, "s", 1);
     }
 
-    /// An operator's grant, a re-entry boundary.
-    fn the_grant(e: &Event) -> bool {
-        e.type_ == ledger::TYPE_UNIT_RESUMED
-    }
-
-    /// A drained compensation's `UnitFailed`, a re-entry boundary.
-    fn the_compensation(e: &Event) -> bool {
-        e.type_ == ledger::TYPE_UNIT_FAILED && e.meta.contains_key(META_COMPENSATED)
-    }
-
     /// One row of THE CONDUCTOR RESOLVES EVERY SPAWN ONCE.
     struct ResolveOnce {
         /// Writes the log the run under test opens on, an earlier run of the conductor included.
@@ -33064,28 +33056,7 @@ stage "implement" adjudicator "adj" failed
         };
         assert_eq!(status, settled, "premise: the group settles");
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
-        let entry = row.boundary.map(|is_boundary| {
-            let at: Vec<String> = events
-                .iter()
-                .filter(|e| is_boundary(e))
-                .map(|e| e.position.to_string())
-                .collect();
-            assert_eq!(at.len(), 1, "premise: the log holds one re-entry boundary");
-            at[0].clone()
-        });
-        let expected: Vec<String> = row
-            .records
-            .iter()
-            .map(|key| match &entry {
-                Some(at) => key.replace("{entry}", at),
-                None => key.to_string(),
-            })
-            .collect();
-        let records: Vec<String> = events
-            .iter()
-            .filter(|e| e.type_ == ledger::TYPE_UNIT_FAILED)
-            .map(|e| e.meta.get(META_REPLAY_KEY).cloned().unwrap_or_default())
-            .collect();
+        let (records, expected, entry) = failed_keys_beside(&events, row.boundary, row.records);
         assert_eq!(
             records, expected,
             "s's UnitFailed records, by replay key, the boundary at {entry:?}"
@@ -33105,14 +33076,14 @@ stage "implement" adjudicator "adj" failed
                 seed: a_winning_group_then_a_compensation,
                 lose: None,
                 boundary: Some(the_compensation),
-                records: &[LANE_0_BREAK_KEY, "", "s/speculation-break#{entry}#0"],
+                records: TWO_WINNING_GROUPS_SPLIT_BY_A_COMPENSATION,
             });
         two_lost_groups_at_base_0_split_by_a_grant_each_record_once:
             assert_the_conductor_resolves_every_spawn_once(ResolveOnce {
                 seed: a_lost_group_then_a_grant,
                 lose: Some(every_lane_review_rejected),
                 boundary: Some(the_grant),
-                records: &["s/speculation-lost#none#0", "s/speculation-lost#{entry}#0"],
+                records: TWO_LOST_GROUPS_SPLIT_BY_A_GRANT,
             });
         an_older_lost_key_reads_as_entry_none_on_a_crash_resume:
             assert_the_conductor_resolves_every_spawn_once(ResolveOnce {
