@@ -592,6 +592,15 @@ impl Runs {
     }
 }
 
+/// Whether the keys `key` reads for rows `0..rows` ascend in row order: strictly when `strict`,
+/// so no key repeats, else with equal neighbours allowed.
+fn ascending<K: PartialOrd>(rows: usize, strict: bool, key: impl Fn(usize) -> K) -> bool {
+    (1..rows).all(|i| {
+        let (before, at) = (key(i - 1), key(i));
+        before < at || (!strict && before == at)
+    })
+}
+
 fn half_of(b: u8) -> Option<Half> {
     [Half::Code, Half::Design, Half::Workflow]
         .into_iter()
@@ -845,10 +854,7 @@ impl Snapshot {
             return Err("candidates no module owns".into());
         }
         let (proofs, by_file) = (self.table(PROOFS), self.table(IDX_PROOF_FILE));
-        fn in_order<'s>(key: &dyn Fn(usize) -> &'s str, rows: usize) -> bool {
-            (1..rows).all(|i| key(i - 1) <= key(i))
-        }
-        if !in_order(&|i| self.text(self.row(proofs, i), 0), proofs.rows) {
+        if !ascending(proofs.rows, false, |i| self.text(self.row(proofs, i), 0)) {
             return Err("proofs out of target order".into());
         }
         let mut indexed = vec![false; proofs.rows];
@@ -859,12 +865,11 @@ impl Snapshot {
             }
             indexed[row] = true;
         }
-        if by_file.rows != proofs.rows || !in_order(&|i| self.proof_file(i), by_file.rows) {
+        if by_file.rows != proofs.rows || !ascending(by_file.rows, false, |i| self.proof_file(i)) {
             return Err("the proof file index does not cover its proofs in file order".into());
         }
         let nodes = self.table(ROW_NODES);
-        let id = |i| self.text(self.row(nodes, i), 0);
-        if !(1..nodes.rows).all(|i| id(i - 1) < id(i)) {
+        if !ascending(nodes.rows, true, |i| self.text(self.row(nodes, i), 0)) {
             return Err("settled nodes out of id order".into());
         }
         let mut attrs = Runs::default();
@@ -878,7 +883,7 @@ impl Snapshot {
         }
         let edges = self.table(ROW_EDGES);
         let ends = |i| [0, STR, 2 * STR].map(|at| self.text(self.row(edges, i), at));
-        if !(1..edges.rows).all(|i| ends(i - 1) < ends(i)) {
+        if !ascending(edges.rows, true, ends) {
             return Err("settled edges out of order".into());
         }
         for (index, kind) in [
