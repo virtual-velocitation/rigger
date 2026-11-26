@@ -139,6 +139,9 @@ mod prompt_surface_fixtures;
 #[path = "../../../tests/common/fixtures/spawn.rs"]
 mod spawn_fixtures;
 #[cfg(test)]
+#[path = "../../../tests/common/fixtures/work.rs"]
+mod work_fixtures;
+#[cfg(test)]
 mod test_support {
     pub use crate::capability_fixtures::*;
     pub use crate::event_fixtures::*;
@@ -149,4 +152,5 @@ mod test_support {
     pub use crate::instructions_fixtures::*;
     pub use crate::panic_message_fixtures::*;
     pub use crate::spawn_fixtures::*;
+    pub use crate::work_fixtures::*;
 }

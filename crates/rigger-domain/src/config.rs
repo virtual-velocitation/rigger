@@ -215,8 +215,43 @@ pub struct AgentDef {
     /// authority [`without_advisor`](Self::without_advisor).
     #[serde(default)]
     pub advisor: Option<bool>,
+    /// The kind of work this persona does, its frontmatter's `work:`; `None` when it declares
+    /// none or a null value. Set by [`parse_agent`], which refuses any other value, or the key
+    /// declared twice, naming the persona and the three kinds.
+    #[serde(skip)]
+    pub work: Option<Work>,
+    /// The host effort this persona pins, its frontmatter's `effort:`: an opaque host string kept
+    /// as written, never interpreted. Empty (the default) pins none.
+    #[serde(default)]
+    pub effort: String,
     #[serde(skip)]
     pub prompt: String,
+}
+
+/// The kind of work a persona does, declared by its frontmatter's `work:` with the kind's
+/// [`name`](Self::name).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Work {
+    /// Decides whether work is right: a planner, reviewer, adversary, adjudicator or evaluator.
+    Judging,
+    /// Changes the tree: an implementer, test author or scribe.
+    Writing,
+    /// Gathers and reports without deciding.
+    Reading,
+}
+
+impl Work {
+    /// Every kind, in the order a refusal lists them.
+    pub const ALL: [Work; 3] = [Work::Judging, Work::Writing, Work::Reading];
+
+    /// The word a persona's `work:` declares this kind with.
+    pub fn name(self) -> &'static str {
+        match self {
+            Work::Judging => "judging",
+            Work::Writing => "writing",
+            Work::Reading => "reading",
+        }
+    }
 }
 
 /// Gate is a verification command plus how much it is trusted.
@@ -1538,14 +1573,43 @@ pub fn index_agents(
 }
 
 /// ParseAgent parses a markdown-with-YAML-frontmatter agent definition: the
-/// frontmatter is the agent's fields, the body is its prompt.
+/// frontmatter is the agent's fields, the body is its prompt. Its `work:` key is read after the
+/// rest, so a value that is none of [`Work`]'s names, or the key declared twice, is refused naming
+/// the agent's id wherever the key sits; an absent or null `work:` declares none.
 pub fn parse_agent(b: &[u8]) -> Result<AgentDef, Error> {
     let s = std::str::from_utf8(b).map_err(|e| err(e.to_string()))?;
     let (front, body) = split_frontmatter(s)?;
     let mut a: AgentDef =
         parse_yaml_naming_unknown_keys(front).map_err(|msg| err(format!("frontmatter: {msg}")))?;
+    let refused = || {
+        let names: Vec<_> = Work::ALL.into_iter().map(Work::name).collect();
+        err(format!(
+            "agent {:?}: work must be one of {}",
+            a.id,
+            names.join(", ")
+        ))
+    };
+    // The frontmatter already parsed as an `AgentDef`, so this parse fails only on `work`'s own
+    // text: a value with a repeated key, or the key declared twice.
+    let key: WorkKey = parse_yaml_naming_unknown_keys(front).map_err(|_| refused())?;
+    a.work = key
+        .work
+        .map(|value| {
+            Work::ALL
+                .into_iter()
+                .find(|w| value.as_str() == Some(w.name()))
+                .ok_or_else(refused)
+        })
+        .transpose()?;
     a.prompt = body.trim().to_string();
     Ok(a)
+}
+
+/// The `work:` key of an agent's frontmatter as written, which [`parse_agent`] reads apart from
+/// the [`AgentDef`] fields so a refusal of its value can name the agent's id.
+#[derive(Deserialize)]
+struct WorkKey {
+    work: Option<serde_yaml::Value>,
 }
 
 /// Split a markdown-with-YAML-frontmatter document into `(frontmatter, body)`: the text
@@ -2410,6 +2474,56 @@ mod tests {
                 "gating_agent_ids of {panel:?}"
             );
             assert_eq!(panel.agent_ids(), all, "agent_ids of {panel:?}");
+        }
+    }
+
+    /// THE WORK KEY PARSES: `parse_agent` reads `work:` into [`AgentDef::work`] and `effort:` into
+    /// [`AgentDef::effort`] as written, an absent or null key reading as none, and refuses every
+    /// other `work` value, or a `work:` declared twice, naming the persona and the three values,
+    /// though `work:` comes before the persona's `id:`.
+    #[test]
+    fn parse_agent_reads_the_work_key_and_the_effort_pin_refusing_any_other_work_value() {
+        let refused = || {
+            Err(format!(
+                "config: {}",
+                crate::test_support::work_refusal("critic")
+            ))
+        };
+        for (frontmatter, parsed) in [
+            ("", Ok((None, ""))),
+            ("work: judging\n", Ok((Some(Work::Judging), ""))),
+            ("work: writing\n", Ok((Some(Work::Writing), ""))),
+            ("work: reading\n", Ok((Some(Work::Reading), ""))),
+            ("work: \"judging\"\n", Ok((Some(Work::Judging), ""))),
+            ("work:\n", Ok((None, ""))),
+            ("work: ~\n", Ok((None, ""))),
+            ("effort: high\n", Ok((None, "high"))),
+            ("effort: no-such-level\n", Ok((None, "no-such-level"))),
+            ("effort: ' high '\n", Ok((None, " high "))),
+            (
+                "work: writing\neffort: xhigh\n",
+                Ok((Some(Work::Writing), "xhigh")),
+            ),
+            ("work: deciding\n", refused()),
+            ("work: Judging\n", refused()),
+            ("work: ''\n", refused()),
+            ("work: ' judging'\n", refused()),
+            ("work: 3\n", refused()),
+            ("work: true\n", refused()),
+            ("work: !judging\n", refused()),
+            ("work: [judging]\n", refused()),
+            ("work: {judging: x}\n", refused()),
+            ("work: deciding\neffort: high\n", refused()),
+            ("work: {a: 1, a: 2}\n", refused()),
+            ("work: judging\nwork: writing\n", refused()),
+            ("work: judging\nwork: judging\n", refused()),
+        ] {
+            let doc = format!("---\n{frontmatter}id: critic\n---\nJudge the diff.\n");
+            let got = parse_agent(doc.as_bytes())
+                .map(|a| (a.work, a.effort))
+                .map_err(|e| e.to_string());
+            let parsed = parsed.map(|(work, effort): (_, &str)| (work, effort.to_string()));
+            assert_eq!(got, parsed, "{frontmatter:?}");
         }
     }
 }

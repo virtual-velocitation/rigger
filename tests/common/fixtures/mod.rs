@@ -45,6 +45,7 @@ mod scratch;
 #[cfg(any(feature = "store", not(feature = "core")))]
 mod shown;
 mod spawn;
+mod work;
 pub use build_env::*;
 pub use caller_sources::*;
 pub use capability::*;
@@ -78,6 +79,7 @@ pub use scratch::*;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use shown::*;
 pub use spawn::*;
+pub use work::*;
 
 #[cfg(any(feature = "store", not(feature = "core")))]
 mod build_cache_guard;
