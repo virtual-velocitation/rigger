@@ -288,12 +288,18 @@ pub(crate) fn qualifier<'n>(name: &'n str, leaf: &str) -> Option<&'n str> {
 }
 
 /// The parent definitions a qualifier names ([`Resolver::parents`]), each as (its file, its
-/// index in the file's definitions), in two tiers.
+/// index in the file's definitions) ([`parent_key`]), in two tiers.
 struct Parents<'v> {
     /// The definitions named the qualifier and the implementations of it.
     own: FxHashSet<(&'v str, u32)>,
     /// The traits those implementations implement, read only when no candidate sits under `own`.
     traits: FxHashSet<(&'v str, u32)>,
+}
+
+/// The key [`Parents`] holds the definition `d` by: its file and its index in the file's
+/// definitions.
+fn parent_key<'v>(d: &DefRef<'v>) -> (&'v str, u32) {
+    (d.file.path, d.index)
 }
 
 /// `calls` in proof order: by the definition proved, then the calling file, then the evidence
@@ -666,7 +672,7 @@ impl<'v> Resolver<'v> {
         }
         let mut parents = Parents {
             own: (self.view.defs_named(qualifier))
-                .map(|d| (d.file.path, d.index))
+                .map(|d| parent_key(&d))
                 .collect(),
             traits: FxHashSet::default(),
         };
@@ -695,7 +701,7 @@ impl<'v> Resolver<'v> {
                 parents.traits.extend(
                     (self.view.defs_named(&named.leaf))
                         .filter(|d| d.kind == CODE_KIND_TRAIT)
-                        .map(|d| (d.file.path, d.index)),
+                        .map(|d| parent_key(&d)),
                 );
             }
         }
