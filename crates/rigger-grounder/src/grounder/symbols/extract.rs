@@ -3720,7 +3720,18 @@ pub(crate) mod tests {
     /// `query` compiled against `language` with no constructor or type-argument kinds, for a test
     /// that injects a query of its own.
     pub(crate) fn compiled(language: &tree_sitter::Language, query: &str) -> CompiledTags {
-        CompiledTags::compile(language, query, &[], &[]).expect("the query compiles")
+        compiled_splitting(language, query, &[])
+    }
+
+    /// `query` compiled against `language` with no constructor kinds and `type_arguments` as its
+    /// type-argument kinds, for a test that injects a query of its own over a name split around
+    /// them.
+    pub(crate) fn compiled_splitting(
+        language: &tree_sitter::Language,
+        query: &str,
+        type_arguments: &'static [&'static str],
+    ) -> CompiledTags {
+        CompiledTags::compile(language, query, &[], type_arguments).expect("the query compiles")
     }
 
     /// Each kind lowers to its own kind string: the eight a graph folded before the kind constants
@@ -5124,8 +5135,7 @@ fn product() {}
             (&["identifier"], "class A : Ns.IShape { }\n", vec![]),
         ];
         for (type_arguments, source, expected) in table {
-            let tags = CompiledTags::compile(&language, query, &[], type_arguments)
-                .expect("the fixture query compiles");
+            let tags = compiled_splitting(&language, query, type_arguments);
             let symbols = extract(source, Lang::CSharp, &tags).expect("the source extracts");
             let found: Vec<(&str, Option<Qualifier>)> = symbols
                 .refs
