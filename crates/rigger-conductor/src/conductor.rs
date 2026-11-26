@@ -33130,6 +33130,51 @@ stage "implement" adjudicator "adj" failed
             });
     }
 
+    /// A group re-entered past a drained compensation runs lanes 2 and 3; lane 2's merge breaks
+    /// post-merge (its red verdict at that attempt is on the log) and lane 3 wins, so the one
+    /// keyed record the run leaves is lane 2's break, keyed by the compensation's position and
+    /// that lane's own attempt.
+    #[test]
+    fn a_re_entered_group_keys_its_broken_lane_by_that_lanes_attempt() {
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let store = Store::open(":memory:").unwrap();
+        a_compensated_group(&store, &repo_path);
+        store
+            .append(
+                STREAM,
+                ExpectedRevision::Any,
+                &[postmerge_verdict(2, false)],
+            )
+            .unwrap();
+        let (status, lanes) = run_speculating_s(&store, &repo_path, None);
+        assert_eq!(
+            lanes,
+            [
+                spawn_id("s", ROLE_IMPLEMENTER, 2),
+                spawn_id("s", ROLE_IMPLEMENTER, 3)
+            ],
+            "premise: the re-entered group runs lanes 2 and 3"
+        );
+        assert_eq!(
+            status,
+            ledger::Status::Integrated,
+            "premise: lane 3 wins past lane 2's broken merge"
+        );
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let entry = events
+            .iter()
+            .find(|e| the_compensation(e))
+            .expect("premise: the run drains the compensation")
+            .position;
+        let keyed: Vec<&str> = events
+            .iter()
+            .filter(|e| e.type_ == ledger::TYPE_UNIT_FAILED)
+            .filter_map(|e| e.meta.get(META_REPLAY_KEY).map(String::as_str))
+            .collect();
+        assert_eq!(keyed, [format!("s/speculation-break#{entry}#2")]);
+    }
+
     /// A group's lanes lost in different ways are all told: the gathered failure keeps every
     /// genuine lane's red gate and rejection in lane order under the first loss's cause, and
     /// leaves out a lane lost to an outage.
