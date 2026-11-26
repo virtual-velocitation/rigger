@@ -2123,7 +2123,7 @@ mod tests {
     #[test]
     fn the_capability_table_parses_refusing_each_malformed_shape_at_its_path() {
         use crate::test_support::{
-            capability_table, workflow_declaring_capability, READING_ROW, WRITING_ROW,
+            capability_shape_refusals, capability_table, workflow_declaring_capability,
         };
         let cell = |model: &str, effort: &str| CapabilityCell {
             model: model.to_string(),
@@ -2139,66 +2139,20 @@ mod tests {
             writing: row([cell("w1", ""), cell("w2", ""), cell("w3", "max")]),
             reading: row([cell("r", "low"), cell("r", ""), cell("r", "")]),
         };
-        let judging = |row: &str| workflow_declaring_capability(&capability_table(row));
-        let rows = |rows: &str| workflow_declaring_capability(&format!("{{ {rows} }}"));
-        for (workflow, parsed) in [
+        let accepted = [
             ("defaults: {}\n".to_string(), Ok(None)),
             (workflow_declaring_capability("~"), Ok(None)),
             (
-                judging(
+                workflow_declaring_capability(&capability_table(
                     "{ routine: { model: j, effort: high }, involved: { model: j, effort: '' }, \
                      hard: { model: ' ' } }",
-                ),
+                )),
                 Ok(Some(table)),
             ),
-            (
-                rows(&format!("judging: {READING_ROW}, writing: {WRITING_ROW}")),
-                Err("defaults.capability: missing field `reading` at line 1 column 25"),
-            ),
-            (
-                judging("{ routine: { model: j }, involved: { model: j } }"),
-                Err("defaults.capability.judging: missing field `hard` at line 1 column 36"),
-            ),
-            (
-                judging("{ routine: { model: '' }, involved: { model: j }, hard: { model: j } }"),
-                Err(
-                    "defaults.capability.judging.routine.model: invalid value: string \"\", \
-                     expected a non-empty host model string at line 1 column 56",
-                ),
-            ),
-            (
-                judging("{ routine: { model: }, involved: { model: j }, hard: { model: j } }"),
-                Err(
-                    "defaults.capability.judging.routine.model: invalid value: string \"\", \
-                     expected a non-empty host model string at line 1 column 56",
-                ),
-            ),
-            (
-                judging("{ routine: { effort: high }, involved: { model: j }, hard: { model: j } }"),
-                Err("defaults.capability.judging.routine: missing field `model` at line 1 column 47"),
-            ),
-            (
-                rows(&format!(
-                    "judging: {READING_ROW}, writing: {WRITING_ROW}, reading: {READING_ROW}, \
-                     planning: {READING_ROW}"
-                )),
-                Err("defaults.capability.planning: unknown key"),
-            ),
-            (
-                judging(
-                    "{ routine: { model: j }, involved: { model: j }, hard: { model: j }, \
-                     trivial: { model: j } }",
-                ),
-                Err("defaults.capability.judging.trivial: unknown key"),
-            ),
-            (
-                judging(
-                    "{ routine: { model: j, effrot: high }, involved: { model: j }, \
-                     hard: { model: j } }",
-                ),
-                Err("defaults.capability.judging.routine.effrot: unknown key"),
-            ),
-        ] {
+        ];
+        let refused =
+            capability_shape_refusals().map(|(workflow, refusal)| (workflow, Err(refusal)));
+        for (workflow, parsed) in accepted.into_iter().chain(refused) {
             let read = parse_yaml_naming_unknown_keys::<Workflow>(&workflow);
             assert_eq!(
                 read.map(|wf| wf.defaults.capability),

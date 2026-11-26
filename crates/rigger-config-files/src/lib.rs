@@ -32,6 +32,7 @@ extern crate self as rigger;
 #[path = "../../../tests/common/fixtures/build_env.rs"]
 mod build_env_fixtures;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+#[allow(dead_code)]
 #[path = "../../../tests/common/fixtures/capability.rs"]
 mod capability_fixtures;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
