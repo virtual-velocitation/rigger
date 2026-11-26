@@ -245,12 +245,12 @@ fn push_heading(out: &mut String, name: &str) {
 mod tests {
     use super::*;
     use crate::test_support::{
-        assert_carries_the_review_method, builtin_body, builtin_section,
-        house_and_team_operator_layer, op, rendered_every_file_shadowing_layer,
-        rendered_shadowing_layer, shadowing_operator_layer, CHECK_THE_PEERS,
-        COMMUNICATION_NEAR_NAME, NON_EMPTY_BLANK_BODIES, PROGRESS_CADENCE, RECORD_EACH_DECISION,
-        RECORD_EACH_FINDING, REPLACING_COMMUNICATION_BODY, SHADOWING_LAYER_ADVISORIES,
-        SUPERSEDE_A_PEER,
+        assert_carries_the_review_method, builtin_body, builtin_section, complexity_advisory,
+        complexity_file_rows, house_and_team_operator_layer, op,
+        rendered_every_file_shadowing_layer, rendered_shadowing_layer, shadowing_operator_layer,
+        CHECK_THE_PEERS, COMMUNICATION_NEAR_NAME, NON_EMPTY_BLANK_BODIES, PROGRESS_CADENCE,
+        RECORD_EACH_DECISION, RECORD_EACH_FINDING, REPLACING_COMMUNICATION_BODY,
+        SHADOWING_LAYER_ADVISORIES, SUPERSEDE_A_PEER,
     };
 
     #[test]
@@ -409,12 +409,8 @@ mod tests {
     /// the file leaves the operator layer, and `rigger validate`'s advisory names the file.
     #[test]
     fn a_complexity_file_replaces_the_complexity_built_in_or_switches_it_off_when_blank() {
-        const HOUSE: &str = "Weigh what a wrong answer costs first.";
-        let replacing = [(HOUSE, LayerState::Replaced(HOUSE), "replaced")];
-        let blank = std::iter::once(Default::default())
-            .chain(NON_EMPTY_BLANK_BODIES)
-            .map(|body| (body, LayerState::SwitchedOff, "switched off"));
-        for (body, state, verb) in replacing.into_iter().chain(blank) {
+        for (body, verb, replacing) in complexity_file_rows() {
+            let state = replacing.map_or(LayerState::SwitchedOff, LayerState::Replaced);
             let file = [op("complexity", body)];
             let in_force = BUILTIN[..3].iter().map(|&(name, body)| BuiltInLayer {
                 name,
@@ -435,10 +431,7 @@ mod tests {
             );
             assert_eq!(
                 shadow_advisories(&file),
-                [format!(
-                    "warning: built-in instruction complexity is {verb} by \
-                     .rigger/instructions/complexity.md"
-                )],
+                [complexity_advisory(verb)],
                 "the advisory names the complexity file of body {body:?}"
             );
         }

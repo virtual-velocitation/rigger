@@ -528,6 +528,30 @@ fn rendered_in_force_section(name: &str) -> String {
     )
 }
 
+/// The file `rigger instructions` and `rigger validate` name when `complexity.md` shadows the
+/// complexity built-in.
+pub const COMPLEXITY_FILE: &str = ".rigger/instructions/complexity.md";
+
+/// The rows the `complexity.md` override is proved over, by the domain's `resolve_layers` table
+/// and the root's reporters-and-spawn table: a replacing body, then the empty body and each of
+/// [`NON_EMPTY_BLANK_BODIES`], each with the verb its state is reported by and the body it leaves
+/// in force in the complexity built-in's place, none for a blank body.
+pub fn complexity_file_rows(
+) -> impl Iterator<Item = (&'static str, &'static str, Option<&'static str>)> {
+    const REPLACING: &str = "Weigh what a wrong answer costs first.";
+    std::iter::once((REPLACING, "replaced", Some(REPLACING))).chain(
+        std::iter::once("")
+            .chain(NON_EMPTY_BLANK_BODIES)
+            .map(|body| (body, "switched off", None)),
+    )
+}
+
+/// The advisory `rigger validate` prints when `complexity.md` leaves the complexity built-in
+/// `verb`: replaced or switched off.
+pub fn complexity_advisory(verb: &str) -> String {
+    format!("warning: built-in instruction complexity is {verb} by {COMPLEXITY_FILE}")
+}
+
 /// The advisories `rigger validate` prints over [`shadowing_operator_layer`], in `BUILTIN` order.
 pub const SHADOWING_LAYER_ADVISORIES: [&str; 2] = [
     "warning: built-in instruction working-discipline is switched off by \
