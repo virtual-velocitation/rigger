@@ -732,7 +732,7 @@ mod tests {
         );
     }
 
-    /// Spec 117, A MODULE ROW REACHES ITS FILE: a `mod` node's `CONTAINS` onto its module's
+    /// Spec 117, MODULE ROOTS AT READ: a `mod` node's `CONTAINS` onto its module's
     /// `file` node declares the module and couples nothing, while its file's `CONTAINS` onto the
     /// `mod` node couples the two, so the module file joins no community.
     #[test]

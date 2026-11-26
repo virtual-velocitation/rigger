@@ -1,5 +1,4 @@
-//! Periphery (CLI / end-to-end) tests for spec 117, A MODULE ROW REACHES ITS FILE and MODULE ROOTS
-//! AT READ, over the built binary. The crates' own tests pin the module row's emit, its candidate
+//! Periphery (CLI / end-to-end) tests for spec 117, MODULE ROOTS AT READ, over the built binary. The crates' own tests pin the module row's emit, its candidate
 //! lists, its settlement over hand-built rows and the three consumers that skip its edge one
 //! module at a time; these run OUTSIDE the crates, over a real tree `rigger graph build` walks, and
 //! guard the boundary a `mod x;` crosses on its way to an operator:

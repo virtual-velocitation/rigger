@@ -46058,7 +46058,7 @@ stage "implement" adjudicator "adj" failed
         assert_eq!(radius(FILELESS_MEMBER), [FILELESS_MEMBER]);
     }
 
-    /// Spec 117, A MODULE ROW REACHES ITS FILE: over [`module_graph`], the files a `mod` node
+    /// Spec 117, MODULE ROOTS AT READ: over [`module_graph`], the files a `mod` node
     /// reaches are its declaring file, through that file's `CONTAINS`, and none through its own
     /// module `CONTAINS`, which the walk never crosses.
     #[test]
