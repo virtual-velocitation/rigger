@@ -939,7 +939,6 @@ mod tests {
                 }),
             ),
             ("magic".into(), flip(|_| 0)),
-            ("version".into(), flip(|_| 4)),
             ("header".into(), flip(|_| 14)),
             (
                 "the pointer names a missing file".into(),
@@ -1027,7 +1026,7 @@ mod tests {
     /// that advance is at the current version.
     #[test]
     fn a_whole_snapshot_of_another_format_version_is_treated_as_absent() {
-        use crate::code::snapshot::{tests::rewritten, VERSION};
+        use crate::code::snapshot::{tests::rewritten, MAGIC, VERSION};
         let cases = [
             ("the version before", VERSION - 1, false),
             ("the current version", VERSION, true),
@@ -1062,11 +1061,9 @@ mod tests {
             );
             let (named, _) = store.named(stamped(FP)).unwrap().unwrap();
             let published = std::fs::read(named).unwrap();
-            assert_eq!(
-                published[4..6],
-                VERSION.to_le_bytes(),
-                "{name}: the format version of the snapshot in force after that advance"
-            );
+            if let Err(e) = Container::unchecked(&published, MAGIC, VERSION) {
+                panic!("{name}: the snapshot in force after that advance: {e}");
+            }
         }
     }
 

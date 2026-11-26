@@ -1692,11 +1692,9 @@ pub(crate) mod tests {
     fn doc_spans_and_module_lists_survive_a_snapshot() {
         let view = FactsView::new(stamp(None, 1), vec![code_file(), design_file()]);
         let bytes = encode(&view, &Groupings::default()).expect("encodes");
-        assert_eq!(
-            bytes[4..6],
-            6u16.to_le_bytes(),
-            "the header's format version"
-        );
+        if let Err(e) = Container::unchecked(&bytes, MAGIC, 6) {
+            panic!("the header's format version: {e}");
+        }
         let snap = Snapshot::decode(bytes).expect("decodes");
         let code = snap.file("src/ünï.rs").expect("the code file");
         let design = snap.file("docs/a.md").expect("the design file");
@@ -1974,6 +1972,13 @@ pub(crate) mod tests {
         // The first `len` bytes of the first row, `width` wide, written over the second row's.
         let repeat =
             |width: usize, len: usize| -> Damage { Box::new(move |s| s.copy_within(..len, width)) };
+        // The first `len` bytes of the first two rows, `width` wide, swapped.
+        let swap = |width: usize, len: usize| -> Damage {
+            Box::new(move |s| {
+                let (first, rest) = s.split_at_mut(width);
+                first[..len].swap_with_slice(&mut rest[..len]);
+            })
+        };
         // The second node's attribute run ending one before it starts, and the third's starting
         // there, so each run still starts where the one before it ends.
         let backwards = || -> Damage {
@@ -1998,6 +2003,12 @@ pub(crate) mod tests {
                 "a node id repeated",
                 ROW_NODES,
                 repeat(NODE_ROW, STR),
+                refused("settled nodes out of id order"),
+            ),
+            (
+                "node ids descending",
+                ROW_NODES,
+                swap(NODE_ROW, STR),
                 refused("settled nodes out of id order"),
             ),
             (
@@ -2028,6 +2039,12 @@ pub(crate) mod tests {
                 "an edge repeated",
                 ROW_EDGES,
                 repeat(EDGE_ROW, 3 * STR),
+                refused("settled edges out of order"),
+            ),
+            (
+                "edges descending",
+                ROW_EDGES,
+                swap(EDGE_ROW, 3 * STR),
                 refused("settled edges out of order"),
             ),
             (
