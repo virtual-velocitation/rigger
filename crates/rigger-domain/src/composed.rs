@@ -3236,13 +3236,15 @@ mod tests {
 
     /// A node's doc is its facts' doc span read from the worktree: GIVEN the facts of `src/a.rs`
     /// documenting the file on lines 1-2, `run` at line 4 on line 3, two `helper`s and a test twin
-    /// at line 8 and `gone` at line 14 on a span the worktree does not hold, and `src/b.rs` with no
-    /// doc, WHEN the near read is asked each node's doc, THEN a read describing the worktree gives
-    /// the extractor's text of the span's lines - the file's, or the widest production definition's
-    /// at the node's name, kind and line - and none for a site no definition sits at, a nameless
-    /// node, a definition or file with no doc, a span the worktree does not hold, a record node or
-    /// a file the view holds no facts of though the worktree holds its lines at (1, 2),
-    /// while a read withholding its code facts, or opened with no doc reader, gives none.
+    /// at line 8, two `tie`s at line 30 sharing an end line with the first alone documented, and
+    /// `gone` at line 14 on a span the worktree does not hold, and `src/b.rs` with no doc, WHEN the
+    /// near read is asked each node's doc, THEN a read describing the worktree gives the
+    /// extractor's text of the span's lines - the file's, or the widest production definition's at
+    /// the node's name, kind and line, the first of an end-line tie - and none for a site no
+    /// definition sits at, a nameless node, a definition or file with no doc, a span the worktree
+    /// does not hold, a record node or a file the view holds no facts of though the worktree holds
+    /// its lines at (1, 2), while a read withholding its code facts, or opened with no doc reader,
+    /// gives none.
     #[test]
     fn a_node_s_doc_is_its_facts_span_read_from_the_worktree() {
         let documented = |local: &str, line, end_line, doc, test| Def {
@@ -3262,6 +3264,12 @@ mod tests {
                     documented("helper", 8, 12, (6, 7), false),
                     documented("helper", 8, 20, (5, 5), true),
                     documented("gone", 14, 15, (13, 13), false),
+                    documented("tie", 30, 31, (29, 29), false),
+                    Def {
+                        line: 30,
+                        end_line: 31,
+                        ..def("tie")
+                    },
                 ],
                 Vec::new(),
             )
@@ -3275,6 +3283,7 @@ mod tests {
             ("src/a.rs", (5, 5), "/// Tests."),
             ("src/a.rs", (6, 7), "/// Helps\n/// widely."),
             ("src/a.rs", (7, 7), "/// Helps."),
+            ("src/a.rs", (29, 29), "/// Ties first."),
             ("src/c.rs", (1, 2), "//! C."),
         ]);
         let reader = DocReader {
@@ -3335,6 +3344,13 @@ mod tests {
                 true,
                 entity("src/a.rs::helper", "helper", "function", "8"),
                 Some("rust: /// Helps\n/// widely."),
+            ),
+            (
+                "the first of an end-line tie",
+                Compared::Overlaid(0),
+                true,
+                entity("src/a.rs::tie", "tie", "function", "30"),
+                Some("rust: /// Ties first."),
             ),
             (
                 "another line",
