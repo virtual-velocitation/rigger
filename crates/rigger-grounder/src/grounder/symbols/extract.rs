@@ -5723,6 +5723,14 @@ fn u() {
 5 ref call w u",
             ),
             (
+                "an if let with an else binds in its consequence",
+                "fn t() {\n    if let Some(x) = g() {\n        k(x);\n    } else {}\n}\n",
+                "\
+1 def Function t to 5
+2 ref call g t
+3 ref call k t",
+            ),
+            (
                 "an if let binds nothing in its else",
                 "fn t() {\n    if let Some(x) = g() {} else {\n        k(x);\n    }\n}\n",
                 "\
