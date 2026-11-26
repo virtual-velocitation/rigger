@@ -8,7 +8,7 @@
 //! planner's `complexity` and `complexity_reason` reach the log through the real record courier
 //! exactly as the planner wrote them, a refused pair included; that the step and reason the run
 //! takes are the ones its gate's adjudicator is served, round by round, across the re-plan a reject
-//! drives; that the re-plan's task opens with the reject and the sentence asking for every unit
+//! drives, a re-plan that gives no criterion text included; that the re-plan's task opens with the reject and the sentence asking for every unit
 //! again with its step and reason; that a refused pair's `unassessed-complexity` record lands on
 //! the on-disk log once, under its replay key, over every harvest the run makes; and that a second
 //! `rigger run` over the same store, which re-enters the run with the widget integrated, records it
@@ -129,9 +129,10 @@ fn proposed_at(events: &[Event], spawn: &str) -> u64 {
         .position
 }
 
-/// One row: the given, the pair each of [`PLANNERS`] proposes the widget with, the widget's
-/// critique cell each round's adjudicator is served, and each refused proposal as its index in
-/// [`PLANNERS`] and what it carries.
+/// One row: the given, the pair each of [`PLANNERS`] proposes the widget with (beside an empty
+/// `criterion` for a refine that gives no criterion text), the widget's critique cell each round's
+/// adjudicator is served, and each refused proposal as its index in [`PLANNERS`] and what it
+/// carries.
 struct Row {
     given: &'static str,
     pairs: [Value; 2],
@@ -140,7 +141,7 @@ struct Row {
 }
 
 /// Given a planner proposing the widget with the row's first pair and, after the gate's reject,
-/// its re-plan proposing it again with the second, when `rigger run` drives the gate to its
+/// its re-plan proposing it again with the second, with or without criterion text, when `rigger run` drives the gate to its
 /// approve and the widget to done, then each proposal is on the log as the planner wrote it, each
 /// round's adjudicator is served the widget's step and reason the run took (or `unassessed`), the
 /// re-plan's task opens with the reject and asks for every unit with its step and reason, and the
@@ -177,6 +178,34 @@ fn a_planners_step_and_reason_reach_the_critique_and_a_refused_pair_is_recorded_
             ],
             cells: [hard(REASON), hard(REASON)],
             refused: vec![(1, unknown_step("trivial"))],
+        },
+        Row {
+            given: "a valid pair, then a refine with no criterion text and another valid pair",
+            pairs: [
+                pair_of(Complexity::Routine, REASON),
+                json!({
+                    "criterion": "",
+                    "complexity": Complexity::Hard.name(),
+                    "complexity_reason": LATER_REASON,
+                }),
+            ],
+            cells: [
+                dag_complexity(Complexity::Routine, REASON),
+                hard(LATER_REASON),
+            ],
+            refused: vec![],
+        },
+        Row {
+            given: "a valid pair, then a refine with no criterion text and a step with no reason",
+            pairs: [
+                pair_of(Complexity::Routine, REASON),
+                json!({"criterion": "", "complexity": Complexity::Hard.name()}),
+            ],
+            cells: [
+                dag_complexity(Complexity::Routine, REASON),
+                dag_complexity(Complexity::Routine, REASON),
+            ],
+            refused: vec![(1, "a step with no reason".to_string())],
         },
         Row {
             given: "a step that is not a string, then a refine with none",
