@@ -247,12 +247,31 @@ pub fn path_leaf(path: &str) -> &str {
     split_path(path).1
 }
 
-/// The separator of a path qualifier, `T::new`. Its home, with [`MEMBER_SEPARATOR`]'s: the
-/// extractor's leaf split reads both (spec 117, CAPTURES).
+/// The separator of a path qualifier, `T::new`. Its home, with [`MEMBER_SEPARATOR`]'s (spec 117,
+/// CAPTURES); which qualifier kind each writes is paired once, in [`separator_of`].
 pub const PATH_SEPARATOR: &str = "::";
 
 /// The separator of a member qualifier, `S.field`.
 pub const MEMBER_SEPARATOR: &str = ".";
+
+/// The separator a qualifier writes before its leaf: [`PATH_SEPARATOR`] for a path qualifier
+/// (`path`), [`MEMBER_SEPARATOR`] for a member qualifier. The one pairing of a separator with its
+/// qualifier kind: [`qualified_name`] writes by it and [`separator_is_path`] reads it back.
+fn separator_of(path: bool) -> &'static str {
+    if path {
+        PATH_SEPARATOR
+    } else {
+        MEMBER_SEPARATOR
+    }
+}
+
+/// Whether `separator` writes a path qualifier, the inverse of [`separator_of`]: `::` gives
+/// true, `.` false, any other text none.
+pub fn separator_is_path(separator: &str) -> Option<bool> {
+    [true, false]
+        .into_iter()
+        .find(|&path| separator_of(path) == separator)
+}
 
 /// A path cut at its last `::` or `.` into its qualifier and its leaf: the text before that
 /// separator, none when the path holds neither, and the text after it, the whole path when it
@@ -274,19 +293,14 @@ pub(crate) fn split_path(path: &str) -> (Option<&str>, &str) {
 }
 
 /// The ONE join of a qualified name: `qualifier`, then `::` for a path qualifier or `.` for a
-/// member qualifier, then `leaf` (`T`, a path, and `new` give `T::new`; `S`, a member, and `field`
-/// give `S.field`). The facts layer writes a qualified mention's name with it (spec 117,
-/// CAPTURES). It is the inverse of [`split_path`] for a `leaf` holding neither `::` nor `.` and,
-/// after a path qualifier, not starting with `:`; the cut reads any other leaf back under another
-/// qualifier (`Q`, a path, and `:b` give `Q:::b`, cut into `Q:` and `b`), so the extractor
+/// member qualifier ([`separator_of`]), then `leaf` (`T`, a path, and `new` give `T::new`; `S`, a
+/// member, and `field` give `S.field`). The facts layer writes a qualified mention's name with it
+/// (spec 117, CAPTURES). It is the inverse of [`split_path`] for a `leaf` holding neither `::` nor
+/// `.` and, after a path qualifier, not starting with `:`; the cut reads any other leaf back under
+/// another qualifier (`Q`, a path, and `:b` give `Q:::b`, cut into `Q:` and `b`), so the extractor
 /// protocol refuses a declared extractor's qualified ref whose name the cut does not give back.
 pub fn qualified_name(qualifier: &str, path: bool, leaf: &str) -> String {
-    let separator = if path {
-        PATH_SEPARATOR
-    } else {
-        MEMBER_SEPARATOR
-    };
-    format!("{qualifier}{separator}{leaf}")
+    format!("{qualifier}{}{leaf}", separator_of(path))
 }
 
 /// Whether [`split_path`] cuts `path` at a `::`, a path qualifier (`T::new`, `a.b::c`), rather
@@ -2969,6 +2983,26 @@ mod leaf_tests {
             );
             if let Some(qualifier) = qualifier {
                 assert_eq!(qualified_name(qualifier, path_qualified, leaf), path);
+            }
+        }
+    }
+
+    #[test]
+    fn a_separator_is_read_back_as_the_qualifier_kind_it_writes() {
+        // (the separator, whether it writes a path qualifier, none for no qualifier kind); a
+        // kind is also written back by qualified_name, the pairing's other direction.
+        let cases = [
+            ("::", Some(true)),
+            (".", Some(false)),
+            (":", None),
+            ("", None),
+            ("::.", None),
+            ("->", None),
+        ];
+        for (separator, path) in cases {
+            assert_eq!(separator_is_path(separator), path, "{separator:?}");
+            if let Some(path) = path {
+                assert_eq!(qualified_name("Q", path, "x"), format!("Q{separator}x"));
             }
         }
     }
