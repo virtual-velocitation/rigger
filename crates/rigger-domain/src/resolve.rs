@@ -357,6 +357,12 @@ pub(crate) fn def_leaves(facts: &FileFacts, local: &str) -> Vec<String> {
     leaves
 }
 
+/// The names an implementation's header holds: the `impl`-tagged mentions of `facts` the
+/// definition at `at`, an index in its definitions, encloses (at file level, those none does).
+fn header_names(facts: &FileFacts, at: Option<u32>) -> impl Iterator<Item = &Mention> {
+    (facts.mentions.iter()).filter(move |n| n.enclosing == at && is_impl(&n.kind))
+}
+
 /// The site a fact of `facts` enclosed by the definition at `enclosing`, an index in its
 /// definitions, sits in: that definition's entity id, with the definition, else at file level the
 /// file's id.
@@ -705,9 +711,7 @@ impl<'v> Resolver<'v> {
                 continue;
             }
             parents.own.insert((m.file.path, at));
-            let names =
-                (facts.mentions.iter()).filter(|n| n.enclosing == Some(at) && is_impl(&n.kind));
-            for named in names {
+            for named in header_names(facts, Some(at)) {
                 parents.traits.extend(
                     (self.view.defs_named(&named.leaf))
                         .filter(|d| d.kind == CODE_KIND_TRAIT)
@@ -1517,9 +1521,8 @@ pub fn resettle(
     // header holds beside it keeps, wherever that implementation is.
     for leaf in &leaves {
         for m in view.mentions_named(leaf).filter(|m| is_impl(&m.kind)) {
-            let header = |n: &&Mention| n.enclosing == m.enclosing && is_impl(&n.kind);
             if let Some(facts) = view.file(m.file.path) {
-                qualifiers.extend(facts.mentions.iter().filter(header).map(|n| n.leaf.clone()));
+                qualifiers.extend(header_names(&facts, m.enclosing).map(|n| n.leaf.clone()));
             }
         }
     }
