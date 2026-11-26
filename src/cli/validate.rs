@@ -259,6 +259,16 @@ pub(crate) fn cmd_validate(args: &[String]) -> Res {
     for advisory in instructions::shadow_advisories(&cfg.instructions) {
         eprintln!("{advisory}");
     }
+    // Pin notes (spec 135, PINS): one note per field a persona pins, in persona id order, read
+    // from the loaded config, beside the model-drift advisory the store advisories print. A pin is
+    // a project's explicit choice, so this is advisory and never a refusal.
+    for note in cfg
+        .agents
+        .values()
+        .flat_map(rigger_domain::capability::pin_notes)
+    {
+        eprintln!("{note}");
+    }
     // The store advisories read the run store every reader reads ([`store_to_read_in`]); below a
     // root that holds no `.rigger/` there is none to read, and the configuration alone is judged.
     if let Some((loc, selection)) = if_any(store_to_read_in(&site))? {

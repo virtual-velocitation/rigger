@@ -1,7 +1,8 @@
 //! The one capability resolution (spec 135): the host model and effort a spawn runs at, the cell
 //! its helpers run at, and why. [`resolve`] reads only a persona, the workflow's capability table,
 //! the unit's planned complexity step, its raise and the spawn's attempt, and never interprets a
-//! model or effort string.
+//! model or effort string. [`pin_notes`] words each pin a persona declares as the note `rigger
+//! validate` prints.
 
 use crate::config::{AgentDef, CapabilityTable, Complexity, Work};
 
@@ -87,9 +88,27 @@ pub fn resolve(
     }
 }
 
-/// The `rigger validate` note for each field `agent` pins.
-pub fn pin_notes(_agent: &AgentDef) -> Vec<String> {
-    Vec::new()
+/// The `rigger validate` notes for the fields `agent` pins, one line each naming the persona, the
+/// field and its value: its model pin (the field [`AgentDef::model_pin`] names, so a ladder beside
+/// a `model` is noted once), then its effort pin ([`AgentDef::effort_pin`]), then its
+/// `fallback_model`, which no table cell carries. Each value is quoted, so an empty rung shows.
+pub fn pin_notes(agent: &AgentDef) -> Vec<String> {
+    let model = if agent.model_ladder.is_empty() {
+        format!("{:?}", agent.model)
+    } else {
+        format!("{:?}", agent.model_ladder)
+    };
+    let fallback = (!agent.fallback_model.is_empty()).then_some("fallback_model");
+    [
+        (agent.model_pin(), model),
+        (agent.effort_pin(), format!("{:?}", agent.effort)),
+        (fallback, format!("{:?}", agent.fallback_model)),
+    ]
+    .into_iter()
+    .filter_map(|(field, value)| {
+        field.map(|field| format!("note: agent {:?} pins {field} {value}", agent.id))
+    })
+    .collect()
 }
 
 #[cfg(test)]
