@@ -87,6 +87,11 @@ pub fn resolve(
     }
 }
 
+/// The `rigger validate` note for each field `agent` pins.
+pub fn pin_notes(_agent: &AgentDef) -> Vec<String> {
+    Vec::new()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -273,6 +278,58 @@ mod tests {
                 expected,
                 "{why}: {agent:?} at {complexity:?} raised {raise}, attempt {attempt}"
             );
+        }
+    }
+
+    /// One line per pinned field, in the order model or model_ladder, effort, fallback_model,
+    /// each naming the persona, the field and its value; the model pin is the one field
+    /// `AgentDef::model_pin` names, so a ladder beside a model is noted once; `work` is no pin.
+    #[test]
+    fn pin_notes_names_the_persona_and_each_pinned_field_with_its_value() {
+        let with_fallback = |fallback: &str, agent: AgentDef| AgentDef {
+            fallback_model: fallback.into(),
+            ..agent
+        };
+        #[rustfmt::skip]
+        let rows: Vec<(&str, AgentDef, &[&str])> = vec![
+            ("a persona pinning nothing has no note",
+             persona(None, "", &[], ""), &[]),
+            ("work is no pin",
+             persona(Some(Writing), "", &[], ""), &[]),
+            ("a model pin",
+             persona(Some(Writing), "sonnet", &[], ""),
+             &[r#"note: agent "worker" pins model "sonnet""#]),
+            ("a ladder pin, every rung",
+             persona(None, "", &["l0", "l1", "l2"], ""),
+             &[r#"note: agent "worker" pins model_ladder ["l0", "l1", "l2"]"#]),
+            ("a ladder's empty rung stays visible",
+             persona(None, "", &["", "l1"], ""),
+             &[r#"note: agent "worker" pins model_ladder ["", "l1"]"#]),
+            ("a ladder beside a model is the one model pin",
+             persona(None, "haiku", &["sonnet", "opus"], ""),
+             &[r#"note: agent "worker" pins model_ladder ["sonnet", "opus"]"#]),
+            ("an effort pin",
+             persona(Some(Judging), "", &[], "max"),
+             &[r#"note: agent "worker" pins effort "max""#]),
+            ("a fallback model",
+             with_fallback("fb", persona(Some(Reading), "", &[], "")),
+             &[r#"note: agent "worker" pins fallback_model "fb""#]),
+            ("a model, an effort and a fallback, in that order",
+             with_fallback("fb", persona(None, "pm", &[], "pe")),
+             &[r#"note: agent "worker" pins model "pm""#,
+               r#"note: agent "worker" pins effort "pe""#,
+               r#"note: agent "worker" pins fallback_model "fb""#]),
+            ("a ladder, an effort and a fallback, in that order",
+             with_fallback("fb", persona(None, "", &["l0", "l1"], "pe")),
+             &[r#"note: agent "worker" pins model_ladder ["l0", "l1"]"#,
+               r#"note: agent "worker" pins effort "pe""#,
+               r#"note: agent "worker" pins fallback_model "fb""#]),
+            ("the note names the persona's own id",
+             AgentDef { id: "scribe".into(), ..persona(None, "pm", &[], "") },
+             &[r#"note: agent "scribe" pins model "pm""#]),
+        ];
+        for (why, agent, expected) in rows {
+            assert_eq!(pin_notes(&agent), expected, "{why}: {agent:?}");
         }
     }
 }
