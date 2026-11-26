@@ -1725,6 +1725,9 @@ class Bin : /* c */ Ns.Shelf<Box> { }
 // p
 /// A cover.
 class Cover { void Fit(Box b) { b.Size = Box.Calc(Box.Cap); } }
+// q
+// r
+/// A sort.
 class Sort { bool Out(object x) { return x is not Box; } }
 ",
         ),
@@ -1982,7 +1985,7 @@ def raw():
             // Rust
             ("rs", "rust-tags-v10", "71684eab40d0f0bd"),
             // C#
-            ("cs", "csharp-tags-v5", "a9539c91e710330e"),
+            ("cs", "csharp-tags-v5", "65116b75c081716f"),
             // TypeScript
             ("ts", "typescript-tags-v6", "46fdbe808db7ebdc"),
             // TSX
