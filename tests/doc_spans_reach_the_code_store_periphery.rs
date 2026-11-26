@@ -10,7 +10,8 @@
 //! doc half of SHOW PRINTS THE DOC AND THE REFERRERS, across the seam `ContextGraph::doc`'s own tests stop
 //! short of (they read fake lines through a fake extractor): the code store's head carries the
 //! extractor the store opened with, and a node's doc composed over that head is the extractor's
-//! text of its stored span read from the reader's own worktree.
+//! text of its stored span read from the reader's own worktree, the first definition's span when
+//! two same-line definitions share the node and their ends tie.
 //!
 //! NOT OWNED here: a fixture query's `@doc` capture (only a crate test can hand extraction a query
 //! of its own; the Go, C#, TypeScript, JavaScript and Python files below are that capture's reach
@@ -57,8 +58,9 @@ type Held = (
 /// two parts in parentheses over two lines and holding a class, past its base class, whose body
 /// opens with a four-line docstring beside an undocumented function, and a C# file whose class
 /// sits under a two-line `///` block holding XML tags, itself under a plain `//` line the span
-/// leaves out, beside an undocumented field.
-const FIRST: [Row; 8] = [
+/// leaves out, beside an undocumented field, and a Rust file whose one outer doc line stands over
+/// the first of two same-named functions sharing one line, the second undocumented.
+const FIRST: [Row; 9] = [
     (
         "src/lib.rs",
         "//! The crate.\n//! It holds two functions.\n\n/// First.\n#[doc(hidden)]\n/// Last.\n\
@@ -106,6 +108,12 @@ const FIRST: [Row; 8] = [
         None,
         &[("Square", Some((2, 3))), ("Square.Side", None)],
     ),
+    (
+        "src/tie.rs",
+        "/// Ties first.\nfn tie() {} fn tie() {}\n",
+        None,
+        &[("tie", Some((1, 1))), ("tie", None)],
+    ),
 ];
 
 /// The rebuild: the first Rust file rewritten so its file span and `documented`'s are gone and
@@ -113,10 +121,10 @@ const FIRST: [Row; 8] = [
 /// rewritten so `area`'s span is gone and `bare` gains one, the Go, JavaScript and test files
 /// unchanged, the Python file rewritten so its string follows an import and is no module
 /// docstring, `Shape`'s body opens with a bytes literal, which is no docstring, and `bare`'s, past
-/// its parameter's annotation, opens with a docstring joined from two parts, and the C# file
+/// its parameter's annotation, opens with a docstring joined from two parts, the C# file
 /// rewritten so a `////` line, no doc line, stands over the class and the field gains a `///`
-/// line.
-const NEXT: [Row; 8] = [
+/// line, and the file of same-line functions unchanged.
+const NEXT: [Row; 9] = [
     (
         "src/lib.rs",
         "/// Now first.\npub fn plain() {}\n\npub fn documented() {}\n",
@@ -152,6 +160,7 @@ const NEXT: [Row; 8] = [
         None,
         &[("Square", None), ("Square.Side", Some((3, 3)))],
     ),
+    FIRST[8],
 ];
 
 /// The doc text of `p.go`'s `Reads`, which both builds hold.
@@ -163,7 +172,8 @@ const SQUARE_DOC: &str = "/**\n* A square.\n*/";
 /// Each node a reader asks the doc of, with the doc it reads in a worktree holding `FIRST`'s
 /// files and in one holding `NEXT`'s: a Rust span's comment text (`//!` and `///` lines without
 /// their markers, `#[doc(hidden)]` dropped), the trimmed lines of a span in a language with no doc
-/// rule, and none for a file or definition with no span or a test definition.
+/// rule, none for a file or definition with no span or a test definition, and for a node two
+/// same-line definitions share, their ends tied, the first's.
 const DOCS: &[(&str, [Option<&str>; 2])] = &[
     (
         "src/lib.rs",
@@ -183,6 +193,10 @@ const DOCS: &[(&str, [Option<&str>; 2])] = &[
     ("f.js::Square", [Some(SQUARE_DOC), Some(SQUARE_DOC)]),
     ("f.js::Plain", [None, None]),
     ("src/checks.rs::checks", [None, None]),
+    (
+        "src/tie.rs::tie",
+        [Some("Ties first."), Some("Ties first.")],
+    ),
 ];
 
 /// Each of `rows`' files as `(path, source)`.
@@ -226,7 +240,7 @@ fn expected(rows: &[Row]) -> Vec<Held> {
 /// the code store holds each file's and each definition's doc span exactly; and WHEN the operator
 /// rewrites the first two Rust files, the TypeScript file, the Python file and the C# file to
 /// `NEXT`'s and builds again, THEN each rewritten file holds its new spans, a span its source
-/// dropped gone, and the unchanged Go, JavaScript and test files keep their own.
+/// dropped gone, and the unchanged Go, JavaScript, test and same-line files keep their own.
 #[test]
 fn a_build_stores_each_doc_span_and_a_rebuild_replaces_a_rewritten_files() {
     let project = temp_project();

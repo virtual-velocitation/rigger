@@ -24,7 +24,9 @@
 //!  - a qualifier capture names the mention: a TypeScript, TSX or JavaScript `new Ns.Box()`,
 //!    a C# base `Ns.IShape` or `List<IShape>` and a Python call `Shape.area()` are stored as the
 //!    mentions `Ns.Box` of the leaf `Box`, `Ns.IShape` of `IShape`, `List` of `List` and
-//!    `Shape.area` of `area`, and land on the one definition the name as written reaches - the
+//!    `Shape.area` of `area`, a comment between the qualifier and its separator
+//!    (`Ns /* c */ . IShape`) left out of the name, and land on the one definition the name as
+//!    written reaches - the
 //!    member qualifier's fallback to the one same-file `Box`, the `namespace Ns` member and
 //!    `Shape`'s method over their same-file namesakes, and `List`, the leaf before the type
 //!    arguments;
@@ -34,7 +36,9 @@
 //!    `CodeView.file` and `B::f`, while `self.inner.open()` and `paths::module_dir()` are stored
 //!    bare and `Cursor::new()` under `use std::io::Cursor;`, its qualifier excluded, is not stored
 //!    at all, and each stored call lands where its name reaches - nowhere for a qualifier naming no
-//!    type of the tree, and the trait's own `file` over its same-file namesake;
+//!    type of the tree, and the trait's own `file` over its same-file namesake; and a fn passed by
+//!    name in an `if let`'s scrutinee, `g(x)`, is a call of `x` though the pattern `Some(x)` binds
+//!    `x` in the body;
 //!  - Rust stages its field uses: `opts.system_prompt = x`, `SpawnOpts { system_prompt }` and
 //!    `self.root` inside `impl Store` are stored as the `field` mentions `system_prompt`,
 //!    `SpawnOpts::system_prompt` and `Store.root`, and `opts.run()` as a call alone; the
@@ -44,9 +48,10 @@
 //!    are stored as the `variant` mentions `InstallOutcome::AlreadyCurrent` and `Located::Many`
 //!    beside their enum's `type` mention, `Kind::RejectRecurrence { n } =>` as the `variant`
 //!    mention `Kind::RejectRecurrence` and the `field` mention `RejectRecurrence::n` with no `type`
-//!    mention, `Hop::Frontier(cs)` as a call and `-> Self::Target` as a `type` mention alone; each
-//!    lands `extracted` on the one variant, field, enum or associated type its name narrows to,
-//!    and the call as the call's two edges onto its variant;
+//!    mention, as `Kind::<u8>::Many { n: 1 }` and `Kind::Many::<u8> { n: 1 }` are `Kind::Many`
+//!    and `Many::n`, `Hop::Frontier(cs)` as a call and `-> Self::Target` as a `type` mention
+//!    alone; each lands `extracted` on the one variant, field, enum or associated type its name
+//!    narrows to, and the call as the call's two edges onto its variant;
 //!  - and Rust tags its impl headers: `impl<T> CodeView for FactsView<T>` is stored as the `impl`
 //!    mentions `CodeView` and `FactsView`, and `impl FactsView` as the `impl` mention
 //!    `FactsView`, each enclosed by its impl, a function-local impl's by the impl and never its
@@ -534,6 +539,12 @@ fn graph_build_lands_a_constructor_as_a_call_onto_its_class() {
 #[cfg(feature = "symbols")]
 const JS_QUALIFIED_SOURCE: &str = "class Box {}\nfunction make() { return new Ns.Box(); }\n";
 
+/// [`JS_QUALIFIED_SOURCE`] with a comment between the qualifier `Ns` and its separator:
+/// `new Ns /* c */ . Box()`.
+#[cfg(feature = "symbols")]
+const JS_COMMENTED_QUALIFIED_SOURCE: &str =
+    "class Box {}\nfunction make() { return new Ns /* c */ . Box(); }\n";
+
 /// One stored mention of a [`QUALIFIED_FILES`] row: its name, its leaf and the id path of the one
 /// definition it lands on.
 #[cfg(feature = "symbols")]
@@ -546,11 +557,13 @@ type Written = (&'static str, &'static str, &'static str);
 /// no definition, beside one `Box`; in TypeScript the same call beside a top-level `Box` and the
 /// `Box` of a `namespace Ns`; in C# a base `Ns.IShape` beside the `IShape` of `namespace Ns` and
 /// of `namespace Other`; in C# a base `List<IShape>`, a name holding type arguments, beside a
-/// class `List` and an interface `IShape`, its type argument `IShape` a mention of its own; and in
+/// class `List` and an interface `IShape`, its type argument `IShape` a mention of its own; in
 /// Python a call `Shape.area()` whose member qualifier `Shape` names a class, beside the method
-/// `area` of `Shape` and of `Other`.
+/// `area` of `Shape` and of `Other`; and with a comment between the qualifier and its separator,
+/// which the name leaves out, the C# base `Ns /* c */ . IShape` and, in TypeScript, TSX and
+/// JavaScript, `new Ns /* c */ . Box()`.
 #[cfg(feature = "symbols")]
-const QUALIFIED_FILES: [(&str, &str, &str, &[Written], bool); 7] = [
+const QUALIFIED_FILES: [(&str, &str, &str, &[Written], bool); 11] = [
     ("f.ts", JS_QUALIFIED_SOURCE, "make", &[("Ns.Box", "Box", "Box")], true),
     ("f.tsx", JS_QUALIFIED_SOURCE, "make", &[("Ns.Box", "Box", "Box")], true),
     ("f.js", JS_QUALIFIED_SOURCE, "make", &[("Ns.Box", "Box", "Box")], true),
@@ -582,14 +595,25 @@ const QUALIFIED_FILES: [(&str, &str, &str, &[Written], bool); 7] = [
         &[("Shape.area", "area", "Shape::area")],
         true,
     ),
+    (
+        "f.cs",
+        "namespace Ns { interface IShape { } }\nnamespace Other { interface IShape { } }\nclass A : Ns /* c */ . IShape { }\n",
+        "A",
+        &[("Ns.IShape", "IShape", "Ns::IShape")],
+        false,
+    ),
+    ("f.ts", JS_COMMENTED_QUALIFIED_SOURCE, "make", &[("Ns.Box", "Box", "Box")], true),
+    ("f.tsx", JS_COMMENTED_QUALIFIED_SOURCE, "make", &[("Ns.Box", "Box", "Box")], true),
+    ("f.js", JS_COMMENTED_QUALIFIED_SOURCE, "make", &[("Ns.Box", "Box", "Box")], true),
 ];
 
 /// GIVEN a project whose one file names a definition through a qualifier or with type arguments
 /// ([`QUALIFIED_FILES`]),
 /// WHEN the operator runs `rigger graph build`,
 /// THEN A QUALIFIER CAPTURE NAMES THE MENTION (spec 117, CAPTURES): the store holds the file's
-/// mentions, each named as written (`Ns.Box`, `Ns.IShape`, `List`, `Shape.area`) of its leaf
-/// (`Box`, `IShape`, `List`, `area`), and the graph's `REFERENCES` and `CALLS` edges are exactly
+/// mentions, each named as written (`Ns.Box`, `Ns.IShape`, `List`, `Shape.area`), a comment inside
+/// the name left out of it, of its leaf (`Box`, `IShape`, `List`, `area`), and the graph's
+/// `REFERENCES` and `CALLS` edges are exactly
 /// the references', each `extracted`, onto the one definition each name as written reaches - a
 /// call's two, a type reference's one from the class naming its base. The member qualifier `Ns`
 /// of `new Ns.Box()` keeps no candidate and leaves the call to its one same-file `Box`, where a
@@ -663,11 +687,13 @@ fn stored_mentions(graph: &common::cli::BuiltGraph, file: &str) -> Option<Vec<(S
 /// One Rust file `f.rs` per call shape RUST WRITES THE QUALIFIER names (spec 117, RUST
 /// REFERENCES), one module-prefixed turbofish, whose type the rule reads by its final segment, and
 /// one per shape AN EXCLUDED QUALIFIER STAGES NOTHING names - a standard-library import's
-/// qualifier, in a call and in a macro's token tree, and an alias qualifier - each `(what it
-/// shows, source, its stored mentions as (name as written, leaf), the calls it lands as (caller,
-/// callee), and the `impl` mentions it lands as (impl, self type) `REFERENCES` edges, each by id
-/// path and `extracted`)`. An impl header stages an `impl` mention of its self type (spec 117,
-/// RUST TAGS IMPL HEADERS), so `impl Store` referencing `Store` is a row's landing too.
+/// qualifier, in a call and in a macro's token tree, and an alias qualifier - and one `if let`
+/// whose pattern binds the name of a fn its scrutinee passes by name (RUST STAGES FUNCTION
+/// VALUES), each `(what it shows, source, its stored mentions as (name as written, leaf), the
+/// calls it lands as (caller, callee), and the `impl` mentions it lands as (impl, self type)
+/// `REFERENCES` edges, each by id path and `extracted`)`. An impl header stages an `impl` mention
+/// of its self type (spec 117, RUST TAGS IMPL HEADERS), so `impl Store` referencing `Store` is a
+/// row's landing too.
 #[cfg(feature = "symbols")]
 type RustQualifiedCall = (
     &'static str,
@@ -679,7 +705,7 @@ type RustQualifiedCall = (
 
 /// The rows of [`graph_build_names_a_rust_call_by_the_qualifier_rust_writes`].
 #[cfg(feature = "symbols")]
-const RUST_QUALIFIED_CALLS: [RustQualifiedCall; 9] = [
+const RUST_QUALIFIED_CALLS: [RustQualifiedCall; 10] = [
     (
         "`Store::open()`, its uppercase segment naming no type of the tree, makes no link",
         "fn open() {}\nfn main() { Store::open(); }\n",
@@ -751,6 +777,14 @@ const RUST_QUALIFIED_CALLS: [RustQualifiedCall; 9] = [
         &[],
         &[],
     ),
+    (
+        "`if let Some(x) = g(x) { k(x); }` stores its scrutinee's `x`, which the pattern does not \
+         yet bind, landing on the fn `x`, and not its body's, which the pattern binds",
+        "fn x() {}\nfn g() {}\nfn k() {}\nfn u() { if let Some(x) = g(x) { k(x); } }\n",
+        &[("g", "g"), ("k", "k"), ("x", "x")],
+        &[("u", "g"), ("u", "k"), ("u", "x")],
+        &[],
+    ),
 ];
 
 /// GIVEN a project whose one Rust file `f.rs` makes a call in a shape RUST WRITES THE QUALIFIER
@@ -769,7 +803,9 @@ const RUST_QUALIFIED_CALLS: [RustQualifiedCall; 9] = [
 /// lands on its same-file fn; the trait's own `file` for `CodeView.file`, where a bare `file`
 /// lands on a placeholder beside the same-file free `file`; and the one same-file candidate for
 /// each other name - the macro's own `check` among them - which `paths::module_dir`, its
-/// qualifier naming no type, would not reach.
+/// qualifier naming no type, would not reach. Under `if let Some(x) = g(x) { k(x); }` the
+/// scrutinee's `x`, a fn passed by name where the pattern binds nothing yet, is stored and lands
+/// on the fn `x`, while the body's `x`, which the pattern binds, is not stored.
 #[cfg(feature = "symbols")]
 #[test]
 fn graph_build_names_a_rust_call_by_the_qualifier_rust_writes() {
@@ -833,6 +869,13 @@ const FIELD_USES_SOURCE: &str = "struct SpawnOpts { system_prompt: u8 }\nimpl Sp
 #[cfg(feature = "symbols")]
 const VARIANT_USES_SOURCE: &str = "enum InstallOutcome { AlreadyCurrent }\nenum Located { Many(u8) }\nenum Kind { RejectRecurrence { n: u8 } }\nenum Hop { Frontier(u8) }\ntrait Tr { type Target; fn get(&self) -> Self::Target; }\nfn a() { let o = InstallOutcome::AlreadyCurrent; }\nfn b(x: u8) -> u8 { match x { Located::Many(c) => c, _ => 0 } }\nfn c(k: u8) -> u8 { match k { Kind::RejectRecurrence { n } => n, _ => 0 } }\nfn e(cs: u8) { Hop::Frontier(cs); }\n";
 
+/// A Rust file holding a generic enum's struct variant built with a turbofish beside that enum:
+/// `Kind<T>` with the struct variant `Many { n }` (line 1), a `fn w` writing
+/// `Kind::<u8>::Many { n: 1 }`, the turbofish on the enum (line 2), and a `fn v` writing
+/// `Kind::Many::<u8> { n: 1 }`, the turbofish on the variant (line 3).
+#[cfg(feature = "symbols")]
+const GENERIC_VARIANT_USES_SOURCE: &str = "enum Kind<T> { Many { n: T } }\nfn w() { Kind::<u8>::Many { n: 1 }; }\nfn v() { Kind::Many::<u8> { n: 1 }; }\n";
+
 /// A Rust file holding the impl headers RUST TAGS IMPL HEADERS names (spec 117) beside what they
 /// name: a trait `CodeView` with the method `file` (line 1), a struct `FactsView` (line 2), the
 /// trait impl `impl<T> CodeView for FactsView<T>` (line 3), the inherent `impl FactsView` with
@@ -854,7 +897,8 @@ const IMPL_HEADERS_SOURCE: &str = "trait CodeView { fn file(&self) {} }\nstruct 
 const IMPL_HEADERS_BEHIND_A_POINTER_SOURCE: &str = "use std::fmt;\ntrait Draw {}\nstruct Path;\nstruct Formatter;\nimpl Draw for &std::path::Path {}\nimpl Draw for *const std::path::Path {}\nimpl Draw for &fmt::Formatter {}\nimpl Draw for &crate::Path {}\n";
 
 /// GIVEN a project whose one Rust file holds a row's uses - the field uses of
-/// [`FIELD_USES_SOURCE`], the variant uses of [`VARIANT_USES_SOURCE`] or the impl headers of
+/// [`FIELD_USES_SOURCE`], the variant uses of [`VARIANT_USES_SOURCE`] or
+/// [`GENERIC_VARIANT_USES_SOURCE`] or the impl headers of
 /// [`IMPL_HEADERS_SOURCE`] or [`IMPL_HEADERS_BEHIND_A_POINTER_SOURCE`] -
 /// WHEN the operator runs `rigger graph build`,
 /// THEN the code store holds exactly the row's mentions, each named as the Rust qualifier rule
@@ -881,6 +925,11 @@ const IMPL_HEADERS_BEHIND_A_POINTER_SOURCE: &str = "use std::fmt;\ntrait Draw {}
 /// variant holds, so every edge is `extracted`: each variant use onto its variant, the field onto
 /// `RejectRecurrence`'s `n`, the call as the call's two edges onto the variant `Hop::Frontier`,
 /// and each type mention onto its enum or associated type.
+///
+/// The generic variant row: `Kind::<u8>::Many { n: 1 }` and `Kind::Many::<u8> { n: 1 }`, a
+/// turbofish on the enum and on the variant, are each the `variant` mention `Kind::Many` and the
+/// `field` mention `Many::n`, with no `type` mention of `Kind`, as a struct literal written with
+/// no turbofish is; each lands `extracted` from its fn on the variant `Kind::Many` and its `n`.
 ///
 /// The impl-header row: `impl<T> CodeView for FactsView<T>` is the `impl` mentions `CodeView` and
 /// `FactsView`, `impl FactsView` the `impl` mention `FactsView` and the fn-local
@@ -1027,6 +1076,27 @@ fn graph_build_lands_each_rust_field_variant_and_impl_header_mention_on_its_defi
              variant's construction a call and a type-position path a type mention alone; each \
              lands extracted on the one definition its qualifier narrows to, the call as a call; \
              and no placeholder stands for any mention",
+        ),
+        (
+            GENERIC_VARIANT_USES_SOURCE,
+            // `w` is 3 and `v` 4.
+            vec![
+                tagged_in(3, "Many::n", "n", REF_KIND_FIELD, 2),
+                tagged_in(4, "Many::n", "n", REF_KIND_FIELD, 3),
+                tagged_in(3, "Kind::Many", "Many", REF_KIND_VARIANT, 2),
+                tagged_in(4, "Kind::Many", "Many", REF_KIND_VARIANT, 3),
+            ],
+            vec![],
+            vec![
+                ("w", "Kind::Many", TIER_EXTRACTED),
+                ("w", "Kind::Many.n", TIER_EXTRACTED),
+                ("v", "Kind::Many", TIER_EXTRACTED),
+                ("v", "Kind::Many.n", TIER_EXTRACTED),
+            ],
+            vec!["Kind", "Kind::Many", "Kind::Many.n", "v", "w"],
+            "a struct variant built with a turbofish on its enum or on itself is stored the \
+             variant mention named by its enum and the field mention named by the variant, with \
+             no type mention of its enum, each landing extracted on the variant and its field",
         ),
         (
             IMPL_HEADERS_SOURCE,
