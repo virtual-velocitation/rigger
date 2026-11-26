@@ -2412,10 +2412,14 @@ recurse: true\n\
 ---\n\
 You decompose the spec into a DAG of small, independently-verifiable units, each\n\
 serving one acceptance criterion. Emit each as a UnitProposed decision. Do not write code.\n\
-Add a `needs` edge only for a real dependency: a file one unit edits that another\n\
-reads or edits, or an API one unit adds that another calls. Units with no such\n\
-dependency carry no edge between them and run in parallel; never chain units in\n\
-order by default.\n\
+Add a `needs` edge only for a real dependency: an item both units edit (a function,\n\
+a type, a doc section, or a pinned row both re-pin), or an API one unit adds that the\n\
+other calls, and the edge's reason names that item or API. Two units that edit\n\
+different items of one file carry no edge: their hunks merge at integration, and a\n\
+conflict re-parks the later unit through the merge-in to re-pin on the merged tree.\n\
+A chain decision lists each unit's items, so each edge can be checked against them.\n\
+Units with no such dependency carry no edge between them and run in parallel; never\n\
+chain units in order by default.\n\
 \n\
 Split a criterion whose one unit would be too large into ordered units (each `needs`\n\
 the one before it), each owning a named part. If you discover a NECESSARY sub-unit or\n\
@@ -6286,15 +6290,23 @@ mod tests {
     }
 
     /// Units run in parallel unless one depends on another: the committed planner and its scaffold
-    /// seed add a `needs` edge only for a real dependency - a file one unit edits that another
-    /// reads or edits, or an API one unit adds that another calls - and never chain units by
-    /// default.
+    /// seed add a `needs` edge only for a real dependency - an item both units edit, or an API one
+    /// unit adds that the other calls, named in the edge's reason - carry no edge between units
+    /// that edit different items of one file, list each unit's items in a chain decision, and
+    /// never chain units by default.
     #[test]
     fn the_planner_adds_a_needs_edge_only_for_a_real_dependency() {
-        const RULE: &str = "Add a `needs` edge only for a real dependency: a file one unit edits \
-                            that another reads or edits, or an API one unit adds that another \
-                            calls. Units with no such dependency carry no edge between them and \
-                            run in parallel; never chain units in order by default.";
+        const RULE: &str =
+            "Add a `needs` edge only for a real dependency: an item both units edit \
+                            (a function, a type, a doc section, or a pinned row both re-pin), or \
+                            an API one unit adds that the other calls, and the edge's reason \
+                            names that item or API. Two units that edit different items of one \
+                            file carry no edge: their hunks merge at integration, and a conflict \
+                            re-parks the later unit through the merge-in to re-pin on the merged \
+                            tree. A chain decision lists each unit's items, so each edge can be \
+                            checked against them. Units with no such dependency carry no edge \
+                            between them and run in parallel; never chain units in order by \
+                            default.";
         for (at, text) in shipped_planners() {
             assert!(text.contains(RULE), "{at} must say {RULE:?}");
         }
