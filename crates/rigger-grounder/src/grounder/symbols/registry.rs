@@ -210,6 +210,7 @@ const CSHARP_DEFINITION_TAGS: [&str; 18] = [
 ///   `Ns.Pt(0, 0)`, which stays the call `Ns.Pt`.
 fn csharp_reference_tags() -> String {
     let guard = CSHARP_KEYWORD_GUARD;
+    let type_name = "[(identifier) (generic_name)] @name";
     let names = format!("(identifier) @name (generic_name) @name {CSHARP_CALLED}");
     let element = format!("[{names} (parenthesized_expression [{names}])]");
     let list =
@@ -239,25 +240,25 @@ fn csharp_reference_tags() -> String {
   (base_list [(identifier) (generic_name) (qualified_name) (alias_qualified_name)] @name))
   @reference.implementation
 (base_list (primary_constructor_base_type type: (_) @name)) @reference.implementation
-(object_creation_expression type: [(identifier) (generic_name)] @name) @reference.class
+(object_creation_expression type: {type_name}) @reference.class
 (type_parameter_constraints_clause (identifier) @name) @reference.class
 (type_parameter_constraint (type type: (identifier) @name)) @reference.class
 ((variable_declaration type: (identifier) @name) @reference.class {guard})
-((_ type: [(identifier) (generic_name)] @name) @reference.type {guard})
-(_ returns: [(identifier) (generic_name)] @name) @reference.type
-(as_expression right: [(identifier) (generic_name)] @name) @reference.type
+((_ type: {type_name}) @reference.type {guard})
+(_ returns: {type_name}) @reference.type
+(as_expression right: {type_name}) @reference.type
 {chains}
 ((switch_section [{CSHARP_CALLED} {list}]) @reference.type {guard})
-((is_expression right: [(identifier) (generic_name)] @name) @reference.type {guard})
+((is_expression right: {type_name}) @reference.type {guard})
 (binary_expression
   left: (binary_expression
     left: [(is_expression) (is_pattern_expression)]
     operator: "<"
-    right: [(identifier) (generic_name)] @name)
+    right: {type_name})
   operator: ">"
   right: {closing})
   @reference.type
-(type_argument_list [(identifier) (generic_name)] @name) @reference.type
+(type_argument_list {type_name}) @reference.type
 ((invocation_expression
   function: (member_access_expression expression: (identifier) @qualifier.member name: (identifier) @name))
   @reference.send
