@@ -1057,16 +1057,18 @@ impl CapabilityTable {
     /// `involved` cell, compared as two strings, while their `effort` may differ.
     pub fn validate(&self) -> Result<(), String> {
         let [routine, involved] = [Complexity::Routine, Complexity::Involved];
-        let (low, mid) = (self.judging.cell(routine), self.judging.cell(involved));
+        let row = self.row(Work::Judging);
+        let (low, mid) = (row.cell(routine), row.cell(involved));
         if low.model == mid.model {
             return Ok(());
         }
         Err(format!(
-            "judging: the {r} cell names model {:?} and the {i} cell {:?}; a judging spawn runs \
-             on one model whether planned {r} or {i}, so the two cells name the same model and \
-             may differ only in effort",
+            "{j}: the {r} cell names model {:?} and the {i} cell {:?}; a {j} spawn runs on one \
+             model whether planned {r} or {i}, so the two cells name the same model and may \
+             differ only in effort",
             low.model,
             mid.model,
+            j = Work::Judging.name(),
             r = routine.name(),
             i = involved.name(),
         ))
