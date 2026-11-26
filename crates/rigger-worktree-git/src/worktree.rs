@@ -1168,11 +1168,7 @@ impl Worktree {
                 sha,
             ],
         )?;
-        Ok(out
-            .split('\0')
-            .filter(|path| !path.is_empty())
-            .map(str::to_string)
-            .collect())
+        Ok(nul_paths(&out))
     }
 
     /// Every path this worktree currently has UNMERGED (a real git conflict): each
@@ -3755,7 +3751,7 @@ fn refresh_checked_out_index(dir: &str) -> Result<(), Error> {
     git(dir, &["update-index", "-q", "--refresh"]).map(drop)
 }
 
-/// The paths a `git diff --name-only -z` wrote, in its order, each spelled as git stores it.
+/// The paths a git `--name-only -z` listing wrote, in its order, each spelled as git stores it.
 fn nul_paths(out: &str) -> Vec<String> {
     out.split('\0')
         .filter(|path| !path.is_empty())
