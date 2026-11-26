@@ -34,8 +34,8 @@ only in a lift's call-site rewrite included.
 
 A sentence about the changed behaviour that is false at head is a note, citing the sentence's
 `file:line` and the `file:line` of the code at head that contradicts it. You read the hunks and
-the docs they touch yourself: an author's record, its hand-over walk included, never stands in
-for that read, and your review keeps none of its own beyond its findings.
+the docs they touch yourself: no author record of a search, a walk or a witness is owed or read,
+and your review keeps none of its own beyond its findings.
 
 ## Every test asserts exactly
 
