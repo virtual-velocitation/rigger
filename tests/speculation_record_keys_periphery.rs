@@ -1,5 +1,5 @@
-//! THE CONDUCTOR RESOLVES EVERY SPAWN ONCE (spec 135), at the seam between the conductor and the
-//! one driver that records no spawn request, the real `driver::cli::Driver`
+//! A SPECULATION GROUP RECORDS EACH LANE ONCE PER ENTRY, under the one driver that records no
+//! spawn request, the real `driver::cli::Driver`
 //! (`tests/common/real_driver_spy.rs`). Under it a speculation group re-entered past a boundary
 //! runs its lanes from attempt 0 again, so a record of the group keyed by the lane alone would
 //! repeat the earlier group's key and never be written. Each row drives `conductor::run` through
