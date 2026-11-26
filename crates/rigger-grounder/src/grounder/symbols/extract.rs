@@ -1485,9 +1485,12 @@ fn read_tokens(
         out.push((args.clone(), vec![span]));
         return true;
     }
-    if let Some(items) = reparse(parser, source, &span, ITEMS).filter(clean) {
-        let read = span.start..span.end + ITEMS.1.len();
-        out.push((items, vec![read]));
+    // The items read ends where its parse does ([`reparse`]), past the `;` served after the span.
+    let items = reparse(parser, source, &span, ITEMS).filter(clean);
+    if let Some((end, items)) =
+        items.and_then(|tree| Some((tree.included_ranges().last()?.end_byte, tree)))
+    {
+        out.push((items, vec![span.start..end]));
         return false;
     }
     let Some(args) = args else {
