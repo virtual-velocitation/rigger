@@ -2203,4 +2203,50 @@ mod tests {
             assert_eq!(panel.agent_ids(), all, "agent_ids of {panel:?}");
         }
     }
+
+    /// THE WORK KEY PARSES: `parse_agent` reads `work:` into [`AgentDef::work`] and `effort:` into
+    /// [`AgentDef::effort`] as written, an absent or null key reading as none, and refuses every
+    /// other `work` value naming the persona and the three values, though `work:` comes before the
+    /// persona's `id:`.
+    #[test]
+    fn parse_agent_reads_the_work_key_and_the_effort_pin_refusing_any_other_work_value() {
+        let refused = || {
+            Err(String::from(
+                "config: agent \"critic\": work must be one of judging, writing, reading",
+            ))
+        };
+        for (frontmatter, parsed) in [
+            ("", Ok((None, ""))),
+            ("work: judging\n", Ok((Some(Work::Judging), ""))),
+            ("work: writing\n", Ok((Some(Work::Writing), ""))),
+            ("work: reading\n", Ok((Some(Work::Reading), ""))),
+            ("work: \"judging\"\n", Ok((Some(Work::Judging), ""))),
+            ("work:\n", Ok((None, ""))),
+            ("work: ~\n", Ok((None, ""))),
+            ("effort: high\n", Ok((None, "high"))),
+            ("effort: no-such-level\n", Ok((None, "no-such-level"))),
+            ("effort: ' high '\n", Ok((None, " high "))),
+            (
+                "work: writing\neffort: xhigh\n",
+                Ok((Some(Work::Writing), "xhigh")),
+            ),
+            ("work: deciding\n", refused()),
+            ("work: Judging\n", refused()),
+            ("work: ''\n", refused()),
+            ("work: ' judging'\n", refused()),
+            ("work: 3\n", refused()),
+            ("work: true\n", refused()),
+            ("work: !judging\n", refused()),
+            ("work: [judging]\n", refused()),
+            ("work: {judging: x}\n", refused()),
+            ("work: deciding\neffort: high\n", refused()),
+        ] {
+            let doc = format!("---\n{frontmatter}id: critic\n---\nJudge the diff.\n");
+            let got = parse_agent(doc.as_bytes())
+                .map(|a| (a.work, a.effort))
+                .map_err(|e| e.to_string());
+            let parsed = parsed.map(|(work, effort): (_, &str)| (work, effort.to_string()));
+            assert_eq!(got, parsed, "{frontmatter:?}");
+        }
+    }
 }
