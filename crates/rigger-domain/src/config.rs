@@ -216,8 +216,8 @@ pub struct AgentDef {
     #[serde(default)]
     pub advisor: Option<bool>,
     /// The kind of work this persona does, its frontmatter's `work:`; `None` when it declares
-    /// none or a null value. Set by [`parse_agent`], which refuses any other value, naming the
-    /// persona and the three kinds.
+    /// none or a null value. Set by [`parse_agent`], which refuses any other value, or the key
+    /// declared twice, naming the persona and the three kinds.
     #[serde(skip)]
     pub work: Option<Work>,
     /// The host effort this persona pins, its frontmatter's `effort:`: an opaque host string kept
@@ -1459,28 +1459,31 @@ pub fn index_agents(
 
 /// ParseAgent parses a markdown-with-YAML-frontmatter agent definition: the
 /// frontmatter is the agent's fields, the body is its prompt. Its `work:` key is read after the
-/// rest, so a value that is none of [`Work`]'s names is refused naming the agent's id wherever the
-/// key sits; an absent or null `work:` declares none.
+/// rest, so a value that is none of [`Work`]'s names, or the key declared twice, is refused naming
+/// the agent's id wherever the key sits; an absent or null `work:` declares none.
 pub fn parse_agent(b: &[u8]) -> Result<AgentDef, Error> {
     let s = std::str::from_utf8(b).map_err(|e| err(e.to_string()))?;
     let (front, body) = split_frontmatter(s)?;
-    let frontmatter = |msg| err(format!("frontmatter: {msg}"));
-    let mut a: AgentDef = parse_yaml_naming_unknown_keys(front).map_err(frontmatter)?;
-    let key: WorkKey = parse_yaml_naming_unknown_keys(front).map_err(frontmatter)?;
+    let mut a: AgentDef =
+        parse_yaml_naming_unknown_keys(front).map_err(|msg| err(format!("frontmatter: {msg}")))?;
+    let refused = || {
+        let names: Vec<_> = Work::ALL.into_iter().map(Work::name).collect();
+        err(format!(
+            "agent {:?}: work must be one of {}",
+            a.id,
+            names.join(", ")
+        ))
+    };
+    // The frontmatter already parsed as an `AgentDef`, so this parse fails only on `work`'s own
+    // text: a value with a repeated key, or the key declared twice.
+    let key: WorkKey = parse_yaml_naming_unknown_keys(front).map_err(|_| refused())?;
     a.work = key
         .work
         .map(|value| {
             Work::ALL
                 .into_iter()
                 .find(|w| value.as_str() == Some(w.name()))
-                .ok_or_else(|| {
-                    let names: Vec<_> = Work::ALL.into_iter().map(Work::name).collect();
-                    err(format!(
-                        "agent {:?}: work must be one of {}",
-                        a.id,
-                        names.join(", ")
-                    ))
-                })
+                .ok_or_else(refused)
         })
         .transpose()?;
     a.prompt = body.trim().to_string();
