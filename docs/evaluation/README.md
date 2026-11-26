@@ -66,7 +66,7 @@ The check-in is the unit that joins a stage: it works off the run's notes after 
 | `checkin_hours.wall_per_unit`, `checkin_hours.implementer_per_unit` | the two over `criterion_units` |
 | `checkin_work.prompt_records` | the lines of the `RUN NOTES` block in its first implementer prompt that open with a review finding's id: the reviewer records carried into the check-in |
 | `checkin_work.notes` | those records whose summary opens with `NOTE`, `NOTES` or `NON-BLOCKING` |
-| `checkin_work.walk_notes` | the notes of the three kinds the implementer's hand-over walk lists: `walk_notes_tests` (a branch with no test), `walk_notes_homes` (a rule, helper, fixture or test shape spelled twice) and `walk_notes_docs` (a sentence false at head); `walk_notes_per_unit` is over `criterion_units` |
+| `checkin_work.walk_notes` | the carried review notes of three kinds, each classed by keyword: `walk_notes_tests` (a branch with no test), `walk_notes_homes` (a rule, helper, fixture or test shape spelled twice) and `walk_notes_docs` (a sentence false at head); `walk_notes_per_unit` is over `criterion_units` |
 | `checkin_work.unclassed_notes` | the notes the keyword rule gives no kind |
 | `checkin_work.commits`, `checkin_work.added_lines` | the non-merge commits from the last landing before the check-in started to its landing, and the lines `git diff --numstat` counts added between the two |
 

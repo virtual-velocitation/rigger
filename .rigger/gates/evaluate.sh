@@ -237,9 +237,9 @@ NOTE_KINDS = (
     ("structure", ("open-closed", "dependency inversion", "interface segregation", "YAGNI",
                    "single responsibility")),
 )
-# The kinds the implementer's hand-over walk lists (.rigger/agents/rust-engineer.md): a branch
-# with no test, a rule, helper, fixture or test shape spelled a second time, a sentence false at
-# head.
+# The three kinds of carried review note the walk_notes figures count, each note classed by keyword
+# (NOTE_KINDS): a branch with no test, a rule, helper, fixture or test shape spelled a second time,
+# a sentence false at head.
 WALK_KINDS = ("tests", "homes", "docs")
 CHECKIN_HOURS = ("the check-in (the unit that joins a stage) in live hours, outages removed: wall "
                  "from its first UnitStarted to its landing; implementer, its implementer "
@@ -248,8 +248,7 @@ CHECKIN_HOURS = ("the check-in (the unit that joins a stage) in live hours, outa
 CHECKIN_WORK = ("the run notes the check-in worked off and what it committed: prompt_records, the "
                 "lines of the RUN NOTES block in its first implementer prompt that open with a "
                 "review finding's id; notes, those whose summary opens with NOTE, NOTES or "
-                "NON-BLOCKING; walk_notes, the notes of the kinds the hand-over walk lists "
-                "(walk_notes_tests, a branch with no test; walk_notes_homes, a rule, helper, "
+                "NON-BLOCKING; walk_notes, the notes of three kinds (walk_notes_tests, a branch with no test; walk_notes_homes, a rule, helper, "
                 "fixture or test shape spelled twice; walk_notes_docs, a sentence false at head), "
                 "classed by keyword: the first NOTE_KINDS rule in evaluate.sh whose word the note's "
                 "label holds, a first cut that leaves unclassed_notes; walk_notes_per_unit over "
