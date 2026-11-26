@@ -2271,15 +2271,31 @@ agent: worker\n";
         }
     }
 
+    /// A config of the one persona `agent` whose workflow is `body`, parsed and not yet validated.
+    fn config_of_persona(agent: AgentDef, body: &str) -> Config {
+        let mut cfg = Config::default();
+        cfg.agents.insert(agent.id.clone(), agent);
+        cfg.workflow = parse_workflow(body).unwrap_or_else(|e| panic!("parse {body}: {e}"));
+        cfg
+    }
+
     /// `Config::validate` holds THE FLOOR through `CapabilityTable::validate`, accepting a
     /// workflow with no table and refusing each judging row the floor refuses under
     /// `defaults.capability`, while [`read_scratch_defaults`], which passes no
-    /// `Config::validate`, reads each of those tables as written.
+    /// `Config::validate`, reads each of those tables as written. Its one persona pins its model,
+    /// so the coherence of its declarations holds under every table.
     #[test]
     fn validate_holds_the_judging_floor_that_read_scratch_defaults_does_not() {
         use crate::config::CapabilityTable;
-        use crate::test_support::{capability_table, workflow_declaring_capability, JUDGING_FLOOR};
-        let validated = |workflow: &str| config_of(workflow).validate().map_err(|e| e.0);
+        use crate::test_support::{
+            agent_with_its_own_alias, capability_table, workflow_declaring_capability,
+            JUDGING_FLOOR,
+        };
+        let validated = |workflow: &str| {
+            config_of_persona(agent_with_its_own_alias("a"), workflow)
+                .validate()
+                .map_err(|e| e.0)
+        };
         assert_eq!(validated("defaults: {}\n"), Ok(Vec::new()), "no table");
         let tmp = tempfile::tempdir().expect("tempdir");
         let rigger_dir = tmp.path().join(".rigger");
@@ -2303,6 +2319,26 @@ agent: worker\n";
                     .map_err(|e| e.0),
                 Ok(Some(written)),
                 "{judging}"
+            );
+        }
+    }
+
+    /// THE DECLARATIONS ARE COHERENT: `Config::validate` refuses each persona whose declarations
+    /// `config::coherence` refuses against its workflow's `defaults.capability` table or its
+    /// absence, with that exact refusal, and accepts each it accepts.
+    #[test]
+    fn validate_refuses_each_persona_incoherent_with_the_workflows_table() {
+        use crate::test_support::{persona_coherence, workflow_declaring_capability};
+        for (persona, table, verdict) in persona_coherence() {
+            let agent = crate::config::parse_agent(persona.as_bytes())
+                .unwrap_or_else(|e| panic!("parse {persona}: {e}"));
+            let workflow = workflow_declaring_capability(&table);
+            assert_eq!(
+                config_of_persona(agent, &workflow)
+                    .validate()
+                    .map_err(|e| e.0),
+                verdict.map(|()| Vec::new()),
+                "{persona}{workflow}"
             );
         }
     }

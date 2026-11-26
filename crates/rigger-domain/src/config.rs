@@ -2248,6 +2248,27 @@ mod tests {
         }
     }
 
+    /// THE DECLARATIONS ARE COHERENT: [`coherence`] refuses a persona declaring `work` under a
+    /// workflow with no `defaults.capability` table, and one declaring neither `work` nor a model
+    /// pin under a table, naming the persona; it accepts a pinned or bare persona with no table and
+    /// a pinned or working persona under one.
+    #[test]
+    fn coherence_weighs_each_personas_declarations_against_the_table_or_its_absence() {
+        use crate::test_support::{persona_coherence, workflow_declaring_capability};
+        for (persona, table, verdict) in persona_coherence() {
+            let agent =
+                parse_agent(persona.as_bytes()).unwrap_or_else(|e| panic!("parse {persona}: {e}"));
+            let workflow = workflow_declaring_capability(&table);
+            let wf: Workflow = parse_yaml_naming_unknown_keys(&workflow)
+                .unwrap_or_else(|e| panic!("parse {workflow}: {e}"));
+            assert_eq!(
+                coherence(&agent.id, &agent, wf.defaults.capability.as_ref()),
+                verdict,
+                "{persona}{workflow}"
+            );
+        }
+    }
+
     #[test]
     fn a_map_form_panel_steps_through_its_set_lenses_adversary_and_adjudicator_in_that_order() {
         let ab = || ReviewStep::Lenses(vec!["a".into(), "b".into()]);

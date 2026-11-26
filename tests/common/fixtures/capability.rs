@@ -2,7 +2,11 @@
 //! HOLDS THE FLOOR), each a flow mapping: the judging rows the floor accepts and the ones it
 //! refuses, and the misshapen tables the parse refuses, each with its exact verdict. Read by the
 //! domain parse and floor tests, by the test of `Config::validate` and `read_scratch_defaults`,
-//! and by the `rigger validate` and `rigger reset --derived` periphery suites.
+//! and by the `rigger validate` and `rigger reset --derived` periphery suites. Beside them, the
+//! personas whose declarations `config::coherence` weighs against a table or its absence (criterion
+//! THE DECLARATIONS ARE COHERENT), each with its exact verdict, read by the domain test of
+//! `config::coherence`, the test of `Config::validate`, the `src/cli/setup.rs` tests of the import
+//! and of `rigger init`, and the `rigger init` and `rigger setup` periphery suite.
 
 /// The workflow text declaring the flow mapping `table` as its `defaults.capability`, on one line.
 pub fn workflow_declaring_capability(table: &str) -> String {
@@ -113,3 +117,61 @@ pub const JUDGING_FLOOR: [(&str, Result<(), &str>); 5] = [
         ),
     ),
 ];
+
+/// `config::coherence`'s refusal of the persona `id` declaring `work` under a workflow that
+/// declares no `defaults.capability` table.
+pub fn work_without_a_table(id: &str, work: &str) -> String {
+    format!(
+        "agent {id:?} declares work {work}, but the workflow declares no defaults.capability table"
+    )
+}
+
+/// `config::coherence`'s refusal of the persona `id` declaring neither `work` nor a model pin
+/// under a `defaults.capability` table, naming the two ways to fix it.
+pub fn unpinned_under_a_table(id: &str) -> String {
+    format!(
+        "agent {id:?} declares neither work nor a model pin, so under the workflow's \
+         defaults.capability table it would run at the host default; declare work, or pin model \
+         or model_ladder"
+    )
+}
+
+/// Each persona file, defining the persona `worker` with its frontmatter's other lines, beside
+/// the `defaults.capability` flow mapping its workflow declares (`~` for none, or a table the
+/// floor accepts) and `config::coherence`'s exact verdict. The refused: `work` with no table,
+/// a model pin beside it included, and under a table a persona pinning no model, declaring
+/// nothing, only `fallback_model` or only `effort`. The accepted: a `model` pin or nothing with
+/// no table, and under a table a `model` pin, a `model_ladder` pin or `work`.
+pub fn persona_coherence() -> [(String, String, Result<(), String>); 10] {
+    let persona = |lines: &str| format!("---\nid: worker\n{lines}---\nDo the work.\n");
+    let table: &str = &capability_table(JUDGING_FLOOR[0].0);
+    [
+        (
+            "work: writing\n",
+            "~",
+            Err(work_without_a_table("worker", "writing")),
+        ),
+        (
+            "work: judging\nmodel: m\n",
+            "~",
+            Err(work_without_a_table("worker", "judging")),
+        ),
+        ("", table, Err(unpinned_under_a_table("worker"))),
+        (
+            "fallback_model: m\n",
+            table,
+            Err(unpinned_under_a_table("worker")),
+        ),
+        (
+            "effort: high\n",
+            table,
+            Err(unpinned_under_a_table("worker")),
+        ),
+        ("model: m\n", "~", Ok(())),
+        ("", "~", Ok(())),
+        ("model: m\n", table, Ok(())),
+        ("model_ladder: [a, b]\n", table, Ok(())),
+        ("work: reading\n", table, Ok(())),
+    ]
+    .map(|(lines, table, verdict)| (persona(lines), table.to_string(), verdict))
+}

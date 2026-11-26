@@ -3483,8 +3483,10 @@ mod tests {
     /// lacks its `implementer`, a `gates` text that fails to parse, a stage list naming a gate
     /// the `gates` text does not declare, an implementer persona that fails to parse, one
     /// whose `id` is a scaffold seed's, an `env` declaring each entry the build environment's
-    /// one check refuses, with that check's refusal, and an `env` name of 1025 characters, one
-    /// past the longest key YAML reads plain, with the load error of the workflow it scaffolds.
+    /// one check refuses, with that check's refusal, an `env` name of 1025 characters, one
+    /// past the longest key YAML reads plain, with the load error of the workflow it scaffolds,
+    /// and an implementer declaring `work` under that workflow, which declares no
+    /// `defaults.capability` table, with `config::coherence`'s refusal.
     #[test]
     fn parse_template_set_refuses_naming_the_set_key() {
         let refusal = |set: &str| parse_template_set(&synthetic(set)).map(|_| ()).unwrap_err();
@@ -3565,7 +3567,16 @@ mod tests {
                     overlong_name_refusal(line)
                 ),
             )
-        }]) {
+        }])
+        .chain([(
+            "detect: []\ngates: \"\"\nimplement: []\ncheckin: []\n\
+             implementer: \"---\\nid: maker\\nwork: writing\\n---\\nBuild.\\n\"\n"
+                .to_string(),
+            format!(
+                "gate template set synthetic: implementer: {}",
+                crate::test_support::work_without_a_table("maker", "writing")
+            ),
+        )]) {
             assert_eq!(refusal(set.as_str()), want, "{set}");
         }
     }
@@ -5045,6 +5056,107 @@ mod tests {
             "import must run the same validation `rigger validate` applies and reject a \
              project whose workflow references a missing agent"
         );
+    }
+
+    /// THE DECLARATIONS ARE COHERENT at the import: over a project [`init_project`] scaffolded,
+    /// whose workflow then declares each `persona_coherence` row's `defaults.capability` table
+    /// (none for `~`), [`import_agents`] refuses the row's persona with `config::coherence`'s exact
+    /// refusal before it writes any file, leaving `.rigger/agents/` as it was, and imports it when
+    /// coherence accepts it. An agent already on disk that the table refuses refuses the import of
+    /// a coherent persona the same way.
+    #[test]
+    fn import_agents_refuses_a_fleet_incoherent_with_the_workflow_before_it_writes() {
+        use crate::test_support::{
+            capability_table, persona_coherence, unpinned_under_a_table, JUDGING_FLOOR,
+        };
+        let on_disk_offender = (
+            Some("---\nid: onfile\n---\nOn file.\n"),
+            "---\nid: worker\nmodel: m\n---\nDo the work.\n".to_string(),
+            capability_table(JUDGING_FLOOR[0].0),
+            Err(unpinned_under_a_table("onfile")),
+        );
+        let rows = persona_coherence()
+            .into_iter()
+            .map(|(persona, table, verdict)| (None, persona, table, verdict))
+            .chain([on_disk_offender]);
+        for (on_disk, persona, table, verdict) in rows {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path();
+            init_project(root, &repo_sets()).unwrap();
+            let wf_path = root.join(RIGGER_DIR).join("workflow.yml");
+            let wf = std::fs::read_to_string(&wf_path).unwrap();
+            let declared = format!("\ndefaults:\n  capability: {table}\n");
+            std::fs::write(&wf_path, wf.replacen("\ndefaults:\n", &declared, 1)).unwrap();
+            let agents = root.join(RIGGER_DIR).join("agents");
+            if let Some(text) = on_disk {
+                std::fs::write(agents.join("onfile.md"), text).unwrap();
+            }
+            let src = root.join("collection");
+            std::fs::create_dir_all(&src).unwrap();
+            std::fs::write(src.join("worker.md"), &persona).unwrap();
+            let before = sorted_dir_names(&agents);
+            let mut imported = before.clone();
+            imported.push("worker.md".to_string());
+            imported.sort();
+            let left = if verdict.is_ok() { imported } else { before };
+            assert_eq!(
+                (
+                    import(root, &src).map_err(|e| e.to_string()),
+                    sorted_dir_names(&agents)
+                ),
+                (
+                    verdict
+                        .map(|()| ImportSummary {
+                            imported: 1,
+                            skipped: 0
+                        })
+                        .map_err(|m| format!("config: {m}")),
+                    left
+                ),
+                "{persona}under the table {table}, beside {on_disk:?}"
+            );
+        }
+    }
+
+    /// Ruling 2-1, THE DECLARATIONS ARE COHERENT at `rigger init`: over a project whose
+    /// `.rigger/agents/` holds each `persona_coherence` row's persona and whose
+    /// `.rigger/workflow.yml` declares the row's `defaults.capability` table - or, for `~`, holds
+    /// no workflow, so the one [`init_project`] would write is the scaffold's rendering, which
+    /// declares none - `init_project` refuses with `config::coherence`'s exact refusal before its
+    /// first write when coherence refuses the persona, leaving the project as it was, and
+    /// initializes the project when coherence accepts it.
+    #[test]
+    fn init_project_refuses_a_persona_incoherent_with_the_workflow_it_would_leave() {
+        use crate::test_support::{dir_snapshot, persona_coherence, workflow_declaring_capability};
+        for (persona, table, verdict) in persona_coherence() {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path();
+            let rigger = root.join(RIGGER_DIR);
+            std::fs::create_dir_all(rigger.join("agents")).unwrap();
+            std::fs::write(rigger.join("agents").join("worker.md"), &persona).unwrap();
+            if table != "~" {
+                let workflow = workflow_declaring_capability(&table);
+                std::fs::write(rigger.join("workflow.yml"), workflow).unwrap();
+            }
+            let snapshot = || {
+                (
+                    dir_snapshot(root, ""),
+                    dir_snapshot(&rigger, ""),
+                    dir_snapshot(&rigger.join("agents"), ""),
+                )
+            };
+            let before = snapshot();
+            assert_eq!(
+                init_project(root, &repo_sets())
+                    .map(|_| ())
+                    .map_err(|e| e.to_string()),
+                verdict.clone().map_err(|m| format!("config: {m}")),
+                "{persona}under the table {table}"
+            );
+            if verdict.is_err() {
+                assert_eq!(snapshot(), before, "{persona}under the table {table}");
+            }
+        }
     }
 
     /// The scaffolded workflow (`rigger init`/`setup` on a NEW project) carries neither retired

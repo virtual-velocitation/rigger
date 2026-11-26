@@ -10,11 +10,12 @@
 //! it, that a fresh scaffold seeds the `sdet-author` test author its workflow declares and writes
 //! no seed whose id an agent of the project already defines, whatever its file name, that a rerun
 //! writes that seed back only for the test author the workflow declares and no agent defines, that
-//! an agent file that does not parse stops every seed until it is fixed, that `rigger setup
-//! --agents <dir>` imports a collection's agent in the place of the seed of its id and refuses a
-//! collection that would define an id twice, that a command naming no template root scaffolds no
-//! gate and keeps what an earlier root scaffolded, and that every argument and template root a
-//! command refuses is refused before any write.
+//! an agent file that does not parse stops every seed until it is fixed, that a persona whose
+//! declarations are incoherent with the workflow the command would leave in place stops every seed
+//! (spec 135), that `rigger setup --agents <dir>` imports a collection's agent in the place of the
+//! seed of its id and refuses a collection that would define an id twice, that a command naming no
+//! template root scaffolds no gate and keeps what an earlier root scaffolded, and that every
+//! argument and template root a command refuses is refused before any write.
 
 use crate::common;
 use common::cli::{build_report_lines, UNDECLARED_BUILD_REPORT};
@@ -32,6 +33,7 @@ use common::fixtures::{build_declaring, RUST_SET_ENV, RUST_SET_ENV_WRITTEN};
 use common::fixtures::{
     env_written_named, overlong_name_refusal, set_env_line_named, LONGEST_PLAIN_KEY,
 };
+use common::fixtures::{persona_coherence, workflow_declaring_capability};
 use common::repo::{collect_files, repo_root};
 use std::path::Path;
 
@@ -617,6 +619,51 @@ fn an_agent_file_that_does_not_parse_stops_every_seed_until_it_is_fixed() {
             ),
             "{verb} once the file is fixed: stdout:\n{out}\nstderr:\n{err}"
         );
+    }
+}
+
+/// Given a fresh project holding a persona whose declarations `config::coherence` refuses
+/// against the workflow `rigger init` or `rigger setup` would leave in place - the project's own
+/// `.rigger/workflow.yml` declaring a `defaults.capability` table, or, with no workflow, the
+/// scaffold's rendering, which declares none - when the operator runs either command naming no
+/// template root, then it fails before its first write, printing only that refusal, which names
+/// the persona, and leaving the project holding exactly the files it held.
+#[test]
+fn a_persona_incoherent_with_the_workflow_it_would_write_stops_every_seed() {
+    for verb in ["init", "setup"] {
+        for (persona, table, verdict) in persona_coherence() {
+            let Err(refusal) = verdict else { continue };
+            let dir = temp_project();
+            let root = dir.path();
+            let workflow = workflow_declaring_capability(&table);
+            let files = [
+                ("agents/worker.md", persona.as_str()),
+                ("workflow.yml", &workflow),
+            ];
+            write_files(
+                &root.join(".rigger"),
+                &files[..if table == "~" { 1 } else { 2 }],
+            );
+            let snapshot = || {
+                (
+                    project_files(root),
+                    dir_snapshot(root, ""),
+                    dir_snapshot(&root.join(".rigger"), ""),
+                )
+            };
+            let before = snapshot();
+            let (out, err, ok) = run_rigger(root, &[verb]);
+            assert_eq!(
+                (ok, out.as_str(), err, snapshot()),
+                (
+                    false,
+                    "",
+                    format!("{}\n", refusal_line(&format!("config: {refusal}"))),
+                    before
+                ),
+                "{verb} over {persona}under the table {table}"
+            );
+        }
     }
 }
 
