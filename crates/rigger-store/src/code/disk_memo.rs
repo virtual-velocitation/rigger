@@ -302,6 +302,27 @@ mod tests {
         assert_eq!(read, Some(facts), "the read of a memo opened afresh");
     }
 
+    /// A MEMO ENTRY SETTLES NO CODE HALF: GIVEN the facts of a file defining two functions put in
+    /// the memo, WHEN its entry is decoded, THEN its code half holds neither the file nor either
+    /// function, since a read takes only the file's facts from it.
+    #[test]
+    fn a_memo_entry_settles_no_code_half() {
+        use rigger_domain::code_view::Settled;
+        let root = tempfile::tempdir().unwrap();
+        let memo = DiskMemo::new(root.path().join(DIR), 7);
+        let bytes = b"alpha\nbeta\n";
+        memo.put(bytes, &facts_of("src/a.rs", bytes)).unwrap();
+        let entry = root.path().join(DIR).join(memo.name("src/a.rs", bytes));
+        let snap = Snapshot::decode(std::fs::read(entry).unwrap()).unwrap();
+        let half = snap.half().expect("a snapshot answers its half");
+        let members: Vec<String> = half.members("src/a.rs").into_iter().map(|n| n.id).collect();
+        assert_eq!(
+            (half.node("src/a.rs").map(|n| n.id), members),
+            (None, Vec::<String>::new()),
+            "the entry's code half holds neither the file nor its functions"
+        );
+    }
+
     /// The block the reap counts an entry's bytes in.
     const FOUR_KIB: usize = 4096;
 
