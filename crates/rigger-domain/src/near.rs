@@ -1229,7 +1229,7 @@ mod tests {
     use crate::composed::{Composed, Honesty, Whole};
     use crate::contextgraph::query::node_name;
     use crate::contextgraph::{ContextGraph, Direction, TIER_AMBIGUOUS};
-    use crate::resolve::tests::{fixture, settled_rows, stamp};
+    use crate::resolve::tests::{fixture, narrowing_fixture, settled_rows, stamp};
     use crate::resolve::ProofCall;
     use crate::test_support::matching_honesty;
     use std::borrow::Cow;
@@ -1471,66 +1471,76 @@ mod tests {
     /// proofs, design and workflow links) and the groupings' memberships and test attachments.
     /// Each id is read once from a neighbourhood shared across reads and once from a fresh one,
     /// so no answer depends on what was read before it. The view is read from its facts, from its
-    /// settled rows, and from its settled rows with the code half settled whole.
+    /// settled rows, and from its settled rows with the code half settled whole. The same sweep
+    /// runs over the resolver's tree of qualified mentions, whose callers a neighbourhood folds.
     #[test]
     fn a_neighbourhood_answers_what_the_whole_graph_answers_under_every_filter() {
-        let view = view();
-        let ids = ids(&view);
-        let leaves = leaves(&view, &ids);
-        let whole_graph = Whole::new(&view, ViewFilter::default()).whole().unwrap();
+        let whole_graph = Whole::new(&view(), ViewFilter::default()).whole().unwrap();
         let tiers: BTreeSet<&str> = whole_graph.edges.iter().map(|e| e.tier.as_str()).collect();
         assert!(tiers.contains(TIER_AMBIGUOUS) && tiers.contains(TIER_INFERRED));
-        let (settles, halved) = (Settles::of(self::view()), halved(self::view()));
-        for (tests, (held, read)) in FILTERS.into_iter().flat_map(|t| {
-            [
-                (t, ("facts", &view as &dyn CodeView)),
-                (t, ("settled", &settles)),
-                (t, ("settled half", &halved)),
-            ]
-        }) {
-            let filter = ViewFilter { tests };
-            let whole = Whole::new(&view, filter);
-            same!(
-                Whole::new(read, filter).whole().unwrap(),
-                whole.whole().unwrap()
-            );
-            let shared = Near::new(read, filter);
-            let one = |near: &Near, id: &str, when: &str| {
-                let at = format!("{tests:?} {held} {when} {id}");
-                same!(near.node(id).unwrap(), whole.node(id).unwrap(), "node {at}");
-                same!(near.out(id).unwrap(), whole.out(id).unwrap(), "out {at}");
-                let (got, want) = (near.incoming(id).unwrap(), whole.incoming(id).unwrap());
-                same!(got, want, "incoming {at}");
-                let (got, want) = (near.members(id).unwrap(), whole.members(id).unwrap());
-                same!(got, want, "members {at}");
-                same!(near.holds(id), whole.holds(id), "holds {at}");
-                same!(near.concepts_of(id), whole.concepts_of(id), "concepts {at}");
-                let (got, want) = (near.concept_members(id), whole.concept_members(id));
-                same!(got, want, "concept members {at}");
-            };
-            for id in &ids {
-                one(&shared, id, "shared");
-                one(&Near::new(read, filter), id, "fresh");
-            }
-            for leaf in &leaves {
-                let (got, want) = (shared.leaf_nodes(leaf).unwrap(), whole.leaf_nodes(leaf));
-                same!(got, want.unwrap(), "{tests:?} leaf {leaf}");
-            }
-            for kind in [
-                KIND_CODE_ENTITY,
-                KIND_FILE,
-                KIND_COMMUNITY,
-                "decision",
-                "nothing",
-            ] {
-                let (got, want) = (shared.of_kind(kind).unwrap(), whole.of_kind(kind));
-                same!(got, want.unwrap(), "{tests:?} kind {kind}");
-            }
-            same!(shared.whole().unwrap(), whole.whole().unwrap());
-            same!(shared.hidden_tests(), whole.hidden_tests(), "{tests:?}");
-            // Resolved whole by the reads above, the neighbourhood answers from the whole.
-            for id in &ids {
-                one(&shared, id, "settled");
+        // (the tree, how it is made)
+        let trees: [(&str, fn() -> FactsView); 2] =
+            [("rules", view), ("qualified", narrowing_fixture)];
+        for (tree, make) in trees {
+            let view = make();
+            let ids = ids(&view);
+            let leaves = leaves(&view, &ids);
+            let (settles, halved) = (Settles::of(make()), halved(make()));
+            for (tests, (held, read)) in FILTERS.into_iter().flat_map(|t| {
+                [
+                    (t, ("facts", &view as &dyn CodeView)),
+                    (t, ("settled", &settles)),
+                    (t, ("settled half", &halved)),
+                ]
+            }) {
+                let filter = ViewFilter { tests };
+                let whole = Whole::new(&view, filter);
+                same!(
+                    Whole::new(read, filter).whole().unwrap(),
+                    whole.whole().unwrap()
+                );
+                let shared = Near::new(read, filter);
+                let one = |near: &Near, id: &str, when: &str| {
+                    let at = format!("{tree} {tests:?} {held} {when} {id}");
+                    same!(near.node(id).unwrap(), whole.node(id).unwrap(), "node {at}");
+                    same!(near.out(id).unwrap(), whole.out(id).unwrap(), "out {at}");
+                    let (got, want) = (near.incoming(id).unwrap(), whole.incoming(id).unwrap());
+                    same!(got, want, "incoming {at}");
+                    let (got, want) = (near.members(id).unwrap(), whole.members(id).unwrap());
+                    same!(got, want, "members {at}");
+                    same!(near.holds(id), whole.holds(id), "holds {at}");
+                    same!(near.concepts_of(id), whole.concepts_of(id), "concepts {at}");
+                    let (got, want) = (near.concept_members(id), whole.concept_members(id));
+                    same!(got, want, "concept members {at}");
+                };
+                for id in &ids {
+                    one(&shared, id, "shared");
+                    one(&Near::new(read, filter), id, "fresh");
+                }
+                for leaf in &leaves {
+                    let (got, want) = (shared.leaf_nodes(leaf).unwrap(), whole.leaf_nodes(leaf));
+                    same!(got, want.unwrap(), "{tree} {tests:?} leaf {leaf}");
+                }
+                for kind in [
+                    KIND_CODE_ENTITY,
+                    KIND_FILE,
+                    KIND_COMMUNITY,
+                    "decision",
+                    "nothing",
+                ] {
+                    let (got, want) = (shared.of_kind(kind).unwrap(), whole.of_kind(kind));
+                    same!(got, want.unwrap(), "{tree} {tests:?} kind {kind}");
+                }
+                same!(shared.whole().unwrap(), whole.whole().unwrap());
+                same!(
+                    shared.hidden_tests(),
+                    whole.hidden_tests(),
+                    "{tree} {tests:?}"
+                );
+                // Resolved whole by the reads above, the neighbourhood answers from the whole.
+                for id in &ids {
+                    one(&shared, id, "settled");
+                }
             }
         }
     }
@@ -2244,7 +2254,6 @@ mod tests {
     #[test]
     fn near_folds_qualified_callers() {
         use crate::contextgraph::{around, REL_CALLS, TIER_EXTRACTED};
-        use crate::resolve::tests::narrowing_fixture;
         use crate::test_support::{edge, halves};
         let view = narrowing_fixture();
         let records = Indexed::default();
