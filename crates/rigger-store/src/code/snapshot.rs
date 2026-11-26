@@ -569,6 +569,29 @@ fn candidate_bounds(row: &[u8]) -> [usize; 3] {
     [0, 4, 8].map(|at| le32(row, MOD_CANDS + at) as usize)
 }
 
+/// The runs a child table is cut into, taken one per parent row in parent order: each run starts
+/// where the one before it ended and never runs backwards, and the last ends at the table's row
+/// count, so every child row has exactly one owner.
+#[derive(Clone, Copy, Default)]
+struct Runs {
+    next: usize,
+}
+
+impl Runs {
+    /// Whether `run` starts where the runs taken before it ended and does not run backwards. The
+    /// runs after it start from its end either way.
+    fn take(&mut self, run: Range<usize>) -> bool {
+        let placed = run.start == self.next && run.end >= run.start;
+        self.next = run.end;
+        placed
+    }
+
+    /// Whether the runs taken end at `rows`, the child table's row count.
+    fn cover(&self, rows: usize) -> bool {
+        self.next == rows
+    }
+}
+
 fn half_of(b: u8) -> Option<Half> {
     [Half::Code, Half::Design, Half::Workflow]
         .into_iter()
@@ -764,7 +787,7 @@ impl Snapshot {
             }
         }
         let files = self.table(FILES);
-        let mut next = [0usize; LISTS.len()];
+        let mut runs = [Runs::default(); LISTS.len()];
         let mut previous: Option<&str> = None;
         for i in 0..files.rows {
             let row = self.row(files, i);
@@ -777,11 +800,9 @@ impl Snapshot {
                 return Err(format!("file {path}: an unknown half or scope"));
             }
             for (l, &kind) in LISTS.iter().enumerate() {
-                let range = self.list(row, l);
-                if range.start != next[l] || range.end < range.start {
+                if !runs[l].take(self.list(row, l)) {
                     return Err(format!("file {path}: section {kind} is not one run a file"));
                 }
-                next[l] = range.end;
             }
             let defs = self.list(row, L_DEFS).len() as u32;
             for d in self.list(row, L_DEFS) {
@@ -807,20 +828,20 @@ impl Snapshot {
             }
         }
         for (l, &kind) in LISTS.iter().enumerate() {
-            if next[l] != self.table(kind).rows {
+            if !runs[l].cover(self.table(kind).rows) {
                 return Err(format!("section {kind} has rows no file owns"));
             }
         }
         let modules = self.table(MODULES);
-        let mut next_candidate = 0;
+        let mut candidates = Runs::default();
         for i in 0..modules.rows {
+            // A module owns two runs: its `as_root` list, then its `as_child` list.
             let [start, mid, end] = candidate_bounds(self.row(modules, i));
-            if start != next_candidate || mid < start || end < mid {
+            if !candidates.take(start..mid) || !candidates.take(mid..end) {
                 return Err("module candidates are not one run a module".into());
             }
-            next_candidate = end;
         }
-        if next_candidate != self.table(CANDIDATES).rows {
+        if !candidates.cover(self.table(CANDIDATES).rows) {
             return Err("candidates no module owns".into());
         }
         let (proofs, by_file) = (self.table(PROOFS), self.table(IDX_PROOF_FILE));
@@ -846,15 +867,13 @@ impl Snapshot {
         if !(1..nodes.rows).all(|i| id(i - 1) < id(i)) {
             return Err("settled nodes out of id order".into());
         }
-        let mut next_attr = 0;
+        let mut attrs = Runs::default();
         for i in 0..nodes.rows {
-            let run = self.attrs_of(self.row(nodes, i));
-            if run.start != next_attr || run.end < run.start {
+            if !attrs.take(self.attrs_of(self.row(nodes, i))) {
                 return Err("node attributes are not one run a node".into());
             }
-            next_attr = run.end;
         }
-        if next_attr != self.table(ROW_ATTRS).rows {
+        if !attrs.cover(self.table(ROW_ATTRS).rows) {
             return Err("node attributes no node owns".into());
         }
         let edges = self.table(ROW_EDGES);
