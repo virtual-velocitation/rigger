@@ -40,7 +40,8 @@
 //! A FILES row's test flag and the PROOFS rows are what
 //! [`Resolver`](rigger_domain::resolve::Resolver) computes over the view, and
 //! the ROW_* sections the code half [`Indexed::resolved`] resolves under the default filter, so a
-//! read takes them rather than computing them ([`Settled`], [`SettledHalf`]).
+//! read takes them rather than computing them ([`Settled`], [`SettledHalf`]). A facts memo entry
+//! ([`encode_without_half`]) holds the ROW_* sections empty, since nothing reads its half.
 //!
 //! Encoding is a pure function of the view and its groupings: rows follow path then source
 //! order, the pool interns in that order and the indexes are built sorted, so the same facts
