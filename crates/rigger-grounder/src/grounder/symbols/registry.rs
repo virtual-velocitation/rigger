@@ -218,6 +218,9 @@ fn csharp_reference_tags() -> String {
             format!("({kind}_declaration\n  (base_list {base_entry}))\n  @reference.implementation")
         })
         .join("\n");
+    let qualified = "(member_access_expression expression: (identifier) @qualifier.member \
+                     name: (identifier) @name)";
+    let capitalised = r#"(#match? @qualifier.member "^[A-Z]")"#;
     let names = format!("(identifier) @name (generic_name) @name {CSHARP_CALLED}");
     let element = format!("[{names} (parenthesized_expression [{names}])]");
     let list =
@@ -256,13 +259,13 @@ fn csharp_reference_tags() -> String {
   @reference.type
 (type_argument_list {type_name}) @reference.type
 ((invocation_expression
-  function: (member_access_expression expression: (identifier) @qualifier.member name: (identifier) @name))
+  function: {qualified})
   @reference.send
-  (#match? @qualifier.member "^[A-Z]"))
+  {capitalised})
 (invocation_expression function: (member_access_expression name: (identifier) @name)) @reference.send
-((member_access_expression expression: (identifier) @qualifier.member name: (identifier) @name)
+({qualified}
   @reference.field
-  (#match? @qualifier.member "^[A-Z]"))
+  {capitalised})
 (member_access_expression name: (identifier) @name) @reference.field
 "#
     )
