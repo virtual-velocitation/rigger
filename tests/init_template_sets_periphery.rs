@@ -14,11 +14,11 @@
 //! declarations are incoherent with the workflow the command would leave in place stops every seed
 //! (spec 135), that `rigger setup --agents <dir>` imports a collection's agent in the place of the
 //! seed of its id, refuses a collection that would define an id twice, and imports a persona only
-//! when it is coherent with the project's workflow, refusing an incoherent one before it writes,
-//! in a fresh project before any write (spec 135), that a command naming no template root
-//! scaffolds no gate and keeps what an earlier root scaffolded, and that every argument and
-//! template root a command refuses, a set whose implementer declares `work` under the table-less
-//! workflow it scaffolds among them, is refused before any write.
+//! when it is coherent with the project's workflow, refusing an incoherent one before any write,
+//! the scaffold's included, in a fresh project and a scaffolded one alike (spec 135), that a
+//! command naming no template root scaffolds no gate and keeps what an earlier root scaffolded,
+//! and that every argument and template root a command refuses, a set whose implementer declares
+//! `work` under the table-less workflow it scaffolds among them, is refused before any write.
 
 use crate::common;
 use common::cli::{build_report_lines, UNDECLARED_BUILD_REPORT};
@@ -881,21 +881,26 @@ fn setup_agents_refuses_a_collection_that_would_define_an_id_twice() {
     }
 }
 
-/// Given a project `rigger setup` scaffolded with no template root, its workflow then declaring a
-/// `defaults.capability` table or still none, and a collection holding one persona beside a
-/// model-pinned agent whose file sorts ahead of it, when the operator runs `rigger setup --agents
-/// <collection>`, then a persona `config::coherence` accepts against that workflow is imported
-/// and reported with the agent beside it, and one it refuses fails the command on that refusal,
-/// which names the persona, before the import writes any file: no agent is reported imported,
-/// the one beside it included, and the project keeps exactly the agents it held.
+/// Given a project `rigger setup` scaffolded with no template root, whose `sdet-author.md` seed the
+/// operator has since deleted, its workflow then declaring a `defaults.capability` table or still
+/// none, and a collection holding one persona beside a model-pinned agent whose file sorts ahead
+/// of it, when the operator runs `rigger setup --agents <collection>`, then a persona
+/// `config::coherence` accepts against that workflow is imported and reported with the agent
+/// beside it, the seed written back and reported scaffolded, and one it refuses fails the command
+/// on that refusal, which names the persona, before any write: no agent is reported scaffolded or
+/// imported, the one beside it included, the seed is not written back, and the project keeps
+/// exactly the agents it held.
 #[test]
 fn setup_agents_imports_a_persona_only_when_it_is_coherent_with_the_projects_workflow() {
     let beside = ("helper.md", "helper");
     let both = [beside, ("worker.md", "worker")];
+    let seed = "sdet-author.md";
+    let seed_line = format!("scaffolded .rigger/agents/{{{seed}}}");
     for (persona, table, verdict) in persona_coherence() {
         let dir = temp_project();
         let root = dir.path();
         setup_with_no_root(root);
+        std::fs::remove_file(root.join(".rigger/agents").join(seed)).unwrap();
         if table != "~" {
             declare_default(root, &format!("capability: {table}"));
         }
@@ -903,24 +908,37 @@ fn setup_agents_imports_a_persona_only_when_it_is_coherent_with_the_projects_wor
         write_files(&root.join(COLLECTION), &[("worker.md", persona.as_str())]);
 
         let (out, err, ok) = run_rigger(root, &["setup", "--agents", COLLECTION]);
-        let (failure, reported, imported): (_, _, &[(&str, &str)]) = match &verdict {
-            Ok(()) => (None, import_report(&both, None), &both),
-            Err(refusal) => (
-                Some(refusal_line(&format!("config: {refusal}"))),
-                Vec::new(),
-                &[],
-            ),
-        };
+        // (the failure line, the scaffolded agents line, the import's lines, the agents imported,
+        // the seed left unwritten).
+        let (failure, scaffolded, reported, imported, unwritten): (_, _, _, &[(&str, &str)], _) =
+            match &verdict {
+                Ok(()) => (
+                    None,
+                    vec![seed_line.as_str()],
+                    import_report(&both, None),
+                    &both,
+                    None,
+                ),
+                Err(refusal) => (
+                    Some(refusal_line(&format!("config: {refusal}"))),
+                    Vec::new(),
+                    Vec::new(),
+                    &[],
+                    Some(seed),
+                ),
+            };
         assert_eq!(
             (
                 failure_line(ok, &err),
+                agents_lines(&out),
                 import_lines(&out),
                 sorted_dir_names(&root.join(".rigger/agents")),
             ),
             (
                 failure,
+                scaffolded,
                 reported.iter().map(String::as_str).collect(),
-                agents_after_import(imported, None),
+                agents_after_import(imported, unwritten),
             ),
             "{persona}under the table {table}: stdout:\n{out}\nstderr:\n{err}"
         );
