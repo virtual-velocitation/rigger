@@ -959,6 +959,7 @@ pub(crate) mod tests {
     use crate::csharp_definition_sources::CSHARP_DEFINITIONS_SOURCE;
     use crate::go_definition_sources::GO_DEFINITIONS_SOURCE;
     use crate::grounder::symbols::extract::extract;
+    use crate::grounder::symbols::extract::tests::compiled_splitting;
     use crate::grounder::symbols::model::{
         Kind, Lang, Qualifier, CSHARP_TAGS_GENERATION, GO_TAGS_GENERATION, JS_TAGS_GENERATION,
         PYTHON_TAGS_GENERATION, RUST_TAGS_GENERATION, TSX_TAGS_GENERATION, TS_TAGS_GENERATION,
@@ -1499,8 +1500,7 @@ pub(crate) mod tests {
             ),
         ] {
             let entry = for_extension(ext).expect("the extension is registered");
-            let tags = CompiledTags::compile(&entry.language, query, &[], entry.type_arguments)
-                .expect("the fixture query compiles");
+            let tags = compiled_splitting(&entry.language, query, entry.type_arguments);
             let symbols = extract(source, entry.lang, &tags).expect("the source extracts");
             let found: Vec<(&str, Option<&Qualifier>)> = symbols
                 .refs
