@@ -1983,15 +1983,15 @@ def raw():
         // languages' rows merge clean.
         const PINNED: [(&str, &str, &str); 7] = [
             // Rust
-            ("rs", "rust-tags-v10", "71684eab40d0f0bd"),
+            ("rs", "rust-tags-v11", "71684eab40d0f0bd"),
             // C#
-            ("cs", "csharp-tags-v5", "65116b75c081716f"),
+            ("cs", "csharp-tags-v6", "65116b75c081716f"),
             // TypeScript
-            ("ts", "typescript-tags-v6", "46fdbe808db7ebdc"),
+            ("ts", "typescript-tags-v7", "46fdbe808db7ebdc"),
             // TSX
-            ("tsx", "tsx-tags-v6", "59d077a2bb782c98"),
+            ("tsx", "tsx-tags-v7", "59d077a2bb782c98"),
             // JavaScript
-            ("js", "javascript-tags-v6", "080c51224e924c72"),
+            ("js", "javascript-tags-v7", "080c51224e924c72"),
             // Go
             ("go", "go-tags-v4", "5775409d3ffc32c0"),
             // Python
