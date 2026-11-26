@@ -762,10 +762,7 @@ fn code_facts(path: &str, symbols: &CodeSymbols, facts: &mut FileFacts) {
         // The extractor names a reference by its bare leaf, as a definition's leaf is its name
         // whole, so the leaf is what the resolver finds the mention by, qualified or not.
         leaf: r.name.clone(),
-        kind: match &r.ref_kind {
-            None => MentionKind::Call,
-            Some(kind) => MentionKind::Tagged(kind.clone()),
-        },
+        kind: MentionKind::from_tag(r.ref_kind.as_deref()),
         line: r.line,
         test: r.is_test,
     }));

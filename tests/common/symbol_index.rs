@@ -94,10 +94,7 @@ pub fn mention_in(
         enclosing,
         name: name.to_string(),
         leaf: leaf.to_string(),
-        kind: match kind {
-            None => MentionKind::Call,
-            Some(kind) => MentionKind::Tagged(kind.to_string()),
-        },
+        kind: MentionKind::from_tag(kind),
         line,
         test,
     }
