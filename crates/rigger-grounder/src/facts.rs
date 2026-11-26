@@ -924,7 +924,7 @@ pub(crate) mod tests {
     use crate::python_definition_sources::PYTHON_DEFINITIONS_SOURCE;
     use crate::rust_definition_sources::RUST_DEFINITIONS_SOURCE;
     use crate::symbol_index::{mention_in, THREE_READS_AND_THREE_CALLS_SOURCE};
-    use rigger_domain::code_view::CodeView;
+    use rigger_domain::code_view::{CodeView, SourceLines};
     use rigger_domain::config::ExtractorDecl;
     use rigger_domain::contextgraph::{
         KIND_AGENT, KIND_DESIGN_DOC, KIND_GATE, KIND_RATIONALE, KIND_STAGE, REL_EXPLAINS, REL_RUNS,
@@ -3179,6 +3179,80 @@ Unclosed"#,
         ];
         for (name, extractor) in extractors {
             assert_doc_texts(name, extractor);
+        }
+    }
+
+    /// RUST DOC SPANS ARE EXTRACTED and THE DOC TEXT IS STRIPPED agree: the span the bundled
+    /// extraction gives a Rust file and each of its definitions, read back from the file through
+    /// the worktree's line reader ([`rigger_store::code::WorktreeLines`]), gives the row's doc
+    /// text, so the tree's doc-line rule and the text's lexer count the same lines:
+    /// `#[doc(hidden)]`, `////`, `/**/`, `/***/`, an `include_str!` or `concat!` value and
+    /// `cfg_attr` none, a raw value, a doc block and a doc attribute one, and a doc line above
+    /// another node none.
+    #[test]
+    fn each_rust_doc_span_reads_back_as_its_doc_text() {
+        // (source, the file's doc text, each definition's (leaf, doc text))
+        type Texts = &'static [(&'static str, Option<&'static str>)];
+        let rows: [(&str, Option<&str>, Texts); 7] = [
+            (
+                "/// First.\n#[doc(hidden)]\n/// Last.\npub fn f() {}\n",
+                None,
+                &[("f", Some("First.\nLast."))],
+            ),
+            (
+                "//! The crate.\n//! More.\n\n////\nfn i() {}\n/**/\nfn j() {}\n/***/\nfn k() {}\n",
+                Some("The crate.\nMore."),
+                &[("i", None), ("j", None), ("k", None)],
+            ),
+            (
+                "#![doc = r\"Crate.\"]\n#[doc = r#\"Raw.\"#]\nfn r() {}\n",
+                Some("Crate."),
+                &[("r", Some("Raw."))],
+            ),
+            (
+                "#[doc = include_str!(\"x.md\")]\nfn d() {}\n/// A.\n#[doc = concat!(\"B\", \".\")]\n/// C.\nfn e() {}\n",
+                None,
+                &[("d", None), ("e", Some("A.\nC."))],
+            ),
+            (
+                "#[cfg_attr(test, doc = \"conditional\")]\nfn c() {}\n/**\n * Block.\n */\nfn b() {}\n",
+                None,
+                &[("c", None), ("b", Some("Block."))],
+            ),
+            (
+                "// plain\n/// A.\n// plain\n#[doc = \"B.\"]\n// trail\n#[derive(Debug)]\nstruct S;\n",
+                None,
+                &[("S", Some("A.\nB."))],
+            ),
+            ("/// Use.\nuse x;\nfn u() {}\n", None, &[("u", None)]),
+        ];
+        let worktree = tempfile::tempdir().unwrap();
+        let lines = rigger_store::code::WorktreeLines::new(worktree.path());
+        for (source, doc, defs) in rows {
+            std::fs::write(worktree.path().join("lib.rs"), source).unwrap();
+            let text = |span: Option<(u32, u32)>| {
+                span.map(|span| {
+                    let raw = lines
+                        .lines("lib.rs", span)
+                        .expect("the span is in the file");
+                    FactsExtractor.doc_text("rust", &raw)
+                })
+            };
+            let facts = facts_of("lib.rs", source.as_bytes());
+            let held: Vec<_> = facts
+                .defs
+                .iter()
+                .map(|d| (d.leaf.as_str(), text(d.doc)))
+                .collect();
+            let want: Vec<_> = defs
+                .iter()
+                .map(|&(leaf, doc)| (leaf, doc.map(String::from)))
+                .collect();
+            assert_eq!(
+                (text(facts.doc), held),
+                (doc.map(String::from), want),
+                "{source:?}"
+            );
         }
     }
 
