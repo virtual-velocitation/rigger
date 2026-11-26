@@ -937,29 +937,38 @@ fn show_lists_each_referrer_as_the_lookup_does() {
     }
 }
 
-/// GIVEN a built project holding [`READERS`] and two linked worktrees at its head, WHEN one
-/// worktree's uncommitted edit appends a function reading the constant and `rigger graph --lookup`
-/// reads the constant from that worktree and then from the other, THEN the editing worktree's
-/// `reads:` line names the new reader after the two product functions, at the line that reads
-/// it, and the other's names the two product functions alone.
+/// GIVEN a built project holding [`READERS`] with a `mod other;` declaring `src/other.rs`, a file
+/// that mentions no `LIMIT`, and two linked worktrees at its head, WHEN one worktree's uncommitted
+/// edit appends a function reading the constant to each of the two files and `rigger graph
+/// --lookup` reads the constant from that worktree and then from the other, THEN the editing
+/// worktree's `reads:` line names the two new readers after the two product functions, each at
+/// the line that reads it, the one in the file the head lists no mention of included, and the
+/// other's names the two product functions alone.
 #[test]
 fn the_overlay_carries_new_references() {
     let dir = temp_project();
     let root = dir.path();
-    write_text(root, "src/lib.rs", READERS);
+    let lib = format!("{READERS}mod other;\n");
+    let idle = "pub fn idle() -> usize {\n    0\n}\n";
+    write_files(
+        root,
+        &[("src/lib.rs", lib.as_str()), ("src/other.rs", idle)],
+    );
     git_commit_all(root, "source");
     run_rigger_ok(root, &["graph", "build"]);
     let trees = tempfile::tempdir().unwrap();
     let [edited, other] =
         ["edited", "other"].map(|name| linked_worktree(root, trees.path().join(name)));
     let drain = "pub fn drain() -> usize {\n    LIMIT\n}\n";
-    write_text(&edited, "src/lib.rs", &format!("{READERS}{drain}"));
+    let refill = "pub fn refill() -> usize {\n    crate::LIMIT\n}\n";
+    write_text(&edited, "src/lib.rs", &format!("{lib}{drain}"));
+    write_text(&edited, "src/other.rs", &format!("{idle}{refill}"));
     let carried: &[&str] = &[
         "### LIMIT",
         "exact match: 1 entity",
         "- src/lib.rs:3 src/lib.rs::LIMIT (constant)",
         "  The most widgets one bin holds.",
-        "  reads: src/lib.rs:11 src/lib.rs::spill (function); src/lib.rs:16 src/lib.rs::fits (function); src/lib.rs:56 src/lib.rs::drain (function)",
+        "  reads: src/lib.rs:11 src/lib.rs::spill (function); src/lib.rs:16 src/lib.rs::fits (function); src/lib.rs:57 src/lib.rs::drain (function); src/other.rs:5 src/other.rs::refill (function)",
         "",
         "## text",
     ];
