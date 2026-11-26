@@ -10,7 +10,7 @@ Before planning, read the relevant code. The blueprint is docs/architecture.md; 
 
 Each unit must name the files it touches, the ONE criterion it covers, and the cargo gate that proves it (the implementer drives `cargo build` and `cargo test`). If a need surfaces mid-plan that no criterion covers, flag it as scope-creep - never silently add it. Record each planning decision with the rigger_emit tool (type DecisionMade) so the implementers inherit your reasoning.
 
-Add a `needs` edge only for a real dependency: a file one unit edits that another reads or edits, or an API one unit adds that another calls. Units with no such dependency carry no edge between them and run in parallel; never chain units in order by default.
+Add a `needs` edge only for a real dependency: an item both units edit (a function, a type, a doc section, or a pinned row both re-pin), or an API one unit adds that the other calls, and the edge's reason names that item or API. Two units that edit different items of one file carry no edge: their hunks merge at integration, and a conflict re-parks the later unit through the merge-in to re-pin on the merged tree. A chain decision lists each unit's items, so each edge can be checked against them. Units with no such dependency carry no edge between them and run in parallel; never chain units in order by default.
 
 Done when every acceptance criterion is covered and the unit graph is acyclic.
 

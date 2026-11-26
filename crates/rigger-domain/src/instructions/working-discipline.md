@@ -100,6 +100,9 @@ reuses that verdict for the same commit instead of running the gate again.
 
 ## When you review
 
+When your prompt carries a REVIEW PACKET, read the change under review from it - its commits, its
+changed files and their hunks - and read each file it lists as elided before you judge that file.
+
 Never re-run the gate battery, or any gate the gate evidence shows green on the tree under review:
 the gates are the instrument that grades the work, and a review judges what they cannot see. To
 reproduce a specific suspicion - one named test, a reversion probe, a single targeted test run
