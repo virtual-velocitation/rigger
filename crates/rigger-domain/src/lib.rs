@@ -8,6 +8,7 @@
 pub mod agent;
 pub mod blocker;
 pub mod canary;
+pub mod capability;
 pub mod code_facts;
 pub mod code_graph;
 pub mod code_view;
@@ -135,6 +136,9 @@ mod panic_message_fixtures;
 #[path = "../../../tests/common/fixtures/prompt_surface.rs"]
 mod prompt_surface_fixtures;
 #[cfg(test)]
+#[path = "../../../tests/common/fixtures/resolution.rs"]
+mod resolution_fixtures;
+#[cfg(test)]
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/spawn.rs"]
 mod spawn_fixtures;
@@ -151,6 +155,7 @@ mod test_support {
     pub use crate::ingest_fixtures::*;
     pub use crate::instructions_fixtures::*;
     pub use crate::panic_message_fixtures::*;
+    pub use crate::resolution_fixtures::*;
     pub use crate::spawn_fixtures::*;
     pub use crate::work_fixtures::*;
 }
