@@ -14495,11 +14495,12 @@ impl RunCtx<'_> {
                     self.resolve_served_criterion(&u.coverage, &u.criterion_id)
                         .unwrap_or_else(|| (String::new(), u.coverage.clone()))
                 });
-                if let Some(existing) = stages.get_mut(&u.id) {
-                    let retarget = refined_text
-                        .as_ref()
-                        .is_some_and(|(served, _)| *served != existing.criterion_id);
-                    if !retarget && reads(&u.id, e.position) {
+                let retarget = match (&refined_text, stages.get(&u.id)) {
+                    (Some((served, _)), Some(existing)) => *served != existing.criterion_id,
+                    _ => false,
+                };
+                if !retarget && reads(&u.id, e.position) {
+                    if let Some(existing) = stages.get_mut(&u.id) {
                         self.take_pair(existing, u.pair(), e.position)?;
                     }
                 }
@@ -14508,9 +14509,7 @@ impl RunCtx<'_> {
                     if let Some(existing) = stages.get_mut(&u.id) {
                         existing.needs = refined_needs;
                         match refined_text {
-                            Some((served, text)) if served == existing.criterion_id => {
-                                existing.coverage = text;
-                            }
+                            Some((_, text)) if !retarget => existing.coverage = text,
                             Some(_) => self.emit_keyed(
                                 &format!("{}/refine-retarget#{}", u.id, e.position),
                                 TYPE_SCOPE_CREEP,
