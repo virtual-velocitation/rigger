@@ -141,8 +141,8 @@ impl Recorded<'_> {
         self.widest(defs).map(|d| d.end_line)
     }
 
-    /// The definition among `defs` whose end [`Self::widest_end`] gives, the last of an end-line
-    /// tie: the one a node's doc span is read off.
+    /// The definition among `defs` whose end [`Self::widest_end`] gives, the first of an end-line
+    /// tie as the definition an id records is: the one a node's doc span is read off.
     pub fn widest<'d, D: Copy + Into<Bound<'d>>>(
         &self,
         defs: impl IntoIterator<Item = D>,
@@ -157,7 +157,7 @@ impl Recorded<'_> {
                     && d.kind == self.kind
                     && d.line == self.line
             })
-            .max_by_key(|&d| bound(d).end_line)
+            .min_by_key(|&d| std::cmp::Reverse(bound(d).end_line))
     }
 }
 
