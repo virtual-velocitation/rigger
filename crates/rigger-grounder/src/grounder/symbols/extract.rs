@@ -5192,8 +5192,8 @@ fn product() {}
     /// reference to its last leaf, qualified by the text before that leaf's separator. The text
     /// of a type-argument kind is left out of a separator and kept in a qualifier
     /// (`Outer<T>.Inner`), a comment inside the chain is left out of both (`Ns./*x*/IShape`,
-    /// `Ns /* c */ . IShape`), a separator and a qualifier are read trimmed (`Ns . IShape`), and the
-    /// last separator decides a path or a member access (`global::Ns.IShape`). A name whose
+    /// `Ns /* c */ . IShape`), a separator and a qualifier are read trimmed (`Ns . IShape`), and
+    /// the last separator decides a path or a member access (`global::Ns.IShape`). A name whose
     /// leaves meet with no separator between them (`int[]`) is no chain and names no reference,
     /// and neither is one whose every named child is of a type-argument kind.
     #[test]
@@ -5589,9 +5589,9 @@ impl Local for Vec<u8> {
     /// (`.map(Store::open)`), and a bare identifier passed as a call's argument
     /// (`.map(entity_block)`) that starts lowercase, that no exclusion holds and that no binding
     /// in scope binds. A parameter, a `let`, an `if let`, a `while let` and each let of a let chain
-    /// after its own value, a match arm (in its guard too, the guard's own names binding nothing), a `for` and a
-    /// closure parameter bind, through every pattern a binding writes; a call's head stages once,
-    /// and in a token tree the scope is the invocation's.
+    /// after its own value, a match arm (in its guard too, the guard's own names binding nothing),
+    /// a `for` and a closure parameter bind, through every pattern a binding writes; a call's head
+    /// stages once, and in a token tree the scope is the invocation's.
     #[test]
     fn rust_stages_function_values() {
         let cases = [
