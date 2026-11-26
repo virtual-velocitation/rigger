@@ -4,16 +4,20 @@
 
 #![cfg(all(feature = "symbols", any(feature = "store", not(feature = "core"))))]
 
+extern crate rigger_grounder as rigger;
+
 use std::path::{Path, PathBuf};
 
 use rigger_domain::code_facts::{Stamp, Tip};
 use rigger_domain::code_graph::CodeGraph;
-use rigger_domain::code_view::{Entry, Extract, FactsView, ViewFilter};
+use rigger_domain::code_view::{Extract, FactsView, ViewFilter};
 use rigger_domain::contextgraph::Graph;
 use rigger_grounder::facts::FactsExtractor;
 
 #[path = "../../../tests/common/fixtures/resolver_tree.rs"]
 mod resolver_tree;
+#[path = "../../../tests/common/symbol_index.rs"]
+mod symbol_index;
 
 use resolver_tree::RESOLVER_TREE as TREE;
 
@@ -61,11 +65,7 @@ fn viewed(root: &Path) -> FactsView {
         .iter()
         .map(|(path, _)| {
             let bytes = std::fs::read(root.join(path)).unwrap();
-            let entry = Entry {
-                path: path.to_string(),
-                blob: String::new(),
-            };
-            FactsExtractor.extract(&entry, &bytes)
+            symbol_index::facts_of(&FactsExtractor, path, &bytes)
         })
         .collect();
     let stamp = Stamp {

@@ -1,27 +1,30 @@
 //! Shared fixtures for the symbol extraction suites: building a one-file set of symbols, building
 //! them from Rust sources, a reference of a tagged kind or a call, a reference's qualifier, a
-//! mention the facts hold of a tagged kind or a call, a tree whose inline mod declares a
-//! `#[cfg(test)]` mod out of line, the out-of-line `mod` declaration sources, the one-fn source
-//! the module-row tests extract, the one-`use` source and the source whose function reads one
-//! constant three times and calls one function three times, projecting a file's definitions, its
-//! test-marked definitions and references and its call references with their callers, checking a
-//! language's definition types against a file's definitions, checking a language's definitions
-//! fixture whole and a source's callers whole, projecting a file's definition extents, rendering
-//! and checking a file's tagged references, and looking up a registered language. Mounted once by
-//! `tests/all.rs` (a suite reaches it with `use crate::symbol_index;`) and included by the
+//! mention the facts hold of a tagged kind or a call, the facts an extractor gives one file, a
+//! tree whose inline mod declares a `#[cfg(test)]` mod out of line, the out-of-line `mod`
+//! declaration sources, the one-fn source the module-row tests extract, the one-`use` source and
+//! the source whose function reads one constant three times and calls one function three times,
+//! projecting a file's definitions, its test-marked definitions and references and its call
+//! references with their callers, checking a language's definition types against a file's
+//! definitions, checking a language's definitions fixture whole and a source's callers whole,
+//! projecting a file's definition extents, rendering and checking a file's tagged references, and
+//! looking up a registered language. Mounted once by `tests/all.rs` (a suite reaches it with
+//! `use crate::symbol_index;`) and included by the
 //! grounder crate for its unit tests; a suite uses the subset it needs (hence the module-wide
 //! `dead_code` allowance, the same convention `tests/common/mod.rs` keeps). Every lane compiles
 //! it; `registered` and `extracted`, with `assert_definitions_fixture`, `assert_callers` and
 //! `assert_tagged_refs` through it, alone reach a grammar and are held by the `symbols` lane only,
 //! as is `extracted_rust_index`, which calls `extracted`.
-//! The grounder crate's `tests/facts_*.rs` suites mount it too, with the crate named `rigger`.
+//! The grounder crate's `tests/facts_*.rs` suites and its `tests/code_view_golden.rs` mount it
+//! too, with the crate named `rigger`.
 
 #![allow(dead_code)]
 
 #[cfg(feature = "symbols")]
 use rigger::grounder::symbols::model::SymbolIndex;
 use rigger::grounder::symbols::model::{Def, FileSymbols, Kind, Lang, Qualifier, SymRef};
-use rigger_domain::code_facts::{Mention, MentionKind};
+use rigger_domain::code_facts::{FileFacts, Mention, MentionKind};
+use rigger_domain::code_view::{Entry, Extract};
 
 /// A line-1 file-level definition of `kind` named `name` with every optional field unset, its doc
 /// span included, `end_line` 0 and `path` its name - the shape a product-only definition takes;
@@ -98,6 +101,15 @@ pub fn mention_in(
         line,
         test,
     }
+}
+
+/// The facts `extractor` gives the file at `path` holding `source`, its entry's blob empty.
+pub fn facts_of(extractor: &dyn Extract, path: &str, source: &[u8]) -> FileFacts {
+    let entry = Entry {
+        path: path.to_string(),
+        blob: String::new(),
+    };
+    extractor.extract(&entry, source)
 }
 
 /// A fully-parsed Rust file holding `defs` and `refs`, with no doc span.

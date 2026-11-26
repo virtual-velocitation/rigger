@@ -12,7 +12,7 @@ extern crate rigger_grounder as rigger;
 mod symbol_index;
 
 use rigger_domain::code_facts::Mention;
-use rigger_domain::code_view::{Entry, Extract};
+use rigger_domain::code_view::Extract;
 use rigger_domain::contextgraph::{REF_KIND_FIELD, REF_KIND_IMPL, REF_KIND_TYPE};
 use rigger_grounder::facts::FactsExtractor;
 use symbol_index::mention_in;
@@ -1743,11 +1743,7 @@ fn csharp_stages_its_row() {
         ),
     ];
     for (case, source, mentions, docs) in cases {
-        let entry = Entry {
-            path: "a.cs".to_string(),
-            blob: String::new(),
-        };
-        let facts = FactsExtractor.extract(&entry, source.as_bytes());
+        let facts = symbol_index::facts_of(&FactsExtractor, "a.cs", source.as_bytes());
         assert_eq!(facts.mentions, mentions, "{case}: the mentions");
         // A doc span read back: its lines of the source, joined, through the C# doc rule.
         let read_back = |span: Option<(u32, u32)>| match span {

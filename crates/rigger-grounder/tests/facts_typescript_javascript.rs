@@ -15,7 +15,6 @@ extern crate rigger_grounder as rigger;
 mod symbol_index;
 
 use rigger_domain::code_facts::Mention;
-use rigger_domain::code_view::{Entry, Extract};
 use rigger_domain::contextgraph::{REF_KIND_CONST, REF_KIND_FIELD, REF_KIND_IMPL, REF_KIND_TYPE};
 use rigger_grounder::facts::FactsExtractor;
 use symbol_index::mention_in;
@@ -308,11 +307,7 @@ fn typescript_and_javascript_stage_their_rows() {
         ),
     ];
     for (case, path, source, mentions, docs) in cases {
-        let entry = Entry {
-            path: path.to_string(),
-            blob: String::new(),
-        };
-        let facts = FactsExtractor.extract(&entry, source.as_bytes());
+        let facts = symbol_index::facts_of(&FactsExtractor, path, source.as_bytes());
         assert_eq!(facts.mentions, mentions, "{case}: the mentions");
         assert_eq!(
             facts
