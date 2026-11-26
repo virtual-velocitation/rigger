@@ -956,12 +956,13 @@ impl<'v> State<'v> {
                 ids.insert(entity_id(d.file.path, d.local));
             }
         }
-        // An entity's id rest is its local path, its parent chain then its leaf joined by `::`:
-        // the definitions whose local is `leaf` (or `leaf` behind the sigil) are named by one of
-        // its `::` suffixes.
+        // An entity's id rest is its local path, its parent chain then its leaf joined by `::`, or
+        // by `.` for a dotted member (`Base.area`): the definitions whose local is `leaf` (or
+        // `leaf` behind the sigil) are named by one of its `::` suffixes or by its path leaf.
         let sigiled = format!("{PLACEHOLDER_SIGIL}{leaf}");
         for local in [leaf, sigiled.as_str()] {
-            for name in local_leaves(local) {
+            let names: BTreeSet<&str> = local_leaves(local).chain([path_leaf(local)]).collect();
+            for name in names {
                 for d in self.view.defs_named(name) {
                     if d.file.half == Half::Code && d.local == local {
                         ids.insert(entity_id(d.file.path, d.local));
