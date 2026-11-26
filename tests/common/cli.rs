@@ -2757,6 +2757,32 @@ pub fn fresh_scaffold_valid_line(gates: usize) -> String {
     format!("config valid: 7 agents, 4 stages, {gates} gates")
 }
 
+/// Scaffold `root` with the one persona `worker` and `workflow` ([`write_scaffold`]), run
+/// `rigger validate` there, and assert its verdict. On `Ok(())` it succeeds and prints the one
+/// `config valid:` line of one agent, no stage and no gate. On `Err(refusal)` it fails, printing
+/// nothing on stdout and only the [`refusal_line`] of `refusal` on stderr.
+pub fn assert_one_worker_validates(
+    root: &Path,
+    worker: &str,
+    workflow: &str,
+    verdict: Result<(), String>,
+) {
+    write_scaffold(root, &[("worker", worker)], workflow);
+    let (out, err, ok) = run_rigger(root, &["validate"]);
+    match verdict {
+        Ok(()) => assert_eq!(
+            (ok, config_valid_lines(&out)),
+            (true, vec!["config valid: 1 agents, 0 stages, 0 gates"]),
+            "{worker}{workflow}stderr:\n{err}"
+        ),
+        Err(refusal) => assert_eq!(
+            (ok, out.as_str(), err),
+            (false, "", format!("{}\n", refusal_line(&refusal))),
+            "{worker}{workflow}"
+        ),
+    }
+}
+
 /// The lines of `text` that `keep` admits, in order: the one picker of the lines a command
 /// printed that a test compares.
 pub fn lines_where(text: &str, keep: impl Fn(&str) -> bool) -> Vec<&str> {
