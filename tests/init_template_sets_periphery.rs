@@ -690,6 +690,41 @@ fn import_lines(out: &str) -> Vec<&str> {
         .collect()
 }
 
+/// The [`import_lines`] `rigger setup --agents` prints importing [`COLLECTION`]: the kept line of
+/// the collection file `kept`, the imported line of each `(file name, id)` of `imported`, then the
+/// closing count.
+fn import_report(imported: &[(&str, &str)], kept: Option<&str>) -> Vec<String> {
+    let mut reported: Vec<String> = kept
+        .map(|file| format!("kept existing .rigger/agents/{file} (import never overwrites)"))
+        .into_iter()
+        .chain(
+            imported
+                .iter()
+                .map(|(file, id)| format!("imported .rigger/agents/{file} (id: {id})")),
+        )
+        .collect();
+    reported.push(format!(
+        "imported {} agent {} from {COLLECTION} into .rigger/agents/ ({} kept - already present)",
+        imported.len(),
+        if imported.len() == 1 { "file" } else { "files" },
+        usize::from(kept.is_some()),
+    ));
+    reported
+}
+
+/// The sorted file names `.rigger/agents/` holds once `rigger setup --agents` wrote each
+/// `(file name, id)` of `imported` beside the seeds a scaffold naming no template root writes, the
+/// seed `displaced` left out.
+fn agents_after_import(imported: &[(&str, &str)], displaced: Option<&str>) -> Vec<String> {
+    let mut listing: Vec<String> = agents_beside("implementer.md")
+        .into_iter()
+        .filter(|file| Some(file.as_str()) != displaced)
+        .chain(imported.iter().map(|(file, _)| file.to_string()))
+        .collect();
+    listing.sort();
+    listing
+}
+
 /// A row of [`setup_agents_imports_a_collections_agent_in_the_place_of_the_seed_of_its_id`]'s
 /// table, whose fields that test names.
 type ImportRow<'a> = (
@@ -771,28 +806,8 @@ fn setup_agents_imports_a_collections_agent_in_the_place_of_the_seed_of_its_id()
             (false, None) => vec![NO_SET_AGENTS_LINE.to_string()],
             (false, Some(seed)) => vec![NO_SET_AGENTS_LINE.replacen(&format!("{seed}, "), "", 1)],
         };
-        let mut reported: Vec<String> = kept
-            .map(|file| format!("kept existing .rigger/agents/{file} (import never overwrites)"))
-            .into_iter()
-            .chain(
-                imported
-                    .iter()
-                    .map(|(file, id)| format!("imported .rigger/agents/{file} (id: {id})")),
-            )
-            .collect();
-        reported.push(format!(
-            "imported {} agent {} from {COLLECTION} into .rigger/agents/ ({} kept - already \
-             present)",
-            imported.len(),
-            if imported.len() == 1 { "file" } else { "files" },
-            usize::from(kept.is_some()),
-        ));
-        let mut listing: Vec<String> = agents_beside("implementer.md")
-            .into_iter()
-            .filter(|file| Some(file.as_str()) != displaced)
-            .chain(imported.iter().map(|(file, _)| file.to_string()))
-            .collect();
-        listing.sort();
+        let reported = import_report(&imported, kept);
+        let listing = agents_after_import(&imported, displaced);
         let cfg = loaded_config(root);
         assert_eq!(
             (
@@ -858,13 +873,16 @@ fn setup_agents_refuses_a_collection_that_would_define_an_id_twice() {
 }
 
 /// Given a project `rigger setup` scaffolded with no template root, its workflow then declaring a
-/// `defaults.capability` table or still none, and a collection holding one persona, when the
-/// operator runs `rigger setup --agents <collection>`, then a persona `config::coherence` accepts
-/// against that workflow is imported and reported, and one it refuses fails the command on that
-/// refusal, which names the persona, before the import writes: no agent is reported imported and
-/// the project keeps exactly the agents it held.
+/// `defaults.capability` table or still none, and a collection holding one persona beside a
+/// model-pinned agent whose file sorts ahead of it, when the operator runs `rigger setup --agents
+/// <collection>`, then a persona `config::coherence` accepts against that workflow is imported
+/// and reported with the agent beside it, and one it refuses fails the command on that refusal,
+/// which names the persona, before the import writes any file: no agent is reported imported,
+/// the one beside it included, and the project keeps exactly the agents it held.
 #[test]
 fn setup_agents_imports_a_persona_only_when_it_is_coherent_with_the_projects_workflow() {
+    let beside = ("helper.md", "helper");
+    let both = [beside, ("worker.md", "worker")];
     for (persona, table, verdict) in persona_coherence() {
         let dir = temp_project();
         let root = dir.path();
@@ -872,28 +890,16 @@ fn setup_agents_imports_a_persona_only_when_it_is_coherent_with_the_projects_wor
         if table != "~" {
             declare_default(root, &format!("capability: {table}"));
         }
+        write_collection(root, &[beside]);
         write_files(&root.join(COLLECTION), &[("worker.md", persona.as_str())]);
 
         let (out, err, ok) = run_rigger(root, &["setup", "--agents", COLLECTION]);
-        let mut listing = agents_beside("implementer.md");
-        let expected = match &verdict {
-            Ok(()) => {
-                listing.push("worker.md".to_string());
-                listing.sort();
-                (
-                    None,
-                    vec![
-                        "imported .rigger/agents/worker.md (id: worker)",
-                        "imported 1 agent file from collection into .rigger/agents/ (0 kept - \
-                         already present)",
-                    ],
-                    listing,
-                )
-            }
+        let (failure, reported, imported): (_, _, &[(&str, &str)]) = match &verdict {
+            Ok(()) => (None, import_report(&both, None), &both),
             Err(refusal) => (
                 Some(refusal_line(&format!("config: {refusal}"))),
                 Vec::new(),
-                listing,
+                &[],
             ),
         };
         assert_eq!(
@@ -902,7 +908,11 @@ fn setup_agents_imports_a_persona_only_when_it_is_coherent_with_the_projects_wor
                 import_lines(&out),
                 sorted_dir_names(&root.join(".rigger/agents")),
             ),
-            expected,
+            (
+                failure,
+                reported.iter().map(String::as_str).collect(),
+                agents_after_import(imported, None),
+            ),
             "{persona}under the table {table}: stdout:\n{out}\nstderr:\n{err}"
         );
     }
@@ -1393,8 +1403,8 @@ fn operator_template_root(id: &str) -> tempfile::TempDir {
     dir
 }
 
-/// A fresh template root of the operator's own ([`operator_template_root`], its implementer
-/// [`DEMO_IMPLEMENTER_ID`]) whose one set's `set.yml` is `set`.
+/// A fresh template root of the operator's own ([`operator_template_root`]) whose one set's
+/// `set.yml` is `set`, in the place of the one that root writes.
 fn operator_template_root_holding(set: &str) -> tempfile::TempDir {
     let dir = operator_template_root(DEMO_IMPLEMENTER_ID);
     write_files(dir.path(), &[("scaffold/demo/set.yml", set)]);
@@ -1402,7 +1412,8 @@ fn operator_template_root_holding(set: &str) -> tempfile::TempDir {
 }
 
 /// A fresh template root of the operator's own ([`operator_template_root_holding`]) whose one
-/// set's `set.yml` ends with `env_line`, its `env:` line.
+/// set, its implementer [`DEMO_IMPLEMENTER_ID`], has a `set.yml` ending with `env_line`, its
+/// `env:` line.
 fn operator_template_root_declaring(env_line: &str) -> tempfile::TempDir {
     operator_template_root_holding(&format!(
         "{}{env_line}",
