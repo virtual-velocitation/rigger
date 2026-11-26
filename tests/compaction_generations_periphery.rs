@@ -2650,8 +2650,9 @@ const READ_ONLY_SURFACES: [&[&str]; 3] = [
 
 /// Run the read-only surface `args` ([`READ_ONLY_SURFACES`]) in `root`: its stdout, its stderr,
 /// whether it succeeded, and the notes it printed on its stderr in the order printed - every line
-/// opening `note: `, as the one each surface prints while `graph.db` owes its rebuild and the one
-/// `rigger validate` prints while the file counts events passed over, by cause, do.
+/// opening `note: `, as the pin notes `rigger validate` prints first, the one each surface prints
+/// while `graph.db` owes its rebuild and the one `rigger validate` prints while the file counts
+/// events passed over, by cause, do.
 fn run_read_only(root: &Path, args: &[&str]) -> (String, String, bool, Vec<String>) {
     let (out, err, ok) = run_rigger(root, args);
     let notes = common::cli::lines_where(&err, |line| line.starts_with("note: "))
@@ -2659,6 +2660,17 @@ fn run_read_only(root: &Path, args: &[&str]) -> (String, String, bool, Vec<Strin
         .map(str::to_string)
         .collect();
     (out, err, ok, notes)
+}
+
+/// The notes `rigger validate` prints over a project `rigger init` scaffolded, in order: the pin
+/// notes of its personas ([`common::cli::INIT_PIN_NOTES`]), then `graph_notes`, what it says of
+/// `graph.db`.
+fn validate_notes_after_init(graph_notes: &[String]) -> Vec<String> {
+    common::cli::INIT_PIN_NOTES
+        .map(String::from)
+        .into_iter()
+        .chain(graph_notes.iter().cloned())
+        .collect()
 }
 
 /// Given a `graph.db` still at the old fold rule, every read-only surface - `rigger graph --show`,
@@ -2671,8 +2683,15 @@ fn the_read_only_surfaces_say_the_rebuild_is_owed_write_nothing_and_stop_once_se
     common::cli::run_rigger_ok(store.root(), &["init"]);
     let surfaces = READ_ONLY_SURFACES;
     let note = rebuild_owed_note();
+    let owed = std::slice::from_ref(&note);
     let before = store.graph_bytes();
-    for args in surfaces {
+    // The notes each surface prints, in the order of READ_ONLY_SURFACES: graph --show, validate,
+    // dash --export.
+    for (args, expected) in surfaces.into_iter().zip([
+        owed.to_vec(),
+        validate_notes_after_init(owed),
+        owed.to_vec(),
+    ]) {
         let (out, err, ok, notes) = run_read_only(store.root(), args);
         assert!(
             ok,
@@ -2687,7 +2706,7 @@ fn the_read_only_surfaces_say_the_rebuild_is_owed_write_nothing_and_stop_once_se
         );
         assert_eq!(
             notes,
-            vec![note.clone()],
+            expected,
             "rigger {} says no more of a file without the passed_over table; stderr: {err}",
             args.join(" ")
         );
@@ -4330,7 +4349,7 @@ fn setup_says_how_many_events_its_rebuild_passed_over_for_a_payload_the_fold_rej
 }
 
 /// Given a `graph.db` that passed nothing over, no read-only surface ([`READ_ONLY_SURFACES`])
-/// prints a note. Given one whose rebuild passed two events over - payloads the fold rejects, below
+/// prints a note of it. Given one whose rebuild passed two events over - payloads the fold rejects, below
 /// an event it folded and older than the catch-up horizon ([`bury_below_an_applied_event`]) - when
 /// the operator runs each read-only surface, then each answers and writes nothing to the
 /// file, `rigger validate` says once how many events the file passed over, by cause, and `rigger
@@ -4343,18 +4362,19 @@ fn validate_alone_says_what_graph_db_passed_over_and_no_read_only_surface_writes
     common::cli::run_rigger_ok(root, &["init"]);
     emit_the_first_decision(root);
     let graph_db = rigger_file(root, "graph.db");
-    // The notes each surface of READ_ONLY_SURFACES prints, in its order: graph --show, validate,
-    // dash --export.
+    // The notes each surface of READ_ONLY_SURFACES prints, in its order: graph --show, validate
+    // (what it says of graph.db, after the scaffold's pin notes), dash --export.
     let each_surface_notes = |elsewhere: &[String], validate: &[String], why: &str| {
-        for (args, expected) in READ_ONLY_SURFACES
-            .into_iter()
-            .zip([elsewhere, validate, elsewhere])
-        {
+        for (args, expected) in READ_ONLY_SURFACES.into_iter().zip([
+            elsewhere.to_vec(),
+            validate_notes_after_init(validate),
+            elsewhere.to_vec(),
+        ]) {
             let before = std::fs::read(&graph_db).unwrap();
             let (out, err, ok, notes) = run_read_only(root, args);
             assert_eq!(
                 (ok, notes, std::fs::read(&graph_db).unwrap() == before),
-                (true, expected.to_vec(), true),
+                (true, expected, true),
                 "rigger {} {why}, and writes nothing to graph.db; stdout: {out} stderr: {err}",
                 args.join(" ")
             );
@@ -4363,7 +4383,7 @@ fn validate_alone_says_what_graph_db_passed_over_and_no_read_only_surface_writes
     each_surface_notes(
         &[],
         &[],
-        "prints no note for a graph.db that passed nothing over",
+        "prints no note of a graph.db that passed nothing over",
     );
 
     for _ in 0..2 {
