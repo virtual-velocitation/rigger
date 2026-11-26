@@ -502,6 +502,30 @@ const TS_TYPE_TAGS: &str = r#"
   @name @reference.type
 "#;
 
+/// The TS and TSX queries' parts, in order, `constant_values` the one that differs: the grammar's
+/// own constant value types, after the JS and TS ones. Every other part is the two queries' alike,
+/// so a TS-family part is added once (spec 117, OTHER LANGUAGES: every addition to the TypeScript
+/// entry's query also goes to the TSX entry's).
+fn ts_family_parts(constant_values: &'static str) -> [&'static str; 15] {
+    [
+        MEMBER_CALL_TAGS_OPEN,
+        TS_UNINSTANTIATED,
+        MEMBER_CALL_TAGS_CLOSE,
+        tree_sitter_javascript::TAGS_QUERY,
+        tree_sitter_typescript::TAGS_QUERY,
+        JS_DEFINITION_TAGS,
+        TS_DEFINITION_TAGS,
+        CONSTANT_TAGS_OPEN,
+        JS_CONSTANT_VALUES,
+        TS_CONSTANT_VALUES,
+        constant_values,
+        CONSTANT_TAGS_CLOSE,
+        TS_HERITAGE_TAGS,
+        JS_REFERENCE_TAGS,
+        TS_TYPE_TAGS,
+    ]
+}
+
 /// `parts` joined one per line into `cell` on first use - a tags query composed ONCE for the
 /// process lifetime, so a [`LanguageEntry`] can borrow it as `&'static str`.
 fn composed_once(cell: &'static OnceLock<String>, parts: &[&str]) -> &'static str {
@@ -783,26 +807,7 @@ pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
         "ts" => (
             Lang::Ts,
             tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
-            composed_once(
-                &TS_TAGS,
-                &[
-                    MEMBER_CALL_TAGS_OPEN,
-                    TS_UNINSTANTIATED,
-                    MEMBER_CALL_TAGS_CLOSE,
-                    tree_sitter_javascript::TAGS_QUERY,
-                    tree_sitter_typescript::TAGS_QUERY,
-                    JS_DEFINITION_TAGS,
-                    TS_DEFINITION_TAGS,
-                    CONSTANT_TAGS_OPEN,
-                    JS_CONSTANT_VALUES,
-                    TS_CONSTANT_VALUES,
-                    "(type_assertion)",
-                    CONSTANT_TAGS_CLOSE,
-                    TS_HERITAGE_TAGS,
-                    JS_REFERENCE_TAGS,
-                    TS_TYPE_TAGS,
-                ],
-            ),
+            composed_once(&TS_TAGS, &ts_family_parts("(type_assertion)")),
             JS_CONSTRUCTORS,
             TS_GO_TYPE_ARGUMENTS,
             &TS,
@@ -810,26 +815,7 @@ pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
         "tsx" => (
             Lang::Ts,
             tree_sitter_typescript::LANGUAGE_TSX.into(),
-            composed_once(
-                &TSX_TAGS,
-                &[
-                    MEMBER_CALL_TAGS_OPEN,
-                    TS_UNINSTANTIATED,
-                    MEMBER_CALL_TAGS_CLOSE,
-                    tree_sitter_javascript::TAGS_QUERY,
-                    tree_sitter_typescript::TAGS_QUERY,
-                    JS_DEFINITION_TAGS,
-                    TS_DEFINITION_TAGS,
-                    CONSTANT_TAGS_OPEN,
-                    JS_CONSTANT_VALUES,
-                    TS_CONSTANT_VALUES,
-                    JSX_CONSTANT_VALUES,
-                    CONSTANT_TAGS_CLOSE,
-                    TS_HERITAGE_TAGS,
-                    JS_REFERENCE_TAGS,
-                    TS_TYPE_TAGS,
-                ],
-            ),
+            composed_once(&TSX_TAGS, &ts_family_parts(JSX_CONSTANT_VALUES)),
             JS_CONSTRUCTORS,
             TS_GO_TYPE_ARGUMENTS,
             &TSX,
