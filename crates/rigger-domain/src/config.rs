@@ -1228,6 +1228,17 @@ pub struct Stage {
     /// workflow-authored stage.
     #[serde(skip)]
     pub unmatched_fanout_proposal: bool,
+    /// The step the planner judged this unit's task at (spec 135, THE COMPLEXITY JUDGMENT),
+    /// set by the conductor (never authored, hence `serde(skip)`): `harvest_proposed` copies a
+    /// proposal's valid step here, frozen at the unit's first `UnitStarted`. `None` is
+    /// unassessed: a stage no planner proposed a valid step for, which includes every baseline,
+    /// every workflow-authored stage and a proposal that carried no step or a refused one.
+    #[serde(skip)]
+    pub complexity: Option<Complexity>,
+    /// The planner's one-sentence reason for [`Stage::complexity`], kept verbatim and never
+    /// parsed, set with it; empty when the stage is unassessed.
+    #[serde(skip)]
+    pub complexity_reason: String,
 }
 
 impl AgentDef {

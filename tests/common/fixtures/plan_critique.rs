@@ -5,6 +5,7 @@
 //! appends (spec 112, criterion 5).
 
 use rigger::conductor::{META_REPLAY_KEY, TYPE_SPEC_DEFECT};
+use rigger::config::Complexity;
 use rigger::contextgraph::TYPE_LESSON_LEARNED;
 use rigger::eventstore::Event;
 use rigger::ledger::TYPE_UNIT_ESCALATED;
@@ -23,7 +24,8 @@ pub const PLANNING_POLICY: [&str; 6] = [
     "If you discover a NECESSARY sub-unit or an ordering dependency the baseline missed, propose \
      it.",
     "NEVER propose a unit that maps to no acceptance criterion - that is scope creep.",
-    "Propose each refinement the moment you decide it.",
+    "Propose every unit, one kept unchanged included, with its step and reason, the moment you \
+     decide it.",
     "Do not write code.",
     "Only omit the id when you truly intend a new sub-unit.",
 ];
@@ -34,13 +36,16 @@ pub fn policy_counts(text: &str) -> [usize; 6] {
 }
 
 /// The plan protocol that closes a planner's task, as the planner is served it: the framing and
-/// contract sentences, `implementer` as the agent of the `UnitProposed` shape and `criteria` as the
-/// criteria block, with none of the [`PLANNING_POLICY`].
+/// contract sentences, `implementer` as the agent of the `UnitProposed` shape, its `complexity`
+/// words the [`Complexity`] steps' names, and `criteria` as the criteria block, with none of the
+/// [`PLANNING_POLICY`].
 pub fn plan_protocol_text(implementer: &str, criteria: &str) -> String {
+    let steps = Complexity::ALL.map(Complexity::name).join("|");
     format!(
         "\n\nYou are the planner. The conductor has ALREADY created one baseline implement \
-         unit per acceptance criterion below - the spec is decomposed by construction. Your \
-         job is to REFINE that baseline, not to re-decompose it. Each part of a split \
+         unit per acceptance criterion below - the spec is decomposed by construction. Keep \
+         that baseline's decomposition, refine it where it must change, and propose every unit \
+         with its step and reason. Each part of a split \
          echoes the split criterion's id and ends its `criterion` text with an OWNS sentence \
          naming its part (the conductor keeps that sentence after the criterion's exact text as \
          that unit's contract).\n\
@@ -55,16 +60,20 @@ pub fn plan_protocol_text(implementer: &str, criteria: &str) -> String {
          what makes your unit run as an EXTRA unit on top of the baseline (duplicated work). \
          Still copy the criterion text into `criterion` (verbatim is safest). Several units \
          echoing the SAME id (a real split) all run and replace the one baseline.\n\
-         Propose each refinement by calling the rigger_emit tool with type \"UnitProposed\" \
-         and data:\n\
+         Propose one UnitProposed per criterion, one you keep unchanged included, each under \
+         your own id (never a baseline's id) and echoing that criterion's id; each part of a \
+         split and each new sub-unit is a UnitProposed of its own. Give each unit the step its \
+         task needs in `complexity` and one sentence saying why in `complexity_reason`. Call \
+         the rigger_emit tool with type \"UnitProposed\" and data:\n\
          {{\"id\":\"<short-id>\",\"agent\":\"{implementer}\",\"criterion\":\"<the spec criterion \
          it serves>\",\"criterion_id\":\"<the id shown in [brackets] next to that \
-         criterion>\",\"needs\":[\"<unit ids it depends on>\"]}}\n\
+         criterion>\",\"needs\":[\"<unit ids it depends on>\"],\"complexity\":\"{steps}\",\
+         \"complexity_reason\":\"<one sentence>\"}}\n\
          A unit whose `criterion_id` is none of the ids below still runs, but as a \
          genuinely-new sub-unit that the conductor flags as unmatched. Every unit you propose \
-         - a refinement, a split, or a new sub-unit - automatically runs the fan-out \
-         template's own gates; you never need to name them.\n\n\
-         The acceptance criteria to refine against (echo the [id] shown next to each \
+         - a unit kept unchanged, a refinement, a split, or a new sub-unit - automatically runs \
+         the fan-out template's own gates; you never need to name them.\n\n\
+         The acceptance criteria to propose against (echo the [id] shown next to each \
          criterion into that unit's `criterion_id`, and copy the text into `criterion`):\n\
          {criteria}\n"
     )
@@ -94,14 +103,26 @@ pub const DAG_DISJOINT_OVERLAP: &str = "\nBlast-radius overlap (informational): 
 /// The line a re-plan round's DAG critique prompt opens with, above the reject it quotes.
 pub const DAG_PRIOR_REJECT_HEADER: &str = "A prior plan-critique REJECTED this decomposition:\n";
 
+/// The complexity a DAG critique row shows for a stage the planner gave no step.
+pub const DAG_UNASSESSED: &str = "unassessed";
+
+/// The complexity a DAG critique row shows for a stage at `step` for `reason`: the step's name
+/// and the reason quoted, escaped as its `Debug` form prints it.
+pub fn dag_complexity(step: Complexity, reason: &str) -> String {
+    format!("{} ({reason:?})", step.name())
+}
+
 /// The whole DAG critique prompt of a round no reject precedes: its opener, one line per `[id,
-/// criterion, needs, blast radius]` of `units`, the `overlap` text and the
-/// [`dag_critique_verdict_paragraph`].
-pub fn dag_critique_prompt(units: &[[&str; 4]], overlap: &str) -> String {
+/// criterion, needs, complexity, blast radius]` of `units` (the complexity [`dag_complexity`] or
+/// [`DAG_UNASSESSED`]), the `overlap` text and the [`dag_critique_verdict_paragraph`].
+pub fn dag_critique_prompt(units: &[[&str; 5]], overlap: &str) -> String {
     let list: String = units
         .iter()
-        .map(|[id, criterion, needs, radius]| {
-            format!("- `{id}`: criterion={criterion:?}; needs=[{needs}]; blast radius=[{radius}]\n")
+        .map(|[id, criterion, needs, complexity, radius]| {
+            format!(
+                "- `{id}`: criterion={criterion:?}; needs=[{needs}]; complexity={complexity}; \
+                 blast radius=[{radius}]\n"
+            )
         })
         .collect();
     format!(

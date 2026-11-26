@@ -38,7 +38,7 @@ use common::fixtures::{
     assert_holds_its_critique_method, composed_system_prompt, critique_method_by_persona,
     critique_reject, dag_critique_prompt, markdown_section, plan_protocol_text, policy_counts,
     read_text, served_task, stand_in_launches, DAG_DISJOINT_OVERLAP, DAG_PRIOR_REJECT_HEADER,
-    RECORD_EACH_LAUNCH, WHEN_YOU_CRITIQUE_HEADING, WIDGET_CRITERION, WIDGET_UNIT,
+    DAG_UNASSESSED, RECORD_EACH_LAUNCH, WHEN_YOU_CRITIQUE_HEADING, WIDGET_CRITERION, WIDGET_UNIT,
 };
 use common::repo::repo_text;
 use rigger::driver::claude_code::framed;
@@ -168,11 +168,18 @@ fn expected_tasks(root: &Path, reject: &str) -> [(&'static str, String); 4] {
     let checkin = config.workflow.stages["checkin"].coverage.as_str();
     let first_round = dag_critique_prompt(
         &[
-            ["checkin", checkin, "implement", NONE_GROUNDED],
+            [
+                "checkin",
+                checkin,
+                "implement",
+                DAG_UNASSESSED,
+                NONE_GROUNDED,
+            ],
             [
                 WIDGET_UNIT,
                 WIDGET_CRITERION,
                 "plan-critique",
+                DAG_UNASSESSED,
                 NONE_GROUNDED,
             ],
         ],
