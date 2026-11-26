@@ -44,6 +44,7 @@ mod canary_model_drift_periphery;
 mod canary_progress_hook_periphery;
 mod canary_tolerant_attribution_periphery;
 mod canary_unattributed_rejects_periphery;
+mod capability_table_periphery;
 mod cause_wire_periphery;
 #[cfg(feature = "symbols")]
 mod change_path_revert_periphery;
@@ -188,6 +189,7 @@ mod os_home_boundary;
 mod os_process_boundary;
 mod os_shell_boundary;
 mod parallel_ordered_emit;
+mod persona_work_key_periphery;
 mod plan_critique_spec_defect_stop_periphery;
 mod plan_stage_commit_landing_periphery;
 mod postmerge_gate_error_cleanup_periphery;

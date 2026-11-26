@@ -215,8 +215,43 @@ pub struct AgentDef {
     /// authority [`without_advisor`](Self::without_advisor).
     #[serde(default)]
     pub advisor: Option<bool>,
+    /// The kind of work this persona does, its frontmatter's `work:`; `None` when it declares
+    /// none or a null value. Set by [`parse_agent`], which refuses any other value, or the key
+    /// declared twice, naming the persona and the three kinds.
+    #[serde(skip)]
+    pub work: Option<Work>,
+    /// The host effort this persona pins, its frontmatter's `effort:`: an opaque host string kept
+    /// as written, never interpreted. Empty (the default) pins none.
+    #[serde(default)]
+    pub effort: String,
     #[serde(skip)]
     pub prompt: String,
+}
+
+/// The kind of work a persona does, declared by its frontmatter's `work:` with the kind's
+/// [`name`](Self::name).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Work {
+    /// Decides whether work is right: a planner, reviewer, adversary, adjudicator or evaluator.
+    Judging,
+    /// Changes the tree: an implementer, test author or scribe.
+    Writing,
+    /// Gathers and reports without deciding.
+    Reading,
+}
+
+impl Work {
+    /// Every kind, in the order a refusal lists them.
+    pub const ALL: [Work; 3] = [Work::Judging, Work::Writing, Work::Reading];
+
+    /// The word a persona's `work:` declares this kind with.
+    pub fn name(self) -> &'static str {
+        match self {
+            Work::Judging => "judging",
+            Work::Writing => "writing",
+            Work::Reading => "reading",
+        }
+    }
 }
 
 /// Gate is a verification command plus how much it is trusted.
@@ -950,6 +985,10 @@ pub struct Defaults {
     /// `Config::validate` refuses it at any value, naming the line to delete.
     #[serde(default)]
     pub max_unit_added_lines: Option<u32>,
+    /// The capability table ([`CapabilityTable`]): a model and effort for each kind of work on
+    /// each complexity step. `None` (the default) when the key is absent or null.
+    #[serde(default)]
+    pub capability: Option<CapabilityTable>,
 }
 
 impl Defaults {
@@ -967,6 +1006,117 @@ impl Defaults {
             .map(|id| ("test_author", id.to_string()));
         review.chain(author)
     }
+}
+
+/// A unit's complexity: one of the steps `routine`, `involved` and `hard`, ordered by those
+/// steps, `involved` the middle one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Complexity {
+    Routine,
+    Involved,
+    Hard,
+}
+
+impl Complexity {
+    /// Every step, lowest first.
+    pub const ALL: [Complexity; 3] = [Complexity::Routine, Complexity::Involved, Complexity::Hard];
+
+    /// The step's word, the one spelling of the three step words.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Complexity::Routine => "routine",
+            Complexity::Involved => "involved",
+            Complexity::Hard => "hard",
+        }
+    }
+}
+
+/// The workflow's `defaults.capability` table: for each kind of work, a model and effort on
+/// each [`Complexity`] step. Its parse refuses shape only (a missing row or cell, an unknown
+/// key, an empty `model`), naming the path; [`CapabilityTable::validate`] holds the judging
+/// floor.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CapabilityTable {
+    pub judging: CapabilityRow,
+    pub writing: CapabilityRow,
+    pub reading: CapabilityRow,
+}
+
+impl CapabilityTable {
+    /// The judging floor: the `judging` row's `routine` cell names the same `model` as its
+    /// `involved` cell, compared as two strings, while their `effort` may differ.
+    pub fn validate(&self) -> Result<(), String> {
+        let [routine, involved] = [Complexity::Routine, Complexity::Involved];
+        let (low, mid) = (self.judging.cell(routine), self.judging.cell(involved));
+        if low.model == mid.model {
+            return Ok(());
+        }
+        Err(format!(
+            "judging: the {r} cell names model {:?} and the {i} cell {:?}; a judging spawn runs \
+             on one model whether planned {r} or {i}, so the two cells name the same model and \
+             may differ only in effort",
+            low.model,
+            mid.model,
+            r = routine.name(),
+            i = involved.name(),
+        ))
+    }
+}
+
+/// One kind of work's row of the [`CapabilityTable`]: a cell for each [`Complexity`] step.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CapabilityRow {
+    pub routine: CapabilityCell,
+    pub involved: CapabilityCell,
+    pub hard: CapabilityCell,
+}
+
+impl CapabilityRow {
+    /// The cell of `step`.
+    pub fn cell(&self, step: Complexity) -> &CapabilityCell {
+        match step {
+            Complexity::Routine => &self.routine,
+            Complexity::Involved => &self.involved,
+            Complexity::Hard => &self.hard,
+        }
+    }
+}
+
+/// One cell of the [`CapabilityTable`]: the host's model and effort, both opaque host strings
+/// the binary never interprets.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CapabilityCell {
+    /// The model, never empty.
+    #[serde(deserialize_with = "non_empty_model")]
+    pub model: String,
+    /// The effort; an absent key reads as the empty string, which names no effort.
+    #[serde(default)]
+    pub effort: String,
+}
+
+/// A cell's `model`, refused when empty. The refusal is raised while the scalar is read, so the
+/// parse error's path ends at `model`.
+fn non_empty_model<'de, D>(de: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct NonEmpty;
+    impl serde::de::Visitor<'_> for NonEmpty {
+        type Value = String;
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a non-empty host model string")
+        }
+        fn visit_str<E: serde::de::Error>(self, model: &str) -> Result<String, E> {
+            if model.is_empty() {
+                return Err(E::invalid_value(serde::de::Unexpected::Str(model), &self));
+            }
+            Ok(model.to_string())
+        }
+    }
+    de.deserialize_str(NonEmpty)
 }
 
 /// Stage is one node of the workflow DAG.
@@ -1423,14 +1573,43 @@ pub fn index_agents(
 }
 
 /// ParseAgent parses a markdown-with-YAML-frontmatter agent definition: the
-/// frontmatter is the agent's fields, the body is its prompt.
+/// frontmatter is the agent's fields, the body is its prompt. Its `work:` key is read after the
+/// rest, so a value that is none of [`Work`]'s names, or the key declared twice, is refused naming
+/// the agent's id wherever the key sits; an absent or null `work:` declares none.
 pub fn parse_agent(b: &[u8]) -> Result<AgentDef, Error> {
     let s = std::str::from_utf8(b).map_err(|e| err(e.to_string()))?;
     let (front, body) = split_frontmatter(s)?;
     let mut a: AgentDef =
         parse_yaml_naming_unknown_keys(front).map_err(|msg| err(format!("frontmatter: {msg}")))?;
+    let refused = || {
+        let names: Vec<_> = Work::ALL.into_iter().map(Work::name).collect();
+        err(format!(
+            "agent {:?}: work must be one of {}",
+            a.id,
+            names.join(", ")
+        ))
+    };
+    // The frontmatter already parsed as an `AgentDef`, so this parse fails only on `work`'s own
+    // text: a value with a repeated key, or the key declared twice.
+    let key: WorkKey = parse_yaml_naming_unknown_keys(front).map_err(|_| refused())?;
+    a.work = key
+        .work
+        .map(|value| {
+            Work::ALL
+                .into_iter()
+                .find(|w| value.as_str() == Some(w.name()))
+                .ok_or_else(refused)
+        })
+        .transpose()?;
     a.prompt = body.trim().to_string();
     Ok(a)
+}
+
+/// The `work:` key of an agent's frontmatter as written, which [`parse_agent`] reads apart from
+/// the [`AgentDef`] fields so a refusal of its value can name the agent's id.
+#[derive(Deserialize)]
+struct WorkKey {
+    work: Option<serde_yaml::Value>,
 }
 
 /// Split a markdown-with-YAML-frontmatter document into `(frontmatter, body)`: the text
@@ -1975,6 +2154,100 @@ mod tests {
         }
     }
 
+    /// THE COMPLEXITY JUDGMENT's steps: `Complexity` orders them `routine`, `involved`, `hard`,
+    /// [`Complexity::ALL`] lists them lowest first, and each step's name is the key a capability
+    /// row holds that step's cell under.
+    #[test]
+    fn complexity_orders_its_steps_and_names_each_as_the_key_of_its_cell() {
+        let mut shuffled = [Complexity::Hard, Complexity::Routine, Complexity::Involved];
+        shuffled.sort();
+        assert_eq!(shuffled, Complexity::ALL);
+        assert_eq!(
+            Complexity::ALL.map(Complexity::name),
+            ["routine", "involved", "hard"]
+        );
+        let keyed: Vec<String> = Complexity::ALL
+            .iter()
+            .map(|step| format!("{0}: {{ model: {0} }}", step.name()))
+            .collect();
+        let text = format!("{{ {} }}", keyed.join(", "));
+        let row: CapabilityRow =
+            parse_yaml_naming_unknown_keys(&text).unwrap_or_else(|e| panic!("parse {text}: {e}"));
+        assert_eq!(
+            Complexity::ALL.map(|step| row.cell(step).model.as_str()),
+            ["routine", "involved", "hard"],
+            "{text}"
+        );
+    }
+
+    /// THE TABLE: `defaults.capability` parses into [`CapabilityTable`], absent or null as `None`,
+    /// a cell's absent or empty `effort` as the empty string and a blank `model` as written; the
+    /// parse refuses a missing row, a missing cell, an empty or absent `model` and an unknown key
+    /// at each level, naming its path.
+    #[test]
+    fn the_capability_table_parses_refusing_each_malformed_shape_at_its_path() {
+        use crate::test_support::{
+            capability_shape_refusals, capability_table, workflow_declaring_capability,
+        };
+        let cell = |model: &str, effort: &str| CapabilityCell {
+            model: model.to_string(),
+            effort: effort.to_string(),
+        };
+        let row = |[routine, involved, hard]: [CapabilityCell; 3]| CapabilityRow {
+            routine,
+            involved,
+            hard,
+        };
+        let table = CapabilityTable {
+            judging: row([cell("j", "high"), cell("j", ""), cell(" ", "")]),
+            writing: row([cell("w1", ""), cell("w2", ""), cell("w3", "max")]),
+            reading: row([cell("r", "low"), cell("r", ""), cell("r", "")]),
+        };
+        let accepted = [
+            ("defaults: {}\n".to_string(), Ok(None)),
+            (workflow_declaring_capability("~"), Ok(None)),
+            (
+                workflow_declaring_capability(&capability_table(
+                    "{ routine: { model: j, effort: high }, involved: { model: j, effort: '' }, \
+                     hard: { model: ' ' } }",
+                )),
+                Ok(Some(table)),
+            ),
+        ];
+        let refused =
+            capability_shape_refusals().map(|(workflow, refusal)| (workflow, Err(refusal)));
+        for (workflow, parsed) in accepted.into_iter().chain(refused) {
+            let read = parse_yaml_naming_unknown_keys::<Workflow>(&workflow);
+            assert_eq!(
+                read.map(|wf| wf.defaults.capability),
+                parsed.map_err(str::to_string),
+                "{workflow}"
+            );
+        }
+    }
+
+    /// THE FLOOR: [`CapabilityTable::validate`] accepts each judging row whose `routine` and
+    /// `involved` cells name one model, whatever their efforts and the `hard` cell, and refuses
+    /// each whose two models differ as strings, naming both.
+    #[test]
+    fn the_judging_floor_holds_routine_and_involved_to_one_model() {
+        use crate::test_support::{capability_table, workflow_declaring_capability, JUDGING_FLOOR};
+        for (judging, verdict) in JUDGING_FLOOR {
+            let workflow = workflow_declaring_capability(&capability_table(judging));
+            let wf: Workflow = parse_yaml_naming_unknown_keys(&workflow)
+                .unwrap_or_else(|e| panic!("parse {workflow}: {e}"));
+            let table = wf
+                .defaults
+                .capability
+                .unwrap_or_else(|| panic!("{workflow} declares no table"));
+            assert_eq!(
+                table.validate(),
+                verdict.map_err(str::to_string),
+                "{judging}"
+            );
+        }
+    }
+
     #[test]
     fn a_map_form_panel_steps_through_its_set_lenses_adversary_and_adjudicator_in_that_order() {
         let ab = || ReviewStep::Lenses(vec!["a".into(), "b".into()]);
@@ -2201,6 +2474,56 @@ mod tests {
                 "gating_agent_ids of {panel:?}"
             );
             assert_eq!(panel.agent_ids(), all, "agent_ids of {panel:?}");
+        }
+    }
+
+    /// THE WORK KEY PARSES: `parse_agent` reads `work:` into [`AgentDef::work`] and `effort:` into
+    /// [`AgentDef::effort`] as written, an absent or null key reading as none, and refuses every
+    /// other `work` value, or a `work:` declared twice, naming the persona and the three values,
+    /// though `work:` comes before the persona's `id:`.
+    #[test]
+    fn parse_agent_reads_the_work_key_and_the_effort_pin_refusing_any_other_work_value() {
+        let refused = || {
+            Err(format!(
+                "config: {}",
+                crate::test_support::work_refusal("critic")
+            ))
+        };
+        for (frontmatter, parsed) in [
+            ("", Ok((None, ""))),
+            ("work: judging\n", Ok((Some(Work::Judging), ""))),
+            ("work: writing\n", Ok((Some(Work::Writing), ""))),
+            ("work: reading\n", Ok((Some(Work::Reading), ""))),
+            ("work: \"judging\"\n", Ok((Some(Work::Judging), ""))),
+            ("work:\n", Ok((None, ""))),
+            ("work: ~\n", Ok((None, ""))),
+            ("effort: high\n", Ok((None, "high"))),
+            ("effort: no-such-level\n", Ok((None, "no-such-level"))),
+            ("effort: ' high '\n", Ok((None, " high "))),
+            (
+                "work: writing\neffort: xhigh\n",
+                Ok((Some(Work::Writing), "xhigh")),
+            ),
+            ("work: deciding\n", refused()),
+            ("work: Judging\n", refused()),
+            ("work: ''\n", refused()),
+            ("work: ' judging'\n", refused()),
+            ("work: 3\n", refused()),
+            ("work: true\n", refused()),
+            ("work: !judging\n", refused()),
+            ("work: [judging]\n", refused()),
+            ("work: {judging: x}\n", refused()),
+            ("work: deciding\neffort: high\n", refused()),
+            ("work: {a: 1, a: 2}\n", refused()),
+            ("work: judging\nwork: writing\n", refused()),
+            ("work: judging\nwork: judging\n", refused()),
+        ] {
+            let doc = format!("---\n{frontmatter}id: critic\n---\nJudge the diff.\n");
+            let got = parse_agent(doc.as_bytes())
+                .map(|a| (a.work, a.effort))
+                .map_err(|e| e.to_string());
+            let parsed = parsed.map(|(work, effort): (_, &str)| (work, effort.to_string()));
+            assert_eq!(got, parsed, "{frontmatter:?}");
         }
     }
 }

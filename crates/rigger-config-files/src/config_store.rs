@@ -401,8 +401,9 @@ pub fn read_scratch_defaults(rigger_dir: &Path) -> Result<Defaults, Error> {
 
 impl Config {
     /// Validate checks that every agent id, review step sequence and declared extractor is well
-    /// formed, every reference resolves and the stage graph is acyclic, then, last, resolves every declared
-    /// gate's `requires` on `PATH` and answers that resolution.
+    /// formed, every reference resolves, a declared capability table holds the judging floor and
+    /// the stage graph is acyclic, then, last, resolves every declared gate's `requires` on
+    /// `PATH` and answers that resolution.
     pub fn validate(&self) -> Result<Vec<GateRequirements>, Error> {
         let wf = &self.workflow;
         // The declared build environment: a `build.env` entry the one check refuses (a bad
@@ -476,6 +477,12 @@ impl Config {
             .review
             .validate_depth()
             .map_err(|m| err(format!("defaults.{m}")))?;
+        // A declared capability table holds the judging floor; its parse checked only its shape.
+        if let Some(table) = &wf.defaults.capability {
+            table
+                .validate()
+                .map_err(|m| err(format!("defaults.capability.{m}")))?;
+        }
         for (name, st) in &wf.stages {
             for need in &st.needs {
                 if !wf.stages.contains_key(need) {
@@ -2261,6 +2268,42 @@ agent: worker\n";
         for (mapping, refusal) in EXTRACTOR_REFUSALS {
             let validated = config_of(&workflow_declaring_extractors(mapping)).validate();
             assert_eq!(validated.expect_err(refusal).0, refusal, "{mapping}");
+        }
+    }
+
+    /// `Config::validate` holds THE FLOOR through `CapabilityTable::validate`, accepting a
+    /// workflow with no table and refusing each judging row the floor refuses under
+    /// `defaults.capability`, while [`read_scratch_defaults`], which passes no
+    /// `Config::validate`, reads each of those tables as written.
+    #[test]
+    fn validate_holds_the_judging_floor_that_read_scratch_defaults_does_not() {
+        use crate::config::CapabilityTable;
+        use crate::test_support::{capability_table, workflow_declaring_capability, JUDGING_FLOOR};
+        let validated = |workflow: &str| config_of(workflow).validate().map_err(|e| e.0);
+        assert_eq!(validated("defaults: {}\n"), Ok(Vec::new()), "no table");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let rigger_dir = tmp.path().join(".rigger");
+        std::fs::create_dir_all(&rigger_dir).expect("create .rigger dir");
+        for (judging, verdict) in JUDGING_FLOOR {
+            let table = capability_table(judging);
+            let workflow = workflow_declaring_capability(&table);
+            assert_eq!(
+                validated(&workflow),
+                verdict
+                    .map(|()| Vec::new())
+                    .map_err(|m| format!("defaults.capability.{m}")),
+                "{judging}"
+            );
+            std::fs::write(rigger_dir.join("workflow.yml"), &workflow).expect("write workflow.yml");
+            let written: CapabilityTable = parse_yaml_naming_unknown_keys(&table)
+                .unwrap_or_else(|e| panic!("parse {table}: {e}"));
+            assert_eq!(
+                read_scratch_defaults(&rigger_dir)
+                    .map(|d| d.capability)
+                    .map_err(|e| e.0),
+                Ok(Some(written)),
+                "{judging}"
+            );
         }
     }
 

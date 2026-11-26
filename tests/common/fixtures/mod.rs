@@ -14,6 +14,7 @@
 
 mod build_env;
 mod caller_sources;
+mod capability;
 mod config;
 mod csharp_definition_sources;
 mod docs_overlay;
@@ -44,8 +45,10 @@ mod scratch;
 #[cfg(any(feature = "store", not(feature = "core")))]
 mod shown;
 mod spawn;
+mod work;
 pub use build_env::*;
 pub use caller_sources::*;
+pub use capability::*;
 pub use config::*;
 pub use csharp_definition_sources::*;
 pub use docs_overlay::*;
@@ -76,6 +79,7 @@ pub use scratch::*;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use shown::*;
 pub use spawn::*;
+pub use work::*;
 
 #[cfg(any(feature = "store", not(feature = "core")))]
 mod build_cache_guard;
