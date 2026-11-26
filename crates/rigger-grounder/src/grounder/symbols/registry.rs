@@ -11,6 +11,20 @@ use crate::grounder::symbols::extract::CompiledTags;
 use crate::grounder::symbols::model::Lang;
 use std::sync::OnceLock;
 
+// The two name rules a query matches a capture against, each a quoted regex literal spelled once
+// since `concat!` takes literals alone: a capitalised name, the C# and Python queries' qualifier and
+// Python's type, and a constant's all-caps one, Python's constant.
+macro_rules! capitalised {
+    () => {
+        r#""^[A-Z]""#
+    };
+}
+macro_rules! const_spelled {
+    () => {
+        r#""^[A-Z][A-Z0-9_]*$""#
+    };
+}
+
 /// The Rust `tags` query. The upstream `tree-sitter-rust` `tags.scm` records a call only when the
 /// callee is a bare identifier or a method (`f()`, `x.f()`), so every path-qualified or turbofish
 /// call - `Store::open()`, `crate::sqlite::open_connection()`, `make::<T>()` - left no reference
@@ -220,7 +234,7 @@ fn csharp_reference_tags() -> String {
         .join("\n");
     let qualified = "(member_access_expression expression: (identifier) @qualifier.member \
                      name: (identifier) @name)";
-    let capitalised = r#"(#match? @qualifier.member "^[A-Z]")"#;
+    let capitalised = concat!("(#match? @qualifier.member ", capitalised!(), ")");
     let names = format!("(identifier) @name (generic_name) @name {CSHARP_CALLED}");
     let element = format!("[{names} (parenthesized_expression [{names}])]");
     let list =
@@ -568,19 +582,6 @@ const GO_DEFINITION_TAGS: &str = r#"
 /// and comes first, and of the matches naming one node the earliest pattern makes its tag.
 const GO_FIELD_TAGS: &str =
     "(selector_expression field: (field_identifier) @name) @reference.field";
-
-// The two name rules `PYTHON_TAGS` matches a capture against, each a quoted regex literal spelled
-// once since `concat!` takes literals alone: a capitalised name, and a constant's all-caps one.
-macro_rules! capitalised {
-    () => {
-        r#""^[A-Z]""#
-    };
-}
-macro_rules! const_spelled {
-    () => {
-        r#""^[A-Z][A-Z0-9_]*$""#
-    };
-}
 
 // The statement a Python docstring is, spelled once for `PYTHON_TAGS`'s class, function and
 // module docstring patterns, a literal its own macro names since `concat!` takes literals alone:
