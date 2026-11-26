@@ -1689,7 +1689,10 @@ const NAMED_TYPE_DEFINERS: [&str; 6] = [
 /// The parent fields under which a Rust `identifier` is no expression read (spec 117): a
 /// definition's name or alias, a pattern, a call's or macro's head (already a call reference), a
 /// path's leading segments under `path` and its final segment under `name`.
-const NON_READ_FIELDS: [&str; 6] = ["name", "alias", "pattern", "function", "macro", "path"];
+const NON_READ_FIELDS: [&str; 6] = ["name", "alias", "pattern", CALL_HEAD_FIELD, "macro", "path"];
+
+/// The parent field a Rust call's head sits under (`f` of `f(x)`, `a::f` of `a::f(x)`).
+const CALL_HEAD_FIELD: &str = "function";
 
 /// One tagged reference [`rust_references`] reads off the tree: its leaf, its byte position (its
 /// line, and the caller attribution and test regions, key on it) and its kind, for an
@@ -2415,7 +2418,7 @@ fn written(node: tree_sitter::Node) -> tree_sitter::Node {
 /// Whether `node`, a whole `scoped_identifier`, is a call's head (`Hop::Frontier(cs)`), written
 /// with a turbofish or without ([`written`]).
 fn is_call_head(node: tree_sitter::Node) -> bool {
-    field_of(written(node)) == Some("function")
+    field_of(written(node)) == Some(CALL_HEAD_FIELD)
 }
 
 /// THE RUST VARIANT RULE (spec 117, RUST REFERENCES): the qualifier a variant's name `leaf` is
