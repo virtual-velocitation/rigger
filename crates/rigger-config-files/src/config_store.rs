@@ -17,8 +17,8 @@ use serde::Deserialize;
 
 use crate::config::{
     check_agent_id, err, find_cycle, index_agents, parse_agent, parse_yaml_naming_unknown_keys,
-    resolve_wall_clocks, AgentDef, Config, Defaults, Error, StoreConfig, Workflow,
-    INSTRUCTIONS_DIR, RIGGER_DIR, WORKFLOW_FILE,
+    refuse_incoherent, resolve_wall_clocks, AgentDef, Config, Defaults, Error, StoreConfig,
+    Workflow, INSTRUCTIONS_DIR, RIGGER_DIR, WORKFLOW_FILE,
 };
 use crate::gate::GateRequirements;
 use crate::instructions::Instruction;
@@ -401,9 +401,10 @@ pub fn read_scratch_defaults(rigger_dir: &Path) -> Result<Defaults, Error> {
 
 impl Config {
     /// Validate checks that every agent id, review step sequence and declared extractor is well
-    /// formed, every reference resolves, a declared capability table holds the judging floor and
-    /// the stage graph is acyclic, then, last, resolves every declared gate's `requires` on
-    /// `PATH` and answers that resolution.
+    /// formed, every reference resolves, a declared capability table holds the judging floor,
+    /// every persona's declarations are coherent with that table or its absence
+    /// (`config::refuse_incoherent`) and the stage graph is acyclic, then, last, resolves every
+    /// declared gate's `requires` on `PATH` and answers that resolution.
     pub fn validate(&self) -> Result<Vec<GateRequirements>, Error> {
         let wf = &self.workflow;
         // The declared build environment: a `build.env` entry the one check refuses (a bad
@@ -483,6 +484,7 @@ impl Config {
                 .validate()
                 .map_err(|m| err(format!("defaults.capability.{m}")))?;
         }
+        refuse_incoherent(self.agents.values(), wf.defaults.capability.as_ref())?;
         for (name, st) in &wf.stages {
             for need in &st.needs {
                 if !wf.stages.contains_key(need) {

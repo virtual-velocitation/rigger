@@ -1572,6 +1572,45 @@ pub fn index_agents(
     Ok(map)
 }
 
+/// Whether the persona `id`'s declarations are coherent with the workflow's
+/// `defaults.capability` table, `table` (`None` when the workflow declares none). It refuses a
+/// persona declaring `work` under no table, since no table can resolve it, and a persona
+/// declaring neither `work` nor a model pin (`model` or `model_ladder`) under a table, since it
+/// would run at the host default, naming the two fixes. A persona with no work, no pin and no
+/// table runs at the host default, which is accepted. The refusal is bare, for each caller to
+/// wrap as it wraps its other refusals.
+pub fn coherence(
+    id: &str,
+    agent: &AgentDef,
+    table: Option<&CapabilityTable>,
+) -> Result<(), String> {
+    match (agent.work, table) {
+        (Some(work), None) => Err(format!(
+            "agent {id:?} declares work {}, but the workflow declares no defaults.capability table",
+            work.name()
+        )),
+        (None, Some(_)) if agent.model.is_empty() && agent.model_ladder.is_empty() => Err(format!(
+            "agent {id:?} declares neither work nor a model pin, so under the workflow's \
+             defaults.capability table it would run at the host default; declare work, or pin \
+             model or model_ladder"
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// Refuse the first of `agents` whose declarations [`coherence`] finds incoherent with `table`,
+/// the `defaults.capability` table of the workflow the fleet runs under (`None` when it declares
+/// none), its bare refusal wrapped by [`err`]: the one fleet check `Config::validate`, `rigger
+/// init`, `rigger setup` and the `--agents` import run.
+pub fn refuse_incoherent<'a>(
+    agents: impl IntoIterator<Item = &'a AgentDef>,
+    table: Option<&CapabilityTable>,
+) -> Result<(), Error> {
+    agents
+        .into_iter()
+        .try_for_each(|agent| coherence(&agent.id, agent, table).map_err(err))
+}
+
 /// ParseAgent parses a markdown-with-YAML-frontmatter agent definition: the
 /// frontmatter is the agent's fields, the body is its prompt. Its `work:` key is read after the
 /// rest, so a value that is none of [`Work`]'s names, or the key declared twice, is refused naming
