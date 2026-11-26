@@ -569,6 +569,19 @@ const GO_DEFINITION_TAGS: &str = r#"
 const GO_FIELD_TAGS: &str =
     "(selector_expression field: (field_identifier) @name) @reference.field";
 
+// The two name rules `PYTHON_TAGS` matches a capture against, each a quoted regex literal spelled
+// once since `concat!` takes literals alone: a capitalised name, and a constant's all-caps one.
+macro_rules! capitalised {
+    () => {
+        r#""^[A-Z]""#
+    };
+}
+macro_rules! const_spelled {
+    () => {
+        r#""^[A-Z][A-Z0-9_]*$""#
+    };
+}
+
 // The statement a Python docstring is, spelled once for `PYTHON_TAGS`'s class, function and
 // module docstring patterns, a literal its own macro names since `concat!` takes literals alone:
 // a statement whose one named child is a string, an implicit concatenation of strings or either in
@@ -655,7 +668,9 @@ const PYTHON_TAGS: &str = concat!(
   function: (attribute
     object: (identifier) @qualifier.member
     attribute: (identifier) @name)
-  (#match? @qualifier.member "^[A-Z]")) @reference.call
+  (#match? @qualifier.member "#,
+    capitalised!(),
+    r#")) @reference.call
 
 (call
   function: [
@@ -676,18 +691,30 @@ const PYTHON_TAGS: &str = concat!(
         ])
     ] @reference.implementation))
 
-((type (identifier) @name @reference.type) (#match? @name "^[A-Z]"))
-((type (_ (identifier) @name @reference.type)) (#match? @name "^[A-Z]"))
-((type (_ (_ (identifier) @name @reference.type))) (#match? @name "^[A-Z]"))
+((type (identifier) @name @reference.type) (#match? @name "#,
+    capitalised!(),
+    r#"))
+((type (_ (identifier) @name @reference.type)) (#match? @name "#,
+    capitalised!(),
+    r#"))
+((type (_ (_ (identifier) @name @reference.type))) (#match? @name "#,
+    capitalised!(),
+    r#"))
 
 ((attribute
   object: (identifier) @qualifier.member
   attribute: (identifier) @name @reference.field)
-  (#match? @qualifier.member "^[A-Z]"))
+  (#match? @qualifier.member "#,
+    capitalised!(),
+    r#"))
 ((attribute attribute: (identifier) @name @reference.constant)
-  (#match? @name "^[A-Z][A-Z0-9_]*$"))
+  (#match? @name "#,
+    const_spelled!(),
+    r#"))
 ((primary_expression/identifier) @name @reference.constant
-  (#match? @name "^[A-Z][A-Z0-9_]*$"))
+  (#match? @name "#,
+    const_spelled!(),
+    r#"))
 (attribute attribute: (identifier) @name @reference.field)
 "#
 );
