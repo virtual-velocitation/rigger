@@ -6306,14 +6306,14 @@ fn l(s: u8) {
                 "a prelude trait, a std-rooted trait and a generic self type stage no impl mention",
                 "\
 impl Default for Shape {}
-impl std::fmt::Debug for Shape {}
+impl std::fmt::Display for Shape {}
 impl<T> Draw for T {}
 ",
                 "\
 1 def Impl impl Default for Shape to 1
 1 ref impl Shape impl Default for Shape
-2 def Impl impl std::fmt::Debug for Shape to 2
-2 ref impl Shape impl std::fmt::Debug for Shape
+2 def Impl impl std::fmt::Display for Shape to 2
+2 ref impl Shape impl std::fmt::Display for Shape
 3 def Impl impl Draw for T to 3
 3 ref impl Draw impl Draw for T",
             ),
