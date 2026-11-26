@@ -251,8 +251,8 @@ pub const PRIOR_CONTRADICTION: &str = "A later unit's work proved your integrate
 /// FRAMING: a later review round's lead-in: the round-start `{base}` and the `{delta}` changed
 /// since, [`DELTA_NONE`] when nothing changed.
 pub const ROUND_LEAD_IN: &str = "\n\nLATER REVIEW ROUND: an earlier round judged this unit at \
-     {base} and sent it back. Review what changed since - `git diff {base}..HEAD`, which changed \
-     {delta} - and whether each item that round required is now fixed.\n";
+     {base} and sent it back. Review the change since - it changed {delta}; the REVIEW PACKET \
+     holds its commits and hunks - and whether each item that round required is now fixed.\n";
 
 /// FRAMING: what fills a changed-paths slot when the delta is empty.
 pub const DELTA_NONE: &str = "nothing";
@@ -283,6 +283,10 @@ pub const ROUND_FINDINGS_YOURS: &str =
 /// round recorded one.
 pub const ROUND_FINDINGS_ALL: &str = "\n\nEvery finding recorded this round, by id:\n";
 
+/// FRAMING: the adjudicator's row for each `{role}` of its roster that recorded no finding this
+/// round, after the findings the round recorded.
+pub const ROUND_NO_FINDING: &str = "- {role}: recorded no finding this round\n";
+
 /// FRAMING: the gate evidence block's header for the `{commit}` under review, printed only when a
 /// gate ran on it.
 pub const GATE_EVIDENCE_HEADER: &str = "\n\nGATE EVIDENCE for the commit under review (commit \
@@ -291,6 +295,60 @@ pub const GATE_EVIDENCE_HEADER: &str = "\n\nGATE EVIDENCE for the commit under r
 
 /// FRAMING: one gate's row, its `{gate}`, its `{verdict}` and its input `{digest}`.
 pub const GATE_EVIDENCE_ROW: &str = "- {gate}: {verdict} (input digest {digest})\n";
+
+/// FRAMING: the review packet's header: the range `{base}..{head}` a review round judges, read
+/// from git when the round started.
+pub const REVIEW_PACKET_HEADER: &str = "\n\nREVIEW PACKET: git diff {base}..{head}, read when \
+     this round started; {head} is the commit the gate evidence names and the one an approve \
+     lands.\n";
+
+/// FRAMING: what stands for the packet's change, `{base}..{head}`, when git could not read it.
+pub const PACKET_UNREADABLE: &str = "The change could not be read here - read it with git diff \
+     {base}..{head} before you judge it.\n";
+
+/// FRAMING: the header over the packet's commits, their `{count}`.
+pub const PACKET_COMMITS_HEADER: &str = "COMMITS ({count}):\n";
+
+/// FRAMING: one commit's row: its abbreviated `{sha}` and its `{subject}`.
+pub const PACKET_COMMITS_ROW: &str = "- {sha} {subject}\n";
+
+/// FRAMING: the row counting the `{count}` commits past the packet's row caps and the read that
+/// lists them from `{base}..{head}`.
+pub const PACKET_COMMITS_ELIDED: &str = "- {count} more commits past the packet's cap - list \
+     them with git log --oneline {base}..{head}\n";
+
+/// FRAMING: the header over the files the unit changed over `{range}`: their `{count}` and the
+/// lines their text diffs `{added}` and `{removed}`.
+pub const PACKET_FILES_HEADER: &str = "CHANGED FILES in {range} ({count}; +{added} -{removed}):\n";
+
+/// FRAMING: a text file's row: git's `{status}` letter, its `{path}` (`old -> new` for a
+/// rename) and the lines it `{added}` and `{removed}`.
+pub const PACKET_FILES_ROW: &str = "- {status} {path} (+{added} -{removed})\n";
+
+/// FRAMING: a binary file's row, among the changed files and under the hunks: git's `{status}`
+/// letter and its `{path}`.
+pub const PACKET_BINARY_ROW: &str = "- {status} {path} (no text diff)\n";
+
+/// FRAMING: the row counting the `{count}` changed files past the packet's row caps and the
+/// read that lists them over `{range}`.
+pub const PACKET_FILES_ELIDED: &str = "- {count} more files past the packet's cap - list them \
+     with git diff --stat {range}\n";
+
+/// FRAMING: a REQUIRED item's `{path}` the round's change left untouched since `{base}`, printed
+/// only on a later round.
+pub const PACKET_REQUIRED_UNCHANGED: &str = "- required item path {path}: unchanged since {base}\n";
+
+/// FRAMING: the header over the hunks the packet carries and the binary files of the round's
+/// change, printed only when it carries one of either.
+pub const PACKET_HUNKS_HEADER: &str = "HUNKS:\n";
+
+/// FRAMING: the header over the files the packet's budget left out of its hunks and the read
+/// that fetches each from `{base}..{head}`, printed only when it left one out.
+pub const PACKET_ELIDED_HEADER: &str = "ELIDED over the packet budget - read each with git diff \
+     {base}..{head} -- <path> before you judge it:\n";
+
+/// FRAMING: one elided file's row: its `{path}` and the lines it `{added}` and `{removed}`.
+pub const PACKET_ELIDED_ROW: &str = "- {path} (+{added} -{removed})\n";
 
 /// FRAMING: the conflict-resolution task for unit `{unit}`, the conflicting `{paths}` one line
 /// each, and the resolve-and-commit sentences.
@@ -536,8 +594,23 @@ pub fn prompt_groups() -> &'static [rigger_domain::prompt_surface::Group] {
             ROUND_PATTERN,
             ROUND_OUTSIDE_DELTA,
         ],
-        "conductor::round_findings_block" => [ROUND_FINDINGS_YOURS, ROUND_FINDINGS_ALL],
+        "conductor::round_findings_block" => [ROUND_FINDINGS_YOURS, ROUND_FINDINGS_ALL, ROUND_NO_FINDING],
         "conductor::gate_evidence_block" => [GATE_EVIDENCE_HEADER, GATE_EVIDENCE_ROW],
+        "conductor::ReviewPacket::block" => [
+            REVIEW_PACKET_HEADER,
+            PACKET_UNREADABLE,
+            PACKET_COMMITS_HEADER,
+            PACKET_COMMITS_ROW,
+            PACKET_COMMITS_ELIDED,
+            PACKET_FILES_HEADER,
+            PACKET_FILES_ROW,
+            PACKET_BINARY_ROW,
+            PACKET_FILES_ELIDED,
+            PACKET_REQUIRED_UNCHANGED,
+            PACKET_HUNKS_HEADER,
+            PACKET_ELIDED_HEADER,
+            PACKET_ELIDED_ROW,
+        ],
         "conductor::conflict_resolution_prompt" => [CONFLICT_RESOLUTION],
         "conductor::later_attempt_block" => [
             LATER_ATTEMPT,
@@ -676,6 +749,18 @@ mod tests {
         ("LOOKUP_LEAD_IN", "FRAMING"),
         ("LOOKUP_VERBS", "CONTRACT"),
         ("MISSED_HANDOVER", "FRAMING"),
+        ("PACKET_BINARY_ROW", "FRAMING"),
+        ("PACKET_COMMITS_ELIDED", "FRAMING"),
+        ("PACKET_COMMITS_HEADER", "FRAMING"),
+        ("PACKET_COMMITS_ROW", "FRAMING"),
+        ("PACKET_ELIDED_HEADER", "FRAMING"),
+        ("PACKET_ELIDED_ROW", "FRAMING"),
+        ("PACKET_FILES_ELIDED", "FRAMING"),
+        ("PACKET_FILES_HEADER", "FRAMING"),
+        ("PACKET_FILES_ROW", "FRAMING"),
+        ("PACKET_HUNKS_HEADER", "FRAMING"),
+        ("PACKET_REQUIRED_UNCHANGED", "FRAMING"),
+        ("PACKET_UNREADABLE", "FRAMING"),
         ("PATTERN_LABEL", "CONTRACT"),
         ("PEERS_POINTER", "FRAMING"),
         ("PLAN_COPY_TEXT", "CONTRACT"),
@@ -705,9 +790,11 @@ mod tests {
         ("REVIEWER_DISCIPLINE", "FRAMING"),
         ("REVIEW_FINDING_LIVE", "FRAMING"),
         ("REVIEW_FINDING_PROTOCOL", "CONTRACT"),
+        ("REVIEW_PACKET_HEADER", "FRAMING"),
         ("ROUND_FINDINGS_ALL", "FRAMING"),
         ("ROUND_FINDINGS_YOURS", "FRAMING"),
         ("ROUND_LEAD_IN", "FRAMING"),
+        ("ROUND_NO_FINDING", "FRAMING"),
         ("ROUND_OUTSIDE_DELTA", "CONTRACT"),
         ("ROUND_PATTERN", "CONTRACT"),
         ("ROUND_REQUIRED_HEADER", "FRAMING"),

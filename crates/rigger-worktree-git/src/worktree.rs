@@ -40,6 +40,30 @@ pub enum DiffMode {
     Direct,
 }
 
+/// One path a diff between two commits changed, as [`Worktree::diff_files`] reads it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileDiff {
+    /// The path after the change; the deleted path for a deletion.
+    pub path: String,
+    /// The path before a rename or copy.
+    pub old_path: Option<String>,
+    /// git's status letter for the change: `A`, `C`, `D`, `M`, `R` or `T`.
+    pub status: char,
+    /// The lines the change added and removed; none for a binary file.
+    pub lines: Option<(u32, u32)>,
+    /// The path's unified diff with three lines of context, from its `diff --git` header on.
+    pub patch: String,
+}
+
+/// One commit, as [`Worktree::commits_between`] reads it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommitLine {
+    /// The commit's abbreviated sha.
+    pub sha: String,
+    /// The commit message's subject line.
+    pub subject: String,
+}
+
 /// An isolated git worktree for one unit of work.
 pub struct Worktree {
     pub dir: String,
@@ -961,11 +985,7 @@ impl Worktree {
     /// refuses while a resolution staged with the merge's markers still in it does. The index
     /// is read, not the worktree, because it is what the finalize commit takes.
     fn markers_the_merge_introduced(&self) -> Result<Vec<String>, Error> {
-        let staged: Vec<String> = git(&self.dir, &["diff", "--cached", "--name-only", "-z"])?
-            .split('\0')
-            .filter(|path| !path.is_empty())
-            .map(str::to_string)
-            .collect();
+        let staged = nul_paths(&git(&self.dir, &["diff", "--cached", "--name-only", "-z"])?);
         markers_introduced(&self.dir, ScanAt::Index, &staged, &["HEAD", "MERGE_HEAD"])
     }
 
@@ -993,26 +1013,102 @@ impl Worktree {
         // itself: other units may have merged into base since this worktree branched,
         // and a three-dot diff from the merge-base reports only THIS branch's own
         // changes, never the unrelated commits that landed meanwhile.
-        let base = git(&self.repo, &["rev-parse", "HEAD"])?.trim().to_string();
+        let base = self.repo_head()?;
         self.diff_names(&base, DiffMode::MergeBase)
+    }
+
+    /// The sha the repository's own checkout is at: the base this worktree branched from, or
+    /// the run branch's tip once other units landed on it.
+    fn repo_head(&self) -> Result<String, Error> {
+        Ok(git(&self.repo, &["rev-parse", "HEAD"])?.trim().to_string())
+    }
+
+    /// The commit `to` forked from the repository's checkout at: the merge-base of the two, so
+    /// a unit that landed on the run branch since this worktree branched moves it nowhere.
+    pub fn fork_point(&self, to: &str) -> Result<String, Error> {
+        let base = self.repo_head()?;
+        Ok(git(&self.dir, &["merge-base", &base, to])?
+            .trim()
+            .to_string())
+    }
+
+    /// Every path the direct diff `from..to` changed, sorted by path, each with its status,
+    /// its line counts and its own patch section (`-U3`). Three reads of the one diff, each
+    /// with rename detection and with no external diff, text conversion or colour a user's
+    /// config may set: the statuses, the counts and the patch. They list the same paths in
+    /// the same order; a read where they disagree is an error, never a misattributed patch.
+    pub fn diff_files(&self, from: &str, to: &str) -> Result<Vec<FileDiff>, Error> {
+        let range = format!("{from}..{to}");
+        let read = |form: &[&str]| {
+            let mut args = vec!["diff", "-M", "--no-ext-diff", "--no-textconv", "--no-color"];
+            args.extend_from_slice(form);
+            args.extend([range.as_str(), "--"]);
+            git(&self.dir, &args)
+        };
+        let statuses = read(&["--name-status", "-z"])?;
+        let counts = read(&["--numstat", "-z"])?;
+        let patch = read(&["-U3"])?;
+        file_diffs(&statuses, &counts, &patch)
+            .ok_or_else(|| Error(format!("git diff {range}: its reads list different files")))
+    }
+
+    /// Whether the commits `a` and `b` hold the same tree: the exact form of "nothing changed
+    /// between them", which no diff option or user config can hide.
+    pub fn same_tree(&self, a: &str, b: &str) -> Result<bool, Error> {
+        let tree = |rev: &str| {
+            git(
+                &self.dir,
+                &[
+                    "rev-parse",
+                    "--verify",
+                    "--quiet",
+                    &format!("{rev}^{{tree}}"),
+                ],
+            )
+            .map(|tree| tree.trim().to_string())
+        };
+        Ok(tree(a)? == tree(b)?)
+    }
+
+    /// Every commit reachable from `to` and not from `from`, oldest first, one row each: with
+    /// no signature check and no colour a user's config may set, so no line but a commit's
+    /// own reaches the rows.
+    pub fn commits_between(&self, from: &str, to: &str) -> Result<Vec<CommitLine>, Error> {
+        let range = format!("{from}..{to}");
+        let out = git(
+            &self.dir,
+            &[
+                "log",
+                "--no-show-signature",
+                "--no-color",
+                "--reverse",
+                "--format=%h %s",
+                &range,
+                "--",
+            ],
+        )?;
+        Ok(out
+            .lines()
+            .filter_map(|line| line.split_once(' '))
+            .map(|(sha, subject)| CommitLine {
+                sha: sha.to_string(),
+                subject: subject.to_string(),
+            })
+            .collect())
     }
 
     /// The diff between `from` and this worktree's current `HEAD`, name-only, sorted and
     /// de-duplicated, in the [`DiffMode`] the caller names: runs one `git diff --name-only -z
     /// <range>` and parses its output, so the two diff MODES (merge-base-anchored three-dot
-    /// vs a direct two-dot tree comparison) never drift the parsing logic apart. `-z` names
-    /// each path as it sits on disk, never quoted.
+    /// vs a direct two-dot tree comparison) never drift the parsing logic apart. Each path is
+    /// spelled as git stores it ([`nul_paths`]), as [`Self::diff_files`] reads it, never
+    /// C-quoted.
     pub fn diff_names(&self, from: &str, mode: DiffMode) -> Result<Vec<String>, Error> {
         let range = match mode {
             DiffMode::MergeBase => format!("{from}...HEAD"),
             DiffMode::Direct => format!("{from}..HEAD"),
         };
-        let out = git(&self.dir, &["diff", "--name-only", "-z", &range])?;
-        let mut paths: Vec<String> = out
-            .split('\0')
-            .filter(|path| !path.is_empty())
-            .map(str::to_string)
-            .collect();
+        let mut paths = nul_paths(&git(&self.dir, &["diff", "--name-only", "-z", &range])?);
         paths.sort();
         paths.dedup();
         Ok(paths)
@@ -1033,7 +1129,7 @@ impl Worktree {
     /// base", which for a worktree branch that only ever gains commits (never rebased)
     /// is precisely this branch's own.
     pub fn commits_since_base(&self) -> Result<Vec<String>, Error> {
-        let base = git(&self.repo, &["rev-parse", "HEAD"])?.trim().to_string();
+        let base = self.repo_head()?;
         let out = git(
             &self.dir,
             &["rev-list", "--reverse", &format!("{base}..HEAD")],
@@ -1072,11 +1168,7 @@ impl Worktree {
                 sha,
             ],
         )?;
-        Ok(out
-            .split('\0')
-            .filter(|path| !path.is_empty())
-            .map(str::to_string)
-            .collect())
+        Ok(nul_paths(&out))
     }
 
     /// Every path this worktree currently has UNMERGED (a real git conflict): each
@@ -3659,6 +3751,98 @@ fn refresh_checked_out_index(dir: &str) -> Result<(), Error> {
     git(dir, &["update-index", "-q", "--refresh"]).map(drop)
 }
 
+/// The paths a git `--name-only -z` listing wrote, in its order, each spelled as git stores it.
+fn nul_paths(out: &str) -> Vec<String> {
+    out.split('\0')
+        .filter(|path| !path.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// The `(status, path before, path)` of each entry `git diff --name-status -z` wrote, in its
+/// order: a rename or copy names both its paths. None when the output ends inside an entry.
+fn name_status_entries(out: &str) -> Option<Vec<(char, Option<String>, String)>> {
+    let mut fields = out.split('\0').filter(|f| !f.is_empty());
+    let mut entries = Vec::new();
+    while let Some(status) = fields.next() {
+        let letter = status.chars().next()?;
+        let first = fields.next()?.to_string();
+        entries.push(if matches!(letter, 'R' | 'C') {
+            (letter, Some(first), fields.next()?.to_string())
+        } else {
+            (letter, None, first)
+        });
+    }
+    Some(entries)
+}
+
+/// The `(added, removed)` lines of each entry `git diff --numstat -z` wrote, in its order;
+/// none for a binary file, whose counts git writes as `-`.
+fn numstat_lines(out: &str) -> Vec<Option<(u32, u32)>> {
+    let mut fields = out.split('\0');
+    let mut lines = Vec::new();
+    while let Some(record) = fields.next() {
+        let mut cols = record.splitn(3, '\t');
+        let (Some(added), Some(removed), Some(path)) = (cols.next(), cols.next(), cols.next())
+        else {
+            continue;
+        };
+        if path.is_empty() {
+            // A rename or copy: its two paths follow as fields of their own.
+            fields.nth(1);
+        }
+        lines.push(added.parse().ok().zip(removed.parse().ok()));
+    }
+    lines
+}
+
+/// The files one diff changed, sorted by path, from its three reads: its `--name-status -z`
+/// `statuses`, its `--numstat -z` `counts` and its `-U3` `patch`. None when the reads disagree:
+/// a count or a patch section too many or too few for the entries the statuses list.
+fn file_diffs(statuses: &str, counts: &str, patch: &str) -> Option<Vec<FileDiff>> {
+    let counts = numstat_lines(counts);
+    let mut sections = patch_sections(patch).into_iter();
+    let mut files = Vec::new();
+    for (status, old_path, path) in name_status_entries(statuses)? {
+        // git writes a change between a file and a symlink as a deletion and a creation.
+        let parts = if status == 'T' { 2 } else { 1 };
+        let own: Vec<&str> = sections.by_ref().take(parts).collect();
+        if own.len() != parts {
+            return None;
+        }
+        let patch = own.concat();
+        let lines = *counts.get(files.len())?;
+        files.push(FileDiff {
+            path,
+            old_path,
+            status,
+            lines,
+            patch,
+        });
+    }
+    if counts.len() != files.len() || sections.next().is_some() {
+        return None;
+    }
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    Some(files)
+}
+
+/// The sections of a `git diff` patch, each from a `diff --git` header line up to the next.
+fn patch_sections(patch: &str) -> Vec<&str> {
+    let mut starts: Vec<usize> = patch
+        .split_inclusive('\n')
+        .scan(0, |at, line| {
+            let start = *at;
+            *at += line.len();
+            Some((start, line))
+        })
+        .filter(|(_, line)| line.starts_with("diff --git "))
+        .map(|(start, _)| start)
+        .collect();
+    starts.push(patch.len());
+    starts.windows(2).map(|w| &patch[w[0]..w[1]]).collect()
+}
+
 /// The git conflict-marker lines that `scope`'s files carry at `at`, by path, [`Standing`] and
 /// line: the marker scan's one home. A COMPLETE, ORDERED set - a start line (`<<<<<<< `), then a
 /// separator (`=======`), then an end line (`>>>>>>> `), each a whole line with any trailing `\r`
@@ -4300,13 +4484,8 @@ fn status_read(dir: &str, options: &[&str], pathspecs: &[&str]) -> Result<Status
 /// Every path `dir`'s tree changed since `commit`: the paths commits made after it touch, then
 /// the [`uncommitted_paths`], sorted, each once.
 pub fn paths_changed_since(dir: &str, commit: &str) -> Result<Vec<String>, Error> {
-    let committed = git(dir, &["diff", "--name-only", "-z", commit, "HEAD"])?;
-    let mut paths: Vec<String> = committed
-        .split('\0')
-        .filter(|p| !p.is_empty())
-        .map(String::from)
-        .chain(uncommitted_paths(dir)?)
-        .collect();
+    let mut paths = nul_paths(&git(dir, &["diff", "--name-only", "-z", commit, "HEAD"])?);
+    paths.extend(uncommitted_paths(dir)?);
     paths.sort();
     paths.dedup();
     Ok(paths)
@@ -4328,6 +4507,24 @@ pub fn in_history(dir: &str, ancestor: &str, descendant: &str) -> Result<bool, E
     finish_git_query(start_git(dir, &args))
         .map(|answer| answer.is_some())
         .map_err(|out| git_failed(&args, String::from_utf8_lossy(&out).trim()))
+}
+
+/// Git's id for the empty tree in SHA-1, its default object format: what [`empty_tree`] answers
+/// when git cannot.
+pub const SHA1_EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+/// The arguments of git's query for the empty tree's id in a repository's own object format,
+/// asked with no input.
+pub(crate) const EMPTY_TREE_QUERY: [&str; 4] = ["hash-object", "-t", "tree", "--stdin"];
+
+/// The empty tree's id in the repository at `dir`, in its object format: the base a diff reads
+/// every line of a commit from. SHA-1's ([`SHA1_EMPTY_TREE`]) when git cannot answer.
+pub fn empty_tree(dir: &str) -> String {
+    git(dir, &EMPTY_TREE_QUERY)
+        .map(|id| id.trim().to_string())
+        .ok()
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| SHA1_EMPTY_TREE.to_string())
 }
 
 /// Which of a git run's streams its answer holds.
@@ -4891,6 +5088,7 @@ mod tests {
     use crate::test_support::assert_concurrent_creates_succeed;
     use crate::test_support::assert_teardown_reaps_what_is_rooted_inside;
     use crate::test_support::commit_at_fixed_date;
+    use crate::test_support::git_commit_all;
     use crate::test_support::run_log;
 
     #[test]
@@ -5187,6 +5385,38 @@ mod tests {
                     Ok(IntegrateOutcome::Merged(commit))
                 }
             }
+        }
+    }
+
+    /// The empty tree's id is git's own in the repository's object format, SHA-1's in a SHA-1
+    /// repository and SHA-256's in a SHA-256 one, and SHA-1's when git cannot answer, as in a
+    /// directory that does not exist.
+    #[test]
+    fn the_empty_tree_is_gits_own_id_in_the_repositorys_object_format() {
+        let sha1 = init_repo();
+        let sha256 = tempfile::tempdir().unwrap();
+        let sha256_dir = sha256.path().to_str().unwrap();
+        run_git(sha256_dir, &["init", "-q", "--object-format=sha256"]).unwrap();
+        let gone = sha1.path().join("gone");
+        let cases = [
+            (
+                "a SHA-1 repository",
+                sha1.path().to_str().unwrap(),
+                SHA1_EMPTY_TREE,
+            ),
+            (
+                "a SHA-256 repository",
+                sha256_dir,
+                "6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321",
+            ),
+            (
+                "a directory git cannot start in",
+                gone.to_str().unwrap(),
+                SHA1_EMPTY_TREE,
+            ),
+        ];
+        for (case, dir, expected) in cases {
+            assert_eq!(empty_tree(dir), expected, "{case}");
         }
     }
 
@@ -6907,6 +7137,494 @@ mod tests {
             wt.commits_since_base().unwrap(),
             vec![first, second],
             "oldest-first, exactly the two commits beyond the run branch's HEAD"
+        );
+        wt.remove().unwrap();
+    }
+
+    /// Writes `bytes` to `path` under `root`.
+    fn write_at(root: &std::path::Path, path: &str, bytes: &[u8]) {
+        std::fs::write(root.join(path), bytes).unwrap();
+    }
+
+    #[test]
+    fn diff_files_reads_each_changed_files_status_counts_and_patch_since_the_fork_point() {
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let moved = "a line long enough for git to find the file again\n".repeat(4);
+        write_at(repo.path(), "kept.txt", b"a\nb\nc\n");
+        write_at(repo.path(), "gone.txt", b"bye\n");
+        write_at(repo.path(), "before.txt", moved.as_bytes());
+        write_at(repo.path(), "blob.bin", b"\0\x01\x02");
+        git_commit_all(&repo_path, "base");
+        let fork = git(&repo_path, &["rev-parse", "HEAD"]).unwrap();
+        let fork = fork.trim();
+        let (wt_path, wt) = temp_wt(&repo_path, "rigger/u/packet");
+        let dir = wt_path.to_str().unwrap();
+        write_at(&wt_path, "kept.txt", b"a\nB\nc\n");
+        write_at(&wt_path, "added.txt", b"one\ntwo\n");
+        std::fs::remove_file(wt_path.join("gone.txt")).unwrap();
+        git_commit_all(dir, "unit change one");
+        std::fs::rename(wt_path.join("before.txt"), wt_path.join("after.txt")).unwrap();
+        write_at(&wt_path, "blob.bin", b"\0\x03\x04");
+        git_commit_all(dir, "unit change two");
+        // Another unit lands on the run branch meanwhile: the fork point stays where this
+        // unit branched, and that unit's file is no part of this one's diff.
+        write_at(repo.path(), "other.txt", b"other\n");
+        git_commit_all(&repo_path, "another unit");
+
+        assert_eq!(wt.fork_point("HEAD").unwrap(), fork);
+        let files = wt.diff_files(fork, "HEAD").unwrap();
+        // (path, status, path before the change, lines added and removed, a line its patch holds)
+        type Row = (
+            &'static str,
+            char,
+            Option<&'static str>,
+            Option<(u32, u32)>,
+            &'static str,
+        );
+        let rows: [Row; 5] = [
+            ("added.txt", 'A', None, Some((2, 0)), "\n+two\n"),
+            (
+                "after.txt",
+                'R',
+                Some("before.txt"),
+                Some((0, 0)),
+                "\nrename to after.txt\n",
+            ),
+            ("blob.bin", 'M', None, None, "\nBinary files "),
+            ("gone.txt", 'D', None, Some((0, 1)), "\n-bye\n"),
+            ("kept.txt", 'M', None, Some((1, 1)), "\n+B\n"),
+        ];
+        let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(paths, rows.map(|row| row.0));
+        for (file, (path, status, old_path, lines, holds)) in files.iter().zip(rows) {
+            let read = (file.status, file.old_path.as_deref(), file.lines);
+            assert_eq!(read, (status, old_path, lines), "{path}");
+            assert!(
+                file.patch.starts_with("diff --git ") && file.patch.contains(holds),
+                "{path}'s patch is its own section, holding {holds:?}: {}",
+                file.patch
+            );
+        }
+        assert_eq!(wt.diff_files(fork, fork).unwrap(), Vec::new(), "no change");
+        let subjects: Vec<String> = wt
+            .commits_between(fork, "HEAD")
+            .unwrap()
+            .into_iter()
+            .map(|c| c.subject)
+            .collect();
+        assert_eq!(subjects, ["unit change one", "unit change two"]);
+        wt.remove().unwrap();
+    }
+
+    /// git writes a change between a file and a symlink as a deletion and a creation, two
+    /// patch sections for its one changed path.
+    #[cfg(unix)]
+    #[test]
+    fn diff_files_reads_a_type_change_as_one_file_holding_both_its_sections() {
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        write_at(repo.path(), "link", b"was a file\n");
+        write_at(repo.path(), "next.txt", b"x\n");
+        git_commit_all(&repo_path, "base");
+        let (wt_path, wt) = temp_wt(&repo_path, "rigger/u/typechange");
+        std::fs::remove_file(wt_path.join("link")).unwrap();
+        std::os::unix::fs::symlink("next.txt", wt_path.join("link")).unwrap();
+        write_at(&wt_path, "next.txt", b"y\n");
+        git_commit_all(wt_path.to_str().unwrap(), "type change");
+
+        let fork = wt.fork_point("HEAD").unwrap();
+        let files = wt.diff_files(&fork, "HEAD").unwrap();
+        let read: Vec<(&str, char, usize)> = files
+            .iter()
+            .map(|f| {
+                (
+                    f.path.as_str(),
+                    f.status,
+                    f.patch.matches("diff --git ").count(),
+                )
+            })
+            .collect();
+        assert_eq!(read, [("link", 'T', 2), ("next.txt", 'M', 1)]);
+        wt.remove().unwrap();
+    }
+
+    /// A [`FileDiff`] for the tables below.
+    fn file_diff(
+        path: &str,
+        old_path: Option<&str>,
+        status: char,
+        lines: Option<(u32, u32)>,
+        patch: &str,
+    ) -> FileDiff {
+        FileDiff {
+            path: path.to_string(),
+            old_path: old_path.map(str::to_string),
+            status,
+            lines,
+            patch: patch.to_string(),
+        }
+    }
+
+    /// A diff's three reads make its files only when they list the same files: each entry of
+    /// the statuses takes the next count and the next patch section, a type change two
+    /// sections, and the files sort by path; a count or a section too many or too few, or
+    /// statuses that end inside an entry, make none, never a misattributed or empty patch.
+    #[test]
+    fn file_diffs_are_made_only_from_reads_that_agree() {
+        let (a, b) = ("diff --git a/a b/a\n+x\n", "diff --git a/b b/b\n-y\n");
+        let (gone, made) = ("diff --git a/l b/l\n-was\n", "diff --git a/l b/l\n+now\n");
+        let both = format!("{a}{b}");
+        let type_change = format!("{gone}{made}");
+        // (case, statuses, counts, patch, the files they make)
+        type Row<'a> = (&'a str, &'a str, &'a str, &'a str, Option<Vec<FileDiff>>);
+        let cases: [Row; 12] = [
+            ("no change", "", "", "", Some(Vec::new())),
+            (
+                "one modified file",
+                "M\0a\0",
+                "1\t0\ta\0",
+                a,
+                Some(vec![file_diff("a", None, 'M', Some((1, 0)), a)]),
+            ),
+            (
+                "a rename names both its paths",
+                "R100\0old\0new\0",
+                "0\t0\t\0old\0new\0",
+                "diff --git a/old b/new\nrename to new\n",
+                Some(vec![file_diff(
+                    "new",
+                    Some("old"),
+                    'R',
+                    Some((0, 0)),
+                    "diff --git a/old b/new\nrename to new\n",
+                )]),
+            ),
+            (
+                "a binary file has no line counts",
+                "M\0a\0",
+                "-\t-\ta\0",
+                a,
+                Some(vec![file_diff("a", None, 'M', None, a)]),
+            ),
+            (
+                "a type change takes two sections",
+                "T\0l\0",
+                "1\t1\tl\0",
+                &type_change,
+                Some(vec![file_diff("l", None, 'T', Some((1, 1)), &type_change)]),
+            ),
+            (
+                "files sort by path, each keeping its own count and section",
+                "D\0b\0M\0a\0",
+                concat!("0\t1\tb\0", "1\t0\ta\0"),
+                &format!("{b}{a}"),
+                Some(vec![
+                    file_diff("a", None, 'M', Some((1, 0)), a),
+                    file_diff("b", None, 'D', Some((0, 1)), b),
+                ]),
+            ),
+            ("a count too few", "M\0a\0M\0b\0", "1\t0\ta\0", &both, None),
+            (
+                "a count too many",
+                "M\0a\0",
+                concat!("1\t0\ta\0", "0\t1\tb\0"),
+                a,
+                None,
+            ),
+            ("a section too many", "M\0a\0", "1\t0\ta\0", &both, None),
+            (
+                "a section too few",
+                "M\0a\0D\0b\0",
+                concat!("1\t0\ta\0", "0\t1\tb\0"),
+                a,
+                None,
+            ),
+            (
+                "a type change with one section",
+                "T\0l\0",
+                "1\t1\tl\0",
+                gone,
+                None,
+            ),
+            (
+                "statuses that end inside a rename",
+                "R100\0old\0",
+                "0\t0\t\0old\0new\0",
+                "diff --git a/old b/new\n",
+                None,
+            ),
+        ];
+        for (case, statuses, counts, patch, expected) in cases {
+            assert_eq!(file_diffs(statuses, counts, patch), expected, "{case}");
+        }
+    }
+
+    /// A patch splits at each line that opens with `diff --git `, every byte of a section kept:
+    /// a CRLF line, git's no-newline marker, a last line with no newline and a hunk line that
+    /// holds a header's text after its prefix all stay inside their section, and text before
+    /// the first header belongs to none.
+    #[test]
+    fn patch_sections_split_only_at_a_header_line() {
+        let crlf = "diff --git a/c b/c\n@@ -1 +1 @@\n-a\r\n+B\r\n";
+        let tail = concat!(
+            "diff --git a/t b/t\n-x\n\\ No newline at end of file\n",
+            "+y\n\\ No newline at end of file\n"
+        );
+        let cases: [(&str, String, Vec<&str>); 6] = [
+            ("no patch", String::new(), Vec::new()),
+            ("CRLF lines", format!("{crlf}{tail}"), vec![crlf, tail]),
+            (
+                "a hunk line holding a header's text",
+                "diff --git a/a b/a\n+diff --git a/x b/x\n".to_string(),
+                vec!["diff --git a/a b/a\n+diff --git a/x b/x\n"],
+            ),
+            (
+                "a last line with no newline",
+                format!("{tail}diff --git a/u b/u\n+z"),
+                vec![tail, "diff --git a/u b/u\n+z"],
+            ),
+            (
+                "text before the first header",
+                format!("warning: noise\n{crlf}"),
+                vec![crlf],
+            ),
+            (
+                "a header after a CR-ended line",
+                format!("{crlf}\r\ndiff --git a/d b/d\n"),
+                vec![
+                    "diff --git a/c b/c\n@@ -1 +1 @@\n-a\r\n+B\r\n\r\n",
+                    "diff --git a/d b/d\n",
+                ],
+            ),
+        ];
+        for (case, patch, expected) in cases {
+            assert_eq!(patch_sections(&patch), expected, "{case}");
+        }
+    }
+
+    /// A real diff keeps a CRLF line and git's no-newline marker in the patch of the file that
+    /// holds them, with that file's own line counts.
+    #[test]
+    fn diff_files_keep_a_crlf_line_and_a_missing_final_newline_in_their_own_patch() {
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        run_git(&repo_path, &["config", "core.autocrlf", "false"]).unwrap();
+        write_at(repo.path(), "crlf.txt", b"a\r\nb\r\n");
+        write_at(repo.path(), "tail.txt", b"x");
+        git_commit_all(&repo_path, "base");
+        let fork = git(&repo_path, &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
+        let (wt_path, wt) = temp_wt(&repo_path, "rigger/u/endings");
+        write_at(&wt_path, "crlf.txt", b"a\r\nB\r\n");
+        write_at(&wt_path, "tail.txt", b"y");
+        git_commit_all(wt_path.to_str().unwrap(), "endings");
+
+        let files = wt.diff_files(&fork, "HEAD").unwrap();
+        // (path, its line counts, whether its patch holds its own ending)
+        type Read<'a> = (&'a str, Option<(u32, u32)>, bool);
+        let read: Vec<Read> = files
+            .iter()
+            .map(|f| {
+                let holds = match f.path.as_str() {
+                    "crlf.txt" => "\n-b\r\n+B\r\n",
+                    _ => concat!(
+                        "\n-x\n\\ No newline at end of file\n",
+                        "+y\n\\ No newline at end of file\n"
+                    ),
+                };
+                (f.path.as_str(), f.lines, f.patch.ends_with(holds))
+            })
+            .collect();
+        assert_eq!(
+            read,
+            [
+                ("crlf.txt", Some((1, 1)), true),
+                ("tail.txt", Some((1, 1)), true)
+            ]
+        );
+        wt.remove().unwrap();
+    }
+
+    /// `diff_names`, `diff_files` and [`paths_changed_since`] spell every path alike, as git
+    /// stores it: a path with spaces, a tab, non-ASCII characters or a newline reads raw
+    /// through each, never C-quoted by one of them, so a path matched across them is one path.
+    #[cfg(unix)]
+    #[test]
+    fn every_diff_read_spells_a_path_as_git_stores_it() {
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let fork = git(&repo_path, &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
+        let (wt_path, wt) = temp_wt(&repo_path, "rigger/u/spelling");
+        let dir = wt_path.to_str().unwrap();
+        let paths = [
+            "dir with space/\u{e9}t\u{e9}.rs",
+            "new\nline.rs",
+            "plain.rs",
+            "tab\there.rs",
+        ];
+        std::fs::create_dir_all(wt_path.join("dir with space")).unwrap();
+        for path in paths {
+            write_at(&wt_path, path, b"x\n");
+        }
+        git_commit_all(dir, "odd paths");
+
+        let mut expected = paths.map(String::from).to_vec();
+        expected.sort();
+        let files: Vec<String> = wt
+            .diff_files(&fork, "HEAD")
+            .unwrap()
+            .into_iter()
+            .map(|f| f.path)
+            .collect();
+        assert_eq!(
+            wt.diff_names(&fork, DiffMode::Direct).unwrap(),
+            expected,
+            "diff_names"
+        );
+        assert_eq!(files, expected, "diff_files");
+        assert_eq!(
+            paths_changed_since(dir, &fork).unwrap(),
+            expected,
+            "paths_changed_since"
+        );
+        wt.remove().unwrap();
+    }
+
+    /// The commits between two revs are one row per commit whatever the user's log config
+    /// sets: a signature git would check and print under `log.showSignature`, or colour,
+    /// adds no row.
+    #[test]
+    fn commits_between_reads_one_row_per_commit_whatever_the_log_config() {
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let (wt_path, wt) = temp_wt(&repo_path, "rigger/u/signed");
+        let dir = wt_path.to_str().unwrap();
+        // A verifier that writes its complaint where git prints a signature's check.
+        for (key, value) in [
+            ("log.showSignature", "true"),
+            ("gpg.program", "git"),
+            ("color.ui", "always"),
+        ] {
+            run_git(dir, &["config", key, value]).unwrap();
+        }
+        let rev = |rev: &str| git(dir, &["rev-parse", rev]).unwrap().trim().to_string();
+        let (parent, tree) = (rev("HEAD"), rev("HEAD^{tree}"));
+        let commit = [
+            format!("tree {tree}"),
+            format!("parent {parent}"),
+            "author t <t@example.com> 0 +0000".to_string(),
+            "committer t <t@example.com> 0 +0000".to_string(),
+            "gpgsig -----BEGIN PGP SIGNATURE-----".to_string(),
+            " ".to_string(),
+            " iQEzBAABCAAdFiEE".to_string(),
+            " -----END PGP SIGNATURE-----".to_string(),
+            String::new(),
+            "signed".to_string(),
+            String::new(),
+        ]
+        .join("\n");
+        let body = tempfile::tempdir().unwrap();
+        let body_path = body.path().join("commit");
+        std::fs::write(&body_path, commit).unwrap();
+        let signed = git(
+            dir,
+            &[
+                "hash-object",
+                "-t",
+                "commit",
+                "-w",
+                body_path.to_str().unwrap(),
+            ],
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+
+        let rows = wt.commits_between(&parent, &signed).unwrap();
+        let read: Vec<(bool, &str)> = rows
+            .iter()
+            .map(|c| (signed.starts_with(&c.sha), c.subject.as_str()))
+            .collect();
+        assert_eq!(read, [(true, "signed")]);
+        wt.remove().unwrap();
+    }
+
+    /// A merge inside the range reads in both lists: the commits hold the merge and the commit
+    /// it brought in beside the branch's own, and the files hold the merged-in path.
+    #[test]
+    fn a_merge_inside_the_range_reads_in_the_commits_and_the_files() {
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let fork = git(&repo_path, &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
+        let (wt_path, wt) = temp_wt(&repo_path, "rigger/u/merging");
+        let dir = wt_path.to_str().unwrap();
+        write_at(&wt_path, "own.txt", b"own\n");
+        git_commit_all(dir, "own change");
+        run_git(dir, &["checkout", "-q", "-b", "side", &fork]).unwrap();
+        write_at(&wt_path, "side.txt", b"side\n");
+        git_commit_all(dir, "side change");
+        run_git(dir, &["checkout", "-q", "rigger/u/merging"]).unwrap();
+        run_git(dir, &["merge", "-q", "--no-ff", "-m", "merge side", "side"]).unwrap();
+
+        let mut subjects: Vec<String> = wt
+            .commits_between(&fork, "HEAD")
+            .unwrap()
+            .into_iter()
+            .map(|c| c.subject)
+            .collect();
+        subjects.sort();
+        assert_eq!(subjects, ["merge side", "own change", "side change"]);
+        let read: Vec<(String, char)> = wt
+            .diff_files(&fork, "HEAD")
+            .unwrap()
+            .into_iter()
+            .map(|f| (f.path, f.status))
+            .collect();
+        assert_eq!(
+            read,
+            [("own.txt".to_string(), 'A'), ("side.txt".to_string(), 'A')]
+        );
+        wt.remove().unwrap();
+    }
+
+    /// Two commits hold the same tree when nothing changed between them - the same commit, or
+    /// an empty commit over its parent - and a different one after any change, even a gitlink's
+    /// that a user's config hides from every diff; a rev git does not hold is an error.
+    #[test]
+    fn same_tree_reads_the_two_commits_trees() {
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let (wt_path, wt) = temp_wt(&repo_path, "rigger/u/trees");
+        let dir = wt_path.to_str().unwrap();
+        let head = || git(dir, &["rev-parse", "HEAD"]).unwrap().trim().to_string();
+        let base = head();
+        run_git(dir, &["commit", "-q", "--allow-empty", "-m", "empty"]).unwrap();
+        let empty = head();
+        let gitlink = format!("160000,{base},sub");
+        run_git(dir, &["update-index", "--add", "--cacheinfo", &gitlink]).unwrap();
+        run_git(dir, &["commit", "-q", "-m", "gitlink"]).unwrap();
+        let linked = head();
+        run_git(dir, &["config", "diff.ignoreSubmodules", "all"]).unwrap();
+        let cases = [
+            ("the same commit", &base, &base, true),
+            ("an empty commit over its parent", &base, &empty, true),
+            ("a hidden gitlink change", &empty, &linked, false),
+        ];
+        for (case, a, b, same) in cases {
+            assert_eq!(wt.same_tree(a, b).unwrap(), same, "{case}");
+        }
+        assert!(
+            wt.same_tree(&base, &"0".repeat(40)).is_err(),
+            "a rev git does not hold"
         );
         wt.remove().unwrap();
     }

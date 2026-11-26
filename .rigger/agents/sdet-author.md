@@ -83,12 +83,12 @@ never rests on your judgment alone.
 
 This project's anchors for the built-in hand-over rules. The implement stage's gates
 (`.rigger/workflow.yml`) are fmt, clippy, clippy-no-default, build, test, lane-core, style,
-no-os-kill, boundary and red-before-green. The workflow's gates run that full battery on your
-committed result and are the authority: you do not run the whole suite, the other lanes, the
-boundary suite, the content gates or red-before-green by hand, and a gate failure comes back
-as the next round's finding. The no-default lane is linted at every unit and its whole suite
-runs once, at the check-in, on the merged tree. Before you report, run from the worktree root,
-on your committed tree, these and nothing else:
+no-os-kill, no-new-event-type, boundary and red-before-green. The workflow's gates run that
+full battery on your committed result and are the authority: you do not run the whole suite,
+the other lanes, the boundary suite, the content gates or red-before-green by hand, and a gate
+failure comes back as the next round's finding. The no-default lane is linted at every unit
+and its whole suite runs once, at the check-in, on the merged tree. Before you report, run
+from the worktree root, on your committed tree, these and nothing else:
 
 - `sh .rigger/gates/fmt.sh`, the fmt gate itself, which checks every tracked Rust file by its
   crate's edition;
