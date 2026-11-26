@@ -6011,8 +6011,9 @@ impl Store {
     /// Spec 117, RUST STAGES VARIANT USES: a scoped path outside a call whose qualifier and leaf
     /// begin uppercase and whose leaf holds a lowercase letter is a `variant` mention qualified by
     /// its path, in an expression or a pattern, passed by name or in a token tree, beside the type
-    /// row its path's segment stages; a struct literal's or pattern's `E::V` is one too, its
-    /// fields qualified by `V`, in place of the type row of `E`. A call's head stays a call, a
+    /// row its path's segment stages; a struct literal's or pattern's `E::V` is one too, a
+    /// turbofish on `E` or on `V` among them, its fields qualified by `V`, in place of the type
+    /// row of `E`. A call's head stays a call, a
     /// leaf holding no lowercase letter stays a const read, a lowercase qualifier stages no
     /// variant, a path in type position stages by the type rule alone, and a qualifier naming the
     /// standard library stages nothing, while a leaf sharing a prelude name, a std import's leaf
@@ -6067,6 +6068,17 @@ fn c(k: u8) {
 1 def Function d to 3
 2 ref field n d q RejectRecurrence::
 2 ref variant RejectRecurrence d q Kind::",
+            ),
+            (
+                "a generic struct variant's literal is the variant mention its plain twin is, a \
+                 turbofish on the enum or on the variant",
+                "fn w() {\n    Kind::<u8>::Many { n: 1 };\n    Kind::Many::<u8> { n: 1 };\n}\n",
+                "\
+1 def Function w to 4
+2 ref field n w q Many::
+2 ref variant Many w q Kind::
+3 ref field n w q Many::
+3 ref variant Many w q Kind::",
             ),
             (
                 "a struct literal whose leaf holds no lowercase letter keeps its type row, and the \
