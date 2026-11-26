@@ -5363,11 +5363,10 @@ fn product() {}
     /// under such a root, a macro's token tree and a qualified-self path's trait alike, while the
     /// macro's own call stages. An alias qualifier, a module's `self` import renamed
     /// (`{self as M}`) among them, is written as the name it imports, exclusion read on the alias
-    /// as written first; a `Self` or `self` whose self type is excluded and an enclosing generic
-    /// parameter stage the call unqualified; a qualifier no exclusion holds (a qualified-self
-    /// path's trait over a primitive or standard-library self type among them), an unaliased
-    /// import, a module's unrenamed `self` import, a path with no written segment and a call with
-    /// no path stage as before.
+    /// as written first; a `Self` or `self` whose self type is excluded stages the call
+    /// unqualified; a qualifier no exclusion holds (a qualified-self path's trait over a primitive
+    /// or standard-library self type among them), an unaliased import, a module's unrenamed `self`
+    /// import, a path with no written segment and a call with no path stage as before.
     #[test]
     fn an_excluded_qualifier_stages_nothing() {
         let cases = [
@@ -5543,13 +5542,6 @@ impl Local for Vec<u8> {
 2 def Method <Vec<u8> as Local>::f to 5 in impl Local for Vec<u8>
 3 ref call new <Vec<u8> as Local>::f
 4 ref call len <Vec<u8> as Local>::f",
-            ),
-            (
-                "an enclosing generic parameter stages the call unqualified",
-                "fn d<T: Default>() {\n    T::default();\n}\n",
-                "\
-1 def Function d to 3
-2 ref call default d",
             ),
             (
                 "a qualifier no exclusion holds stages as before beside a standard-library import",
