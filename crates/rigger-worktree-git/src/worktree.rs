@@ -512,8 +512,13 @@ impl Worktree {
     /// REVERT `commit` on the run branch checked out in `repo` (spec 12, unit 4): apply the
     /// inverse of the commit's diff and record it as a NEW commit carrying `message` (the
     /// compensation provenance) - never a history rewrite, so the reverse gear is evented and
-    /// auditable exactly like the forward [`Self::integrate`] merge. Returns the revert
-    /// commit's sha.
+    /// auditable exactly like the forward [`Self::merge_into_worktree`] merge. Returns the
+    /// revert commit's sha.
+    ///
+    /// A merge `commit` is a unit that integrated after its base moved: its second parent is
+    /// the prior run tip [`Self::merge_into_worktree`] merged in, so the revert takes back the
+    /// commit's diff from that parent, the unit's own change, and keeps the work that landed
+    /// beside it.
     ///
     /// A `--no-commit` revert then an explicit commit lets `message` name the compensation
     /// (git's own revert subject would only echo the reverted commit's subject). A revert
@@ -522,9 +527,15 @@ impl Worktree {
     /// that yields NO change (the commit's effect is already gone) commits nothing and
     /// returns the current HEAD, so it is safely idempotent at the git layer too.
     pub fn revert_on_base(repo: &str, commit: &str, message: &str) -> Result<String, Error> {
+        let merge = run_git(
+            repo,
+            &["rev-parse", "--verify", "-q", &format!("{commit}^2")],
+        );
+        let mainline: &[&str] = if merge.is_ok() { &["-m", "2"] } else { &[] };
         // Reverse-apply the commit's diff to the index/worktree WITHOUT committing, so the
         // compensation message records the rollback instead of git's default "Revert ...".
-        if let Err(out) = run_git(repo, &["revert", "--no-commit", commit]) {
+        let revert = [&["revert", "--no-commit"][..], mainline, &[commit]].concat();
+        if let Err(out) = run_git(repo, &revert) {
             // A conflicting revert leaves partial changes staged; abort so the run branch is
             // untouched and the failure is not silently half-applied.
             let _ = run_git(repo, &["revert", "--abort"]);
