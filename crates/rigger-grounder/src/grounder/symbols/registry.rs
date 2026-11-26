@@ -210,7 +210,14 @@ const CSHARP_DEFINITION_TAGS: [&str; 18] = [
 ///   `Ns.Pt(0, 0)`, which stays the call `Ns.Pt`.
 fn csharp_reference_tags() -> String {
     let guard = CSHARP_KEYWORD_GUARD;
-    let type_name = "[(identifier) (generic_name)] @name";
+    let type_names = "(identifier) (generic_name)";
+    let type_name = format!("[{type_names}] @name");
+    let base_entry = format!("[{type_names} (qualified_name) (alias_qualified_name)] @name");
+    let bases = ["class", "struct", "record", "interface"]
+        .map(|kind| {
+            format!("({kind}_declaration\n  (base_list {base_entry}))\n  @reference.implementation")
+        })
+        .join("\n");
     let names = format!("(identifier) @name (generic_name) @name {CSHARP_CALLED}");
     let element = format!("[{names} (parenthesized_expression [{names}])]");
     let list =
@@ -227,18 +234,7 @@ fn csharp_reference_tags() -> String {
     let closing = format!("[{prefix} {}]", first_child(prefix));
     format!(
         r#"
-(class_declaration
-  (base_list [(identifier) (generic_name) (qualified_name) (alias_qualified_name)] @name))
-  @reference.implementation
-(struct_declaration
-  (base_list [(identifier) (generic_name) (qualified_name) (alias_qualified_name)] @name))
-  @reference.implementation
-(record_declaration
-  (base_list [(identifier) (generic_name) (qualified_name) (alias_qualified_name)] @name))
-  @reference.implementation
-(interface_declaration
-  (base_list [(identifier) (generic_name) (qualified_name) (alias_qualified_name)] @name))
-  @reference.implementation
+{bases}
 (base_list (primary_constructor_base_type type: (_) @name)) @reference.implementation
 (object_creation_expression type: {type_name}) @reference.class
 (type_parameter_constraints_clause (identifier) @name) @reference.class
