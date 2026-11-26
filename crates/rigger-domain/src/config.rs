@@ -950,6 +950,10 @@ pub struct Defaults {
     /// `Config::validate` refuses it at any value, naming the line to delete.
     #[serde(default)]
     pub max_unit_added_lines: Option<u32>,
+    /// The capability table ([`CapabilityTable`]): the model and effort each kind of work runs
+    /// at on each complexity step. Absent (the default), no spawn takes a table cell.
+    #[serde(default)]
+    pub capability: Option<CapabilityTable>,
 }
 
 impl Defaults {
@@ -967,6 +971,118 @@ impl Defaults {
             .map(|id| ("test_author", id.to_string()));
         review.chain(author)
     }
+}
+
+/// A unit's complexity, the step the planner judges it at: `routine`, `involved` or `hard`,
+/// ordered by those steps, `involved` the middle one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Complexity {
+    Routine,
+    Involved,
+    Hard,
+}
+
+impl Complexity {
+    /// Every step, lowest first.
+    pub const ALL: [Complexity; 3] = [Complexity::Routine, Complexity::Involved, Complexity::Hard];
+
+    /// The step's word, the one spelling of the three step words.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Complexity::Routine => "routine",
+            Complexity::Involved => "involved",
+            Complexity::Hard => "hard",
+        }
+    }
+}
+
+/// The workflow's `defaults.capability` table: for each kind of work, the model and effort a
+/// spawn runs at on each [`Complexity`] step. Its parse refuses shape only (a missing row or
+/// cell, an unknown key, an empty `model`), naming the path; [`CapabilityTable::validate`]
+/// holds the judging floor.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CapabilityTable {
+    pub judging: CapabilityRow,
+    pub writing: CapabilityRow,
+    pub reading: CapabilityRow,
+}
+
+impl CapabilityTable {
+    /// The judging floor: the `judging` row's `routine` cell names the same `model` as its
+    /// `involved` cell, compared as two strings, while their `effort` may differ.
+    pub fn validate(&self) -> Result<(), String> {
+        let [routine, involved] = [Complexity::Routine, Complexity::Involved];
+        let (low, mid) = (self.judging.cell(routine), self.judging.cell(involved));
+        if low.model == mid.model {
+            return Ok(());
+        }
+        Err(format!(
+            "judging: the {r} cell names model {:?} and the {i} cell {:?}; a judging spawn runs \
+             on one model whether planned {r} or {i}, so the two cells name the same model and \
+             may differ only in effort",
+            low.model,
+            mid.model,
+            r = routine.name(),
+            i = involved.name(),
+        ))
+    }
+}
+
+/// One kind of work's row of the [`CapabilityTable`]: a cell for each [`Complexity`] step.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CapabilityRow {
+    pub routine: CapabilityCell,
+    pub involved: CapabilityCell,
+    pub hard: CapabilityCell,
+}
+
+impl CapabilityRow {
+    /// The cell of `step`.
+    pub fn cell(&self, step: Complexity) -> &CapabilityCell {
+        match step {
+            Complexity::Routine => &self.routine,
+            Complexity::Involved => &self.involved,
+            Complexity::Hard => &self.hard,
+        }
+    }
+}
+
+/// One cell of the [`CapabilityTable`]: the host's model and effort, both opaque host strings
+/// the binary never interprets.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CapabilityCell {
+    /// The model, never empty.
+    #[serde(deserialize_with = "non_empty_model")]
+    pub model: String,
+    /// The effort; absent or empty means no effort flag, so the session runs at the host's
+    /// default effort.
+    #[serde(default)]
+    pub effort: String,
+}
+
+/// A cell's `model`, refused when empty. The refusal is raised while the scalar is read, so the
+/// parse error's path ends at `model`.
+fn non_empty_model<'de, D>(de: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct NonEmpty;
+    impl serde::de::Visitor<'_> for NonEmpty {
+        type Value = String;
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a non-empty host model string")
+        }
+        fn visit_str<E: serde::de::Error>(self, model: &str) -> Result<String, E> {
+            if model.is_empty() {
+                return Err(E::invalid_value(serde::de::Unexpected::Str(model), &self));
+            }
+            Ok(model.to_string())
+        }
+    }
+    de.deserialize_str(NonEmpty)
 }
 
 /// Stage is one node of the workflow DAG.

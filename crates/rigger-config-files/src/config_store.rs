@@ -401,8 +401,9 @@ pub fn read_scratch_defaults(rigger_dir: &Path) -> Result<Defaults, Error> {
 
 impl Config {
     /// Validate checks that every agent id, review step sequence and declared extractor is well
-    /// formed, every reference resolves and the stage graph is acyclic, then, last, resolves every declared
-    /// gate's `requires` on `PATH` and answers that resolution.
+    /// formed, every reference resolves, a declared capability table holds the judging floor and
+    /// the stage graph is acyclic, then, last, resolves every declared gate's `requires` on
+    /// `PATH` and answers that resolution.
     pub fn validate(&self) -> Result<Vec<GateRequirements>, Error> {
         let wf = &self.workflow;
         // The declared build environment: a `build.env` entry the one check refuses (a bad
@@ -476,6 +477,12 @@ impl Config {
             .review
             .validate_depth()
             .map_err(|m| err(format!("defaults.{m}")))?;
+        // A declared capability table holds the judging floor; its parse checked only its shape.
+        if let Some(table) = &wf.defaults.capability {
+            table
+                .validate()
+                .map_err(|m| err(format!("defaults.capability.{m}")))?;
+        }
         for (name, st) in &wf.stages {
             for need in &st.needs {
                 if !wf.stages.contains_key(need) {
