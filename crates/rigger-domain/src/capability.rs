@@ -93,6 +93,7 @@ mod tests {
     use crate::config::parse_yaml_naming_unknown_keys;
     use crate::config::Complexity::{Hard, Involved, Routine};
     use crate::config::Work::{self, Judging, Reading, Writing};
+    use crate::test_support::capability;
 
     /// A capability table whose nine cells each name a model and an effort of their own, but for
     /// the writing row's hard cell, which names no effort: a row or a step resolved wrong reads
@@ -116,21 +117,6 @@ mod tests {
             model_ladder: ladder.iter().map(|rung| rung.to_string()).collect(),
             effort: effort.into(),
             ..Default::default()
-        }
-    }
-
-    /// The capability with each field as given.
-    fn capability(
-        [model, effort, helper_model, helper_effort, why]: [&str; 5],
-        from_table: bool,
-    ) -> Capability {
-        Capability {
-            model: model.into(),
-            effort: effort.into(),
-            helper_model: helper_model.into(),
-            helper_effort: helper_effort.into(),
-            why: why.into(),
-            from_table,
         }
     }
 
