@@ -2433,6 +2433,18 @@ pub fn write_workflow_fixture(root: &Path, fixture: &WorkflowFixture) {
     write_scaffold(root, &[("worker", fixture.worker)], fixture.body);
 }
 
+/// The pin notes `rigger validate` prints on stderr for a project `rigger init` scaffolded (spec
+/// 135, PINS ARE NOTED): one per seed persona, each pinning `model: opus`, in persona id order.
+pub const INIT_PIN_NOTES: [&str; 7] = [
+    r#"note: agent "adjudicator" pins model "opus""#,
+    r#"note: agent "adversary" pins model "opus""#,
+    r#"note: agent "architecture-reviewer" pins model "opus""#,
+    r#"note: agent "implementer" pins model "opus""#,
+    r#"note: agent "planner" pins model "opus""#,
+    r#"note: agent "sdet" pins model "opus""#,
+    r#"note: agent "sdet-author" pins model "opus""#,
+];
+
 /// `rigger validate` over `root` once `rigger init` has scaffolded it and `seed` has planted what
 /// the test examines; asserts both exit 0 (an advisory never fails validate) and returns
 /// validate's (stdout, stderr).

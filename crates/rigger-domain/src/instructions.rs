@@ -40,6 +40,9 @@ pub struct Instruction {
 /// a note, and fanning mechanical work out to the `lookup` and `verify` helpers.
 /// The third is the communication discipline: each decision and finding recorded the moment it
 /// is made, peers checked between actions, a peer's decision superseded explicitly.
+/// The fourth is the complexity considerations: the three steps a unit's complexity takes, the
+/// five considerations the planner weighs to judge one, never a size, and the one-sentence
+/// reason naming the consideration that decided it, read by planner and reviewer alike.
 /// A harness-wide rule lives here once,
 /// never copied into persona files; a persona carries only the project's anchors for it.
 pub const BUILTIN: &[(&str, &str)] = &[
@@ -55,6 +58,7 @@ pub const BUILTIN: &[(&str, &str)] = &[
         "communication",
         include_str!("instructions/communication.md"),
     ),
+    ("complexity", include_str!("instructions/complexity.md")),
 ];
 
 /// What the operator layer made of one built-in entry.
@@ -241,12 +245,12 @@ fn push_heading(out: &mut String, name: &str) {
 mod tests {
     use super::*;
     use crate::test_support::{
-        assert_carries_the_review_method, builtin_body, builtin_section,
-        house_and_team_operator_layer, op, rendered_every_file_shadowing_layer,
-        rendered_shadowing_layer, shadowing_operator_layer, CHECK_THE_PEERS,
-        COMMUNICATION_NEAR_NAME, NON_EMPTY_BLANK_BODIES, PROGRESS_CADENCE, RECORD_EACH_DECISION,
-        RECORD_EACH_FINDING, REPLACING_COMMUNICATION_BODY, SHADOWING_LAYER_ADVISORIES,
-        SUPERSEDE_A_PEER,
+        assert_carries_the_review_method, builtin_body, builtin_section, complexity_advisory,
+        complexity_file_rows, house_and_team_operator_layer, op,
+        rendered_every_file_shadowing_layer, rendered_shadowing_layer, shadowing_operator_layer,
+        CHECK_THE_PEERS, COMMUNICATION_NEAR_NAME, NON_EMPTY_BLANK_BODIES, PROGRESS_CADENCE,
+        RECORD_EACH_DECISION, RECORD_EACH_FINDING, REPLACING_COMMUNICATION_BODY,
+        SHADOWING_LAYER_ADVISORIES, SUPERSEDE_A_PEER,
     };
 
     #[test]
@@ -315,17 +319,18 @@ mod tests {
     }
 
     #[test]
-    fn the_built_in_layer_is_the_law_then_the_working_discipline_then_communication() {
+    fn the_built_in_layer_is_the_law_the_working_discipline_communication_then_complexity() {
         let names: Vec<&str> = BUILTIN.iter().map(|(name, _)| *name).collect();
         assert_eq!(
             names,
             [
                 "engineering-principles",
                 "working-discipline",
-                "communication"
+                "communication",
+                "complexity"
             ],
-            "the built-in layer is exactly the law, the working discipline and the communication \
-             discipline, in that order"
+            "the built-in layer is exactly the law, the working discipline, the communication \
+             discipline and the complexity considerations, in that order"
         );
     }
 
@@ -360,6 +365,78 @@ mod tests {
         );
     }
 
+    /// Spec 135's THE CONSIDERATIONS ARE BUILT IN: the fourth built-in entry, `complexity`,
+    /// carries the complexity judgment verbatim: the three steps in their order, read from
+    /// `Complexity`, the one source of the step words; the five considerations the planner weighs;
+    /// the one-sentence reason that may cite the graph; no size deciding a step; and the reviewer
+    /// judging a step and its reason by the same definitions.
+    #[test]
+    fn the_fourth_built_in_is_the_complexity_considerations_verbatim() {
+        use crate::config::Complexity;
+        let [low, middle, high] = Complexity::ALL.map(Complexity::name);
+        let considerations = [
+            "How much design or judgment the unit needs, from a specified mechanical edit up to a \
+             design choice with real alternatives.",
+            "How cross-cutting it is, from one concern in one place up to an invariant several \
+             modules share.",
+            "How ambiguous the criterion leaves the answer.",
+            "How novel it is against what the codebase already does.",
+            "What a wrong answer costs.",
+        ];
+        let body = format!(
+            "A unit's complexity is one of three steps, in this order: `{low}`, `{middle}`, \
+             `{high}`. The planner assigns each unit its step when it decomposes the spec. The step \
+             is a judgment, never a measure: the planner weighs five considerations.\n\
+             {}\n\
+             The planner writes one sentence, `complexity_reason`, naming the consideration that \
+             decided the step. It may cite the graph as evidence: what the change touches and who \
+             depends on it. No line count, file count, node count or size estimate decides a \
+             step.\n\
+             A reviewer who meets a unit's step and reason judges them by these same \
+             definitions.\n",
+            considerations.map(|consideration| format!("- {consideration}")).join("\n")
+        );
+        assert_eq!(
+            BUILTIN.get(3).copied(),
+            Some(("complexity", body.as_str())),
+            "the fourth built-in is `complexity`, naming the three steps and the five considerations"
+        );
+    }
+
+    /// Spec 135's THE CONSIDERATIONS ARE BUILT IN, the override: `.rigger/instructions/complexity.md`,
+    /// which the loader reads as the operator file `complexity`, replaces the complexity built-in
+    /// with its body and switches it off when that body is blank; the other built-ins stay in force,
+    /// the file leaves the operator layer, and `rigger validate`'s advisory names the file.
+    #[test]
+    fn a_complexity_file_replaces_the_complexity_built_in_or_switches_it_off_when_blank() {
+        for (body, verb, replacing) in complexity_file_rows() {
+            let state = replacing.map_or(LayerState::SwitchedOff, LayerState::Replaced);
+            let file = [op("complexity", body)];
+            let in_force = BUILTIN[..3].iter().map(|&(name, body)| BuiltInLayer {
+                name,
+                state: LayerState::BuiltIn(body),
+            });
+            assert_eq!(
+                resolve_layers(&file),
+                Layers {
+                    builtins: in_force
+                        .chain([BuiltInLayer {
+                            name: "complexity",
+                            state,
+                        }])
+                        .collect(),
+                    operator: Vec::new(),
+                },
+                "the complexity file of body {body:?} leaves the complexity built-in {verb}"
+            );
+            assert_eq!(
+                shadow_advisories(&file),
+                [complexity_advisory(verb)],
+                "the advisory names the complexity file of body {body:?}"
+            );
+        }
+    }
+
     /// The built-in working discipline's body.
     fn working_discipline() -> &'static str {
         builtin_body("working-discipline")
@@ -389,6 +466,7 @@ mod tests {
                 builtin_section("engineering-principles"),
                 builtin_section("working-discipline"),
                 ("communication", body),
+                builtin_section("complexity"),
             ]),
             "the replacing body sits byte for byte in the communication section, in the \
              built-in's place, and is not appended again"
@@ -417,6 +495,7 @@ mod tests {
                     builtin_section("engineering-principles"),
                     ("working-discipline", printed),
                     builtin_section("communication"),
+                    builtin_section("complexity"),
                 ]),
                 "the replacing body {file_body:?} loses its one leading byte-order mark and nothing else"
             );
@@ -440,6 +519,7 @@ mod tests {
                 builtin_section("engineering-principles"),
                 builtin_section("working-discipline"),
                 builtin_section("communication"),
+                builtin_section("complexity"),
                 ("Communication", "Case rule."),
                 (COMMUNICATION_NEAR_NAME, "Space rule."),
             ]),
@@ -459,6 +539,7 @@ mod tests {
                 expected_prompt(&[
                     builtin_section("working-discipline"),
                     builtin_section("communication"),
+                    builtin_section("complexity"),
                 ]),
                 "the blank body {blank:?} injects no section for the built-in or the file"
             );
@@ -476,12 +557,13 @@ mod tests {
                 ("engineering-principles", "\u{feff}"),
                 builtin_section("working-discipline"),
                 builtin_section("communication"),
+                builtin_section("complexity"),
             ]),
             "one U+FEFF survives the strip, so the body is not blank and replaces"
         );
     }
 
-    /// Two blank same-named files switch two built-ins off and leave the third built-in and the
+    /// Two blank same-named files switch two built-ins off and leave the other built-ins and the
     /// operator file between those files in place, under the bare heading; the review method the
     /// working discipline's `## When you review` section holds goes with it.
     #[test]
@@ -498,6 +580,7 @@ mod tests {
             sys,
             expected_prompt(&[
                 builtin_section("engineering-principles"),
+                builtin_section("complexity"),
                 ("40-ops", "Ops rule."),
             ]),
             "the two switched-off built-ins and their files print nothing; the rest is unchanged"
@@ -515,6 +598,7 @@ mod tests {
                 op("engineering-principles", "\u{a0}"),
                 op("working-discipline", "\u{feff} "),
                 op("communication", "\u{85}"),
+                op("complexity", "\u{3000}\n"),
             ],
         );
         assert_eq!(

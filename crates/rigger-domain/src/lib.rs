@@ -8,6 +8,7 @@
 pub mod agent;
 pub mod blocker;
 pub mod canary;
+pub mod capability;
 pub mod code_facts;
 pub mod code_graph;
 pub mod code_view;
@@ -42,10 +43,10 @@ pub mod hold_probe;
 /// predicate the live run and the standalone `rigger graph build` both seed from.
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod ingest;
-/// Instruction injection: the built-in engineering law, working discipline and communication
-/// discipline, each unless a same-named operator file replaces or switches it off, and every
-/// other `.rigger/instructions/*.md` file, layered into every spawned agent's system prompt; a
-/// same-named file is never layered itself.
+/// Instruction injection: the built-in engineering law, working discipline, communication
+/// discipline and complexity considerations, each unless a same-named operator file replaces or
+/// switches it off, and every other `.rigger/instructions/*.md` file, layered into every spawned
+/// agent's system prompt; a same-named file is never layered itself.
 pub mod instructions;
 pub mod ledger;
 /// The combined lookup interface: the `Lookup` trait one call answers graph, text and prose through.
@@ -135,6 +136,9 @@ mod panic_message_fixtures;
 #[path = "../../../tests/common/fixtures/prompt_surface.rs"]
 mod prompt_surface_fixtures;
 #[cfg(test)]
+#[path = "../../../tests/common/fixtures/resolution.rs"]
+mod resolution_fixtures;
+#[cfg(test)]
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/spawn.rs"]
 mod spawn_fixtures;
@@ -151,6 +155,7 @@ mod test_support {
     pub use crate::ingest_fixtures::*;
     pub use crate::instructions_fixtures::*;
     pub use crate::panic_message_fixtures::*;
+    pub use crate::resolution_fixtures::*;
     pub use crate::spawn_fixtures::*;
     pub use crate::work_fixtures::*;
 }

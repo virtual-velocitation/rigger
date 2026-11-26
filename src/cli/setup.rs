@@ -2041,6 +2041,7 @@ in the order they are injected, each named by the file that overrides it:
 - `engineering-principles.md`
 - `working-discipline.md`
 - `communication.md`
+- `complexity.md`
 
 A file in this directory named exactly as a built-in (case-sensitive, nothing trimmed) replaces
 that built-in: its body is injected in the built-in's place. A same-named file whose body is
@@ -6001,9 +6002,10 @@ mod tests {
         );
     }
 
-    /// Spec 120's THE BUILT-IN LAYER NAMES NO LANGUAGE: every `BUILTIN` body and the reviewer
-    /// discipline with its build-cache sentence on both review-tier surfaces, read through the
-    /// shipped-text helper, spell no marker of the MARKERS rule.
+    /// Spec 120's THE BUILT-IN LAYER NAMES NO LANGUAGE: every `BUILTIN` body, the complexity
+    /// considerations among them, and the reviewer discipline with its build-cache sentence on
+    /// both review-tier surfaces, read through the shipped-text helper, spell no marker of the
+    /// MARKERS rule.
     #[test]
     fn the_built_in_layer_and_the_reviewer_discipline_name_no_language() {
         let reviewer = [
@@ -6017,10 +6019,18 @@ mod tests {
             .filter(|(at, _)| at.starts_with("BUILTIN ") || reviewer.contains(&at.as_str()))
             .collect();
         assert_eq!(
-            texts.len(),
-            instructions::BUILTIN.len() + reviewer.len(),
-            "every built-in body, and the reviewer discipline and its build-cache sentence on \
-             each review-tier surface, are read"
+            texts.iter().map(|(at, _)| at.as_str()).collect::<Vec<_>>(),
+            reviewer
+                .into_iter()
+                .chain([
+                    "BUILTIN engineering-principles",
+                    "BUILTIN working-discipline",
+                    "BUILTIN communication",
+                    "BUILTIN complexity",
+                ])
+                .collect::<Vec<_>>(),
+            "every built-in body, the complexity considerations among them, and the reviewer \
+             discipline and its build-cache sentence on each review-tier surface, are read"
         );
         assert_eq!(
             texts_hit_by(&texts, language_marker_hits),

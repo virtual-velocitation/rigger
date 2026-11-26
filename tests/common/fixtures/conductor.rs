@@ -564,8 +564,7 @@ impl AgentDriver for MergeBreakDriver {
 }
 
 /// Every event on `store`'s run stream, oldest first.
-pub fn run_log(store: &rigger::eventstore::sqlite::Store) -> Vec<Event> {
-    use rigger::eventstore::EventStore;
+pub fn run_log(store: &dyn EventStore) -> Vec<Event> {
     store
         .read_stream(
             rigger::conductor::STREAM,
@@ -573,4 +572,67 @@ pub fn run_log(store: &rigger::eventstore::sqlite::Store) -> Vec<Event> {
             rigger::eventstore::Direction::Forward,
         )
         .unwrap()
+}
+
+/// The replay key of lane 0's broken merge in a winning group of `s` entered at no boundary.
+pub const LANE_0_BREAK_KEY: &str = "s/speculation-break#none#0";
+
+/// The replay keys of `s`'s `UnitFailed` records, in log order, that two lost groups of `s` at
+/// lane base 0 split by an operator's grant leave: each group's lost record, the second keyed by
+/// the grant's position (`{entry}`).
+pub const TWO_LOST_GROUPS_SPLIT_BY_A_GRANT: &[&str] =
+    &["s/speculation-lost#none#0", "s/speculation-lost#{entry}#0"];
+
+/// The replay keys of `s`'s `UnitFailed` records, in log order, that two winning groups of `s` at
+/// lane base 0 split by a drained compensation leave: each group's broken lane 0, the second keyed
+/// by the compensation's position (`{entry}`), around the unkeyed compensation (`""`).
+pub const TWO_WINNING_GROUPS_SPLIT_BY_A_COMPENSATION: &[&str] =
+    &[LANE_0_BREAK_KEY, "", "s/speculation-break#{entry}#0"];
+
+/// An operator's grant, a re-entry boundary.
+pub fn the_grant(e: &Event) -> bool {
+    e.type_ == rigger::ledger::TYPE_UNIT_RESUMED
+}
+
+/// A drained compensation's `UnitFailed`, a re-entry boundary.
+pub fn the_compensation(e: &Event) -> bool {
+    e.type_ == rigger::ledger::TYPE_UNIT_FAILED
+        && e.meta.contains_key(rigger::conductor::META_COMPENSATED)
+}
+
+/// The replay key of each `UnitFailed` record of `events`, in log order, `""` for an unkeyed one;
+/// beside it `records` with `{entry}` filled by the position of the one event `boundary` picks
+/// (`records` as written when `boundary` is `None`), and that position.
+pub fn failed_keys_beside(
+    events: &[Event],
+    boundary: Option<fn(&Event) -> bool>,
+    records: &[&str],
+) -> (Vec<String>, Vec<String>, Option<String>) {
+    let entry = boundary.map(|is_boundary| {
+        let at: Vec<String> = events
+            .iter()
+            .filter(|e| is_boundary(e))
+            .map(|e| e.position.to_string())
+            .collect();
+        assert_eq!(at.len(), 1, "premise: the log holds one re-entry boundary");
+        at[0].clone()
+    });
+    let expected = records
+        .iter()
+        .map(|key| match &entry {
+            Some(at) => key.replace("{entry}", at),
+            None => key.to_string(),
+        })
+        .collect();
+    let recorded = events
+        .iter()
+        .filter(|e| e.type_ == rigger::ledger::TYPE_UNIT_FAILED)
+        .map(|e| {
+            e.meta
+                .get(rigger::conductor::META_REPLAY_KEY)
+                .cloned()
+                .unwrap_or_default()
+        })
+        .collect();
+    (recorded, expected, entry)
 }

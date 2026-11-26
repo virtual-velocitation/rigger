@@ -512,8 +512,13 @@ impl Worktree {
     /// REVERT `commit` on the run branch checked out in `repo` (spec 12, unit 4): apply the
     /// inverse of the commit's diff and record it as a NEW commit carrying `message` (the
     /// compensation provenance) - never a history rewrite, so the reverse gear is evented and
-    /// auditable exactly like the forward [`Self::integrate`] merge. Returns the revert
-    /// commit's sha.
+    /// auditable exactly like the forward [`Self::merge_into_worktree`] merge. Returns the
+    /// revert commit's sha.
+    ///
+    /// A merge `commit` is a unit that integrated after its base moved: its second parent is
+    /// the prior run tip [`Self::merge_into_worktree`] merged in, so the revert takes back the
+    /// commit's diff from that parent, the unit's own change, and keeps the work that landed
+    /// beside it.
     ///
     /// A `--no-commit` revert then an explicit commit lets `message` name the compensation
     /// (git's own revert subject would only echo the reverted commit's subject). A revert
@@ -522,9 +527,15 @@ impl Worktree {
     /// that yields NO change (the commit's effect is already gone) commits nothing and
     /// returns the current HEAD, so it is safely idempotent at the git layer too.
     pub fn revert_on_base(repo: &str, commit: &str, message: &str) -> Result<String, Error> {
+        let merge = run_git(
+            repo,
+            &["rev-parse", "--verify", "-q", &format!("{commit}^2")],
+        );
+        let mainline: &[&str] = if merge.is_ok() { &["-m", "2"] } else { &[] };
         // Reverse-apply the commit's diff to the index/worktree WITHOUT committing, so the
         // compensation message records the rollback instead of git's default "Revert ...".
-        if let Err(out) = run_git(repo, &["revert", "--no-commit", commit]) {
+        let revert = [&["revert", "--no-commit"][..], mainline, &[commit]].concat();
+        if let Err(out) = run_git(repo, &revert) {
             // A conflicting revert leaves partial changes staged; abort so the run branch is
             // untouched and the failure is not silently half-applied.
             let _ = run_git(repo, &["revert", "--abort"]);
@@ -8480,6 +8491,48 @@ mod tests {
         assert!(
             run_git(&repo_path, &["cat-file", "-t", &commit]).is_ok(),
             "the reverted commit remains reachable in history"
+        );
+    }
+
+    /// A unit whose base moved before it integrated lands as a merge commit whose second parent
+    /// is the prior run tip: its revert takes back the unit's own change and keeps the work
+    /// that landed on the run branch beside it.
+    #[test]
+    fn revert_on_base_rolls_back_a_merge_integration_and_keeps_the_prior_run_tip() {
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let wt_path = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let wt = Worktree::create(
+            &repo_path,
+            wt_path.to_str().unwrap(),
+            "rigger/revert-merge",
+            "",
+        )
+        .unwrap();
+        std::fs::write(wt_path.join("unit.txt"), "the unit's change\n").unwrap();
+        std::fs::write(repo.path().join("sibling.txt"), "a sibling's change\n").unwrap();
+        run_git(&repo_path, &["add", "sibling.txt"]).unwrap();
+        run_git(&repo_path, &["commit", "-q", "-m", "a sibling lands"]).unwrap();
+        let prior_tip = run_git(&repo_path, &["rev-parse", "HEAD"]).unwrap();
+        let commit = wt
+            .integrate("rigger: integrate the unit")
+            .unwrap()
+            .expect_merged();
+        wt.remove().unwrap();
+        assert_eq!(
+            parents_of(&repo_path, &commit)[1..],
+            [prior_tip.trim().to_string()],
+            "premise: the integration is a merge whose second parent is the prior run tip"
+        );
+
+        Worktree::revert_on_base(&repo_path, &commit, "rigger: compensate the unit").unwrap();
+        assert_eq!(
+            (
+                repo.path().join("unit.txt").exists(),
+                std::fs::read_to_string(repo.path().join("sibling.txt")).ok(),
+            ),
+            (false, Some("a sibling's change\n".to_string())),
+            "the revert takes back the unit's change and keeps the sibling's"
         );
     }
 

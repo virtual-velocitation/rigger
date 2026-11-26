@@ -1044,20 +1044,31 @@ pub struct CapabilityTable {
 }
 
 impl CapabilityTable {
+    /// The row of `work`.
+    pub fn row(&self, work: Work) -> &CapabilityRow {
+        match work {
+            Work::Judging => &self.judging,
+            Work::Writing => &self.writing,
+            Work::Reading => &self.reading,
+        }
+    }
+
     /// The judging floor: the `judging` row's `routine` cell names the same `model` as its
     /// `involved` cell, compared as two strings, while their `effort` may differ.
     pub fn validate(&self) -> Result<(), String> {
         let [routine, involved] = [Complexity::Routine, Complexity::Involved];
-        let (low, mid) = (self.judging.cell(routine), self.judging.cell(involved));
+        let row = self.row(Work::Judging);
+        let (low, mid) = (row.cell(routine), row.cell(involved));
         if low.model == mid.model {
             return Ok(());
         }
         Err(format!(
-            "judging: the {r} cell names model {:?} and the {i} cell {:?}; a judging spawn runs \
-             on one model whether planned {r} or {i}, so the two cells name the same model and \
-             may differ only in effort",
+            "{j}: the {r} cell names model {:?} and the {i} cell {:?}; a {j} spawn runs on one \
+             model whether planned {r} or {i}, so the two cells name the same model and may \
+             differ only in effort",
             low.model,
             mid.model,
+            j = Work::Judging.name(),
             r = routine.name(),
             i = involved.name(),
         ))
@@ -1256,6 +1267,24 @@ impl AgentDef {
         }
         let last = self.model_ladder.len() - 1;
         self.model_ladder[(attempt as usize).min(last)].clone()
+    }
+
+    /// The field this agent pins its model by, the one [`model_for_attempt`](Self::model_for_attempt)
+    /// reads: `model_ladder` when a ladder is declared, even one whose rung is empty, else `model`
+    /// when it names one; `None` when the agent pins no model.
+    pub fn model_pin(&self) -> Option<&'static str> {
+        if !self.model_ladder.is_empty() {
+            Some("model_ladder")
+        } else if !self.model.is_empty() {
+            Some("model")
+        } else {
+            None
+        }
+    }
+
+    /// The field this agent pins its effort by: `effort` when it names one, `None` otherwise.
+    pub fn effort_pin(&self) -> Option<&'static str> {
+        (!self.effort.is_empty()).then_some("effort")
     }
 
     /// Whether this agent's session runs without the host's advisor: it declared
@@ -2215,6 +2244,28 @@ mod tests {
         assert_eq!(
             Complexity::ALL.map(|step| row.cell(step).model.as_str()),
             ["routine", "involved", "hard"],
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn work_names_each_kind_as_the_key_of_its_capability_row() {
+        let keyed: Vec<String> = Work::ALL
+            .iter()
+            .map(|work| {
+                format!(
+                    "{0}: {{ routine: {{ model: {0} }}, involved: {{ model: {0} }}, \
+                     hard: {{ model: {0} }} }}",
+                    work.name()
+                )
+            })
+            .collect();
+        let text = format!("{{ {} }}", keyed.join(", "));
+        let table: CapabilityTable =
+            parse_yaml_naming_unknown_keys(&text).unwrap_or_else(|e| panic!("parse {text}: {e}"));
+        assert_eq!(
+            Work::ALL.map(|work| table.row(work).routine.model.as_str()),
+            ["judging", "writing", "reading"],
             "{text}"
         );
     }
