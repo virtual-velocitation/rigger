@@ -20,7 +20,8 @@ use crate::code_graph::{CodeGraph, DOC_ATTR};
 use crate::code_view::{CodeView, Compared, Extract, Groupings, SourceLines, Tests, ViewFilter};
 use crate::community::DEFAULT_RESOLUTION;
 use crate::contextgraph::query::{
-    entity_id, kept_of, leaf_of, member_file, node_file, node_leaf, node_name, path_leaf, split_id,
+    attrs_name, entity_id, kept_of, leaf_of, member_file, node_file, node_leaf, node_name,
+    path_leaf, split_id,
 };
 use crate::contextgraph::{
     entity_site, holds_attachment, is_call_target, CallEdge, CallGraph, CallNode, Candidate,
@@ -504,7 +505,7 @@ pub trait CodeHalf: Neighbors {
 /// The file `site` names and the definition its node records there, when the node carries a
 /// name: where [`ContextGraph::definition_end`] and [`ContextGraph::doc`] read a code file's facts.
 fn recorded_at(site: &EntitySite) -> Option<(&str, Recorded<'_>)> {
-    let name = site.attrs.get("name").filter(|name| !name.is_empty())?;
+    let name = attrs_name(&site.attrs)?;
     let (file, path) = split_id(&site.id);
     let kind = &site.kind;
     let recorded = Recorded {

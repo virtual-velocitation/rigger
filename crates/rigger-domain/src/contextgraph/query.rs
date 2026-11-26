@@ -315,14 +315,19 @@ pub fn placeholder_id(file: &str, name: &str) -> String {
     joined_id(file, &[PLACEHOLDER_SIGIL.encode_utf8(&mut sigil), name])
 }
 
-/// The `name` attr a node carries when it is non-empty: an empty `name` reads as absent, the one
-/// in-memory spelling of the name-presence test every reader keying a definition by its leaf
-/// applies (spec 119).
-pub fn node_name(node: &Node) -> Option<&str> {
-    node.attrs
+/// The `name` attr a node's `attrs` carry when it is non-empty: an empty `name` reads as absent,
+/// the one in-memory spelling of the name-presence test every reader keying a definition by its
+/// leaf applies (spec 119), over a node's attrs ([`node_name`]) or an entity site's.
+pub fn attrs_name(attrs: &BTreeMap<String, String>) -> Option<&str> {
+    attrs
         .get("name")
         .map(String::as_str)
         .filter(|name| !name.is_empty())
+}
+
+/// The `name` attr a node carries when it is non-empty ([`attrs_name`]).
+pub fn node_name(node: &Node) -> Option<&str> {
+    attrs_name(&node.attrs)
 }
 
 /// A node's leaf (spec 119): its non-empty `name` attr whatever it holds ([`node_name`]: `new` for

@@ -399,11 +399,7 @@ fn print_entity_site(
         print_site_entries(site);
         return;
     };
-    let name = site
-        .attrs
-        .get("name")
-        .map(String::as_str)
-        .filter(|name| !name.is_empty());
+    let name = contextgraph::query::attrs_name(&site.attrs);
     let body = match name {
         None if site.line != 0 => {
             ShowBody::Note(Unbounded::Missing.note(&site.id, None, &site.kind, file, site.line))
