@@ -14,6 +14,7 @@
 
 mod build_env;
 mod caller_sources;
+mod capability;
 mod config;
 mod csharp_definition_sources;
 mod docs_overlay;
@@ -46,6 +47,7 @@ mod shown;
 mod spawn;
 pub use build_env::*;
 pub use caller_sources::*;
+pub use capability::*;
 pub use config::*;
 pub use csharp_definition_sources::*;
 pub use docs_overlay::*;

@@ -1975,6 +1975,146 @@ mod tests {
         }
     }
 
+    /// THE COMPLEXITY JUDGMENT's steps: `Complexity` orders them `routine`, `involved`, `hard`,
+    /// [`Complexity::ALL`] lists them lowest first, and each step's name is the key a capability
+    /// row holds that step's cell under.
+    #[test]
+    fn complexity_orders_its_steps_and_names_each_as_the_key_of_its_cell() {
+        let mut shuffled = [Complexity::Hard, Complexity::Routine, Complexity::Involved];
+        shuffled.sort();
+        assert_eq!(shuffled, Complexity::ALL);
+        assert_eq!(
+            Complexity::ALL.map(Complexity::name),
+            ["routine", "involved", "hard"]
+        );
+        let keyed: Vec<String> = Complexity::ALL
+            .iter()
+            .map(|step| format!("{0}: {{ model: {0} }}", step.name()))
+            .collect();
+        let text = format!("{{ {} }}", keyed.join(", "));
+        let row: CapabilityRow =
+            parse_yaml_naming_unknown_keys(&text).unwrap_or_else(|e| panic!("parse {text}: {e}"));
+        assert_eq!(
+            Complexity::ALL.map(|step| row.cell(step).model.as_str()),
+            ["routine", "involved", "hard"],
+            "{text}"
+        );
+    }
+
+    /// THE TABLE: `defaults.capability` parses into [`CapabilityTable`], absent or null as `None`,
+    /// a cell's absent or empty `effort` as the empty string and a blank `model` as written; the
+    /// parse refuses a missing row, a missing cell, an empty or absent `model` and an unknown key
+    /// at each level, naming its path.
+    #[test]
+    fn the_capability_table_parses_refusing_each_malformed_shape_at_its_path() {
+        use crate::test_support::{
+            capability_table, workflow_declaring_capability, READING_ROW, WRITING_ROW,
+        };
+        let cell = |model: &str, effort: &str| CapabilityCell {
+            model: model.to_string(),
+            effort: effort.to_string(),
+        };
+        let row = |[routine, involved, hard]: [CapabilityCell; 3]| CapabilityRow {
+            routine,
+            involved,
+            hard,
+        };
+        let table = CapabilityTable {
+            judging: row([cell("j", "high"), cell("j", ""), cell(" ", "")]),
+            writing: row([cell("w1", ""), cell("w2", ""), cell("w3", "max")]),
+            reading: row([cell("r", "low"), cell("r", ""), cell("r", "")]),
+        };
+        let judging = |row: &str| workflow_declaring_capability(&capability_table(row));
+        let rows = |rows: &str| workflow_declaring_capability(&format!("{{ {rows} }}"));
+        for (workflow, parsed) in [
+            ("defaults: {}\n".to_string(), Ok(None)),
+            (workflow_declaring_capability("~"), Ok(None)),
+            (
+                judging(
+                    "{ routine: { model: j, effort: high }, involved: { model: j, effort: '' }, \
+                     hard: { model: ' ' } }",
+                ),
+                Ok(Some(table)),
+            ),
+            (
+                rows(&format!("judging: {READING_ROW}, writing: {WRITING_ROW}")),
+                Err("defaults.capability: missing field `reading` at line 1 column 25"),
+            ),
+            (
+                judging("{ routine: { model: j }, involved: { model: j } }"),
+                Err("defaults.capability.judging: missing field `hard` at line 1 column 36"),
+            ),
+            (
+                judging("{ routine: { model: '' }, involved: { model: j }, hard: { model: j } }"),
+                Err(
+                    "defaults.capability.judging.routine.model: invalid value: string \"\", \
+                     expected a non-empty host model string at line 1 column 56",
+                ),
+            ),
+            (
+                judging("{ routine: { model: }, involved: { model: j }, hard: { model: j } }"),
+                Err(
+                    "defaults.capability.judging.routine.model: invalid value: string \"\", \
+                     expected a non-empty host model string at line 1 column 56",
+                ),
+            ),
+            (
+                judging("{ routine: { effort: high }, involved: { model: j }, hard: { model: j } }"),
+                Err("defaults.capability.judging.routine: missing field `model` at line 1 column 47"),
+            ),
+            (
+                rows(&format!(
+                    "judging: {READING_ROW}, writing: {WRITING_ROW}, reading: {READING_ROW}, \
+                     planning: {READING_ROW}"
+                )),
+                Err("defaults.capability.planning: unknown key"),
+            ),
+            (
+                judging(
+                    "{ routine: { model: j }, involved: { model: j }, hard: { model: j }, \
+                     trivial: { model: j } }",
+                ),
+                Err("defaults.capability.judging.trivial: unknown key"),
+            ),
+            (
+                judging(
+                    "{ routine: { model: j, effrot: high }, involved: { model: j }, \
+                     hard: { model: j } }",
+                ),
+                Err("defaults.capability.judging.routine.effrot: unknown key"),
+            ),
+        ] {
+            let read = parse_yaml_naming_unknown_keys::<Workflow>(&workflow);
+            assert_eq!(
+                read.map(|wf| wf.defaults.capability),
+                parsed.map_err(str::to_string),
+                "{workflow}"
+            );
+        }
+    }
+
+    /// THE FLOOR: [`CapabilityTable::validate`] accepts each judging row whose `routine` and
+    /// `involved` cells name one model, whatever their efforts and the `hard` cell, and refuses
+    /// each whose two models differ as strings, naming both.
+    #[test]
+    fn the_judging_floor_holds_routine_and_involved_to_one_model() {
+        use crate::test_support::{capability_table, workflow_declaring_capability, JUDGING_FLOOR};
+        for (judging, verdict) in JUDGING_FLOOR {
+            let workflow = workflow_declaring_capability(&capability_table(judging));
+            let wf: Workflow = parse_yaml_naming_unknown_keys(&workflow)
+                .unwrap_or_else(|e| panic!("parse {workflow}: {e}"));
+            let table = wf
+                .defaults
+                .capability
+                .unwrap_or_else(|| panic!("{workflow} declares no table"));
+            assert_eq!(
+                table.validate(),
+                verdict.map_err(str::to_string),
+                "{judging}"
+            );
+        }
+    }
+
     #[test]
     fn a_map_form_panel_steps_through_its_set_lenses_adversary_and_adjudicator_in_that_order() {
         let ab = || ReviewStep::Lenses(vec!["a".into(), "b".into()]);

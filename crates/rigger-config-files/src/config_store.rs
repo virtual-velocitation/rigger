@@ -2264,6 +2264,42 @@ agent: worker\n";
         }
     }
 
+    /// `Config::validate` holds THE FLOOR through `CapabilityTable::validate`, accepting a
+    /// workflow with no table and refusing each judging row the floor refuses under
+    /// `defaults.capability`, while [`read_scratch_defaults`], which passes no
+    /// `Config::validate`, reads each of those tables as written.
+    #[test]
+    fn validate_holds_the_judging_floor_that_read_scratch_defaults_does_not() {
+        use crate::config::CapabilityTable;
+        use crate::test_support::{capability_table, workflow_declaring_capability, JUDGING_FLOOR};
+        let validated = |workflow: &str| config_of(workflow).validate().map_err(|e| e.0);
+        assert_eq!(validated("defaults: {}\n"), Ok(Vec::new()), "no table");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let rigger_dir = tmp.path().join(".rigger");
+        std::fs::create_dir_all(&rigger_dir).expect("create .rigger dir");
+        for (judging, verdict) in JUDGING_FLOOR {
+            let table = capability_table(judging);
+            let workflow = workflow_declaring_capability(&table);
+            assert_eq!(
+                validated(&workflow),
+                verdict
+                    .map(|()| Vec::new())
+                    .map_err(|m| format!("defaults.capability.{m}")),
+                "{judging}"
+            );
+            std::fs::write(rigger_dir.join("workflow.yml"), &workflow).expect("write workflow.yml");
+            let written: CapabilityTable = parse_yaml_naming_unknown_keys(&table)
+                .unwrap_or_else(|e| panic!("parse {table}: {e}"));
+            assert_eq!(
+                read_scratch_defaults(&rigger_dir)
+                    .map(|d| d.capability)
+                    .map_err(|e| e.0),
+                Ok(Some(written)),
+                "{judging}"
+            );
+        }
+    }
+
     /// `tiers.light` takes either form under a full panel of either form.
     #[test]
     fn a_light_panel_takes_either_form_under_a_full_panel_of_either_form() {
