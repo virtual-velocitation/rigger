@@ -5150,17 +5150,18 @@ fn product() {}
     /// path segment before its leaf when that segment starts uppercase, generics and turbofish
     /// stripped, by the trait of a qualified-self path, and by `Self`'s enclosing impl's self
     /// type, generics stripped, or inside a trait body the trait; a call whose receiver is exactly
-    /// `self` is a member access qualified by that same type or trait. A lowercase segment, a
-    /// `self` or `super` path, a bracketed type naming no trait, any other receiver, an enclosing
-    /// generic parameter (a blanket impl's self type among them), a self type naming no single
-    /// type and a `Self` outside every impl and trait write none.
+    /// `self` is a member access qualified by that same type or trait, the innermost impl or trait
+    /// enclosing the call the one that qualifies it. A lowercase segment, a `self` or `super`
+    /// path, a bracketed type naming no trait, any other receiver, an enclosing generic parameter
+    /// (a blanket impl's self type among them), a self type naming no single type and a `Self`
+    /// outside every impl and trait write none.
     #[test]
     fn rust_writes_the_qualifier() {
         let path = |name: &str| Some(qualifier(name, true));
         let member = |name: &str| Some(qualifier(name, false));
         // (the source, its call references' names and qualifiers in order)
         type Row = (&'static str, Vec<(&'static str, Option<Qualifier>)>);
-        let table: [Row; 21] = [
+        let table: [Row; 22] = [
             ("fn f() { Store::open(); }\n", vec![("open", path("Store"))]),
             (
                 "impl<T> Store<T> { fn f() { Self::new(); } }\n",
@@ -5236,6 +5237,11 @@ fn product() {}
                 vec![("open", None), ("file", None)],
             ),
             ("fn f() { Self::new(); }\n", vec![("new", None)]),
+            (
+                "impl Outer { fn f() { struct L; impl L { fn g(&self) { self.h(); Self::k(); } } } \
+                 }\n",
+                vec![("h", member("L")), ("k", path("L"))],
+            ),
         ];
         for (source, expected) in table {
             let symbols = crate::symbol_index::extracted("rs", source);
@@ -5250,14 +5256,15 @@ fn product() {}
     /// AN EXCLUDED QUALIFIER STAGES NOTHING (spec 117, RUST REFERENCES): a call whose path's
     /// written qualifier is a prelude name, a standard-library import or alias, or whose path is
     /// rooted at the standard library, at such an import or at a primitive type, stages no
-    /// mention, a struct literal's or pattern's field under such a struct name, a macro's token
-    /// tree and a qualified-self path's trait alike, while the macro's own call stages. An alias
-    /// qualifier, a module's `self` import renamed (`{self as M}`) among them, is written as the
-    /// name it imports, exclusion read on the alias as written first; a `Self` or `self` whose
-    /// self type is excluded and an enclosing generic parameter stage the call unqualified; a
-    /// qualifier no exclusion holds (a qualified-self path's trait over a primitive or
-    /// standard-library self type among them), an unaliased import, a module's unrenamed `self`
-    /// import, a path with no written segment and a call with no path stage as before.
+    /// mention, a struct literal's or pattern's field under such a struct name, a scoped type
+    /// under such a root, a macro's token tree and a qualified-self path's trait alike, while the
+    /// macro's own call stages. An alias qualifier, a module's `self` import renamed
+    /// (`{self as M}`) among them, is written as the name it imports, exclusion read on the alias
+    /// as written first; a `Self` or `self` whose self type is excluded and an enclosing generic
+    /// parameter stage the call unqualified; a qualifier no exclusion holds (a qualified-self
+    /// path's trait over a primitive or standard-library self type among them), an unaliased
+    /// import, a module's unrenamed `self` import, a path with no written segment and a call with
+    /// no path stage as before.
     #[test]
     fn an_excluded_qualifier_stages_nothing() {
         let cases = [
@@ -5467,6 +5474,15 @@ impl Local for Vec<u8> {
 3 ref call g q
 4 ref call h q",
             ),
+            (
+                "a scoped type rooted at the standard library stages nothing, its generic \
+                 segment's included",
+                "fn v(x: a::B<u8>::C, y: std::x::B<u8>::C) {}\n",
+                "\
+1 def Function v to 1
+1 ref type B v
+1 ref type C v",
+            ),
         ];
         for (why, src, expected) in cases {
             assert_eq!(read_lines(src), expected, "{why}");
@@ -5500,6 +5516,19 @@ impl Local for Vec<u8> {
 2 ref call map b
 2 ref call open b q Store::
 2 ref type Store b",
+            ),
+            (
+                "a scoped path with a lowercase leaf outside every argument list is a call too",
+                "fn g() -> S {\n    let h = Store::open;\n    S { f: Store::open }\n}\n",
+                "\
+1 def Function g to 4
+1 ref type S g
+2 ref call open g q Store::
+2 ref type Store g
+3 ref call open g q Store::
+3 ref field f g q S::
+3 ref type S g
+3 ref type Store g",
             ),
             (
                 "a parameter passed by name is no call",
@@ -5591,11 +5620,11 @@ fn l(r: u8) {
 4 ref call w l",
             ),
             (
-                "every pattern a binding writes binds its names",
+                "every pattern a binding writes binds its names, a field pattern's field name none",
                 "\
 fn m(v: u8) {
     let (S { a, b: ref c }, [d], &e, g @ Some(mut h), Ok(i) | Err(i)) = v;
-    w(a, c, d, e, g, h, i);
+    w(a, b, c, d, e, g, h, i);
 }
 ",
                 "\
@@ -5603,6 +5632,7 @@ fn m(v: u8) {
 2 ref field a m q S::
 2 ref field b m q S::
 2 ref type S m
+3 ref call b m
 3 ref call w m",
             ),
             (
@@ -7506,7 +7536,7 @@ static PLAIN: RefCell<u32> = RefCell::new(0);
             ),
             (
                 "a static inside thread_local!(..) is a definition at its line, as its plain twin \
-                 is, and no read of a constant of its name",
+                 is, the calls of its const block its own, and no read of a constant of its name",
                 "\
 use std::cell::Cell;
 const X: u8 = 1;
@@ -7514,8 +7544,9 @@ fn f() {
     thread_local!(static X: u8 = 0);
     static Y: u8 = 0;
 }
-thread_local!(static FOO: Cell<u32> = const { Cell::new(1) });
-static PLAIN: Cell<u32> = const { Cell::new(1) };
+thread_local!(static FOO: Cell<u32> = const { Cell::new(seed()) });
+static PLAIN: Cell<u32> = const { Cell::new(seed()) };
+fn seed() -> u32 { 1 }
 ",
                 "\
 2 def Constant X to 2
@@ -7524,8 +7555,11 @@ static PLAIN: Cell<u32> = const { Cell::new(1) };
 4 ref call thread_local f
 5 def Static f::Y to 5 in f
 7 def Static FOO to 7
+7 ref call seed FOO
 7 ref call thread_local -
-8 def Static PLAIN to 8",
+8 def Static PLAIN to 8
+8 ref call seed PLAIN
+9 def Function seed to 9",
             ),
             (
                 "a last static thread_local! holds without its `;` is a definition at its line, as \
@@ -8088,6 +8122,24 @@ fn p() {
                 crate::symbol_index::extracted("rs", src)
             };
             assert_eq!(doc_spans(&fs), (file, defs), "{case}");
+        }
+    }
+
+    /// The file's doc span is its own tree's: under a fixture query whose one pattern captures a
+    /// call as `@doc` in a match that tags nothing, a file whose only call sits in a macro's
+    /// token tree, read by the token tree's re-parse alone, has no span, and a file with a call
+    /// of its own before one in a token tree has its own call's.
+    #[test]
+    fn a_token_tree_re_parse_gives_the_file_no_doc_span() {
+        let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
+        let fixture = compiled(&language, "((call_expression) @doc)\n");
+        let rows = [
+            ("fn f() {\n    m!(g());\n}\n", None),
+            ("fn f() {\n    g();\n    m!(h());\n}\n", Some((2, 2))),
+        ];
+        for (src, file) in rows {
+            let fs = extract(src, Lang::Rust, &fixture).expect("the fixture query extracts");
+            assert_eq!(fs.doc, file, "{src:?}");
         }
     }
 }
