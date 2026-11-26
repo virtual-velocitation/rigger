@@ -33,17 +33,18 @@ type Case = (
 /// and a keyword argument none; `x.f` read or assigned and not called is a `field` mention,
 /// qualified by an object that is exactly a capitalised identifier, `Shape.side` and the member
 /// constant `Config.MAX` alike, while a called `x.g()` is a call; `Shape.area()` is a call named
-/// `Shape.area` of the leaf `area`; and a docstring is that definition's or the file's doc span:
-/// the first statement of a body or of the module, comments before it aside, when it is a str
-/// literal alone, joined from parts or in parentheses, and never a bytes, formatted or template
-/// one, over the production extractor.
+/// `Shape.area` of the leaf `area`; a call of an all-caps name, `LOG()`, `Shape.MAX()` and
+/// `cfg.RUN()`, is a call as any other is; and a docstring is that definition's or the file's doc
+/// span: the first statement of a body or of the module, comments before it aside, when it is a
+/// str literal alone, joined from parts or in parentheses, and never a bytes, formatted or
+/// template one, over the production extractor.
 #[test]
 fn python_stages_its_row() {
     // A mention inside the definition at index `at`, written `name` of `leaf`.
     let in_def = |at: u32, name: &str, leaf: &str, kind: Option<&str>, line: u32| {
         mention_in(Some(at), name, leaf, kind, line, false)
     };
-    let cases: [Case; 19] = [
+    let cases: [Case; 20] = [
         (
             "a module constant's read",
             "LIMIT = 3\n\n\ndef size():\n    return LIMIT\n",
@@ -103,6 +104,17 @@ fn python_stages_its_row() {
                 in_def(0, "area", "area", None, 2),
             ],
             vec![("total", None)],
+            None,
+        ),
+        (
+            "a call of an all-caps name, plain, on a capitalised object and on another",
+            "def run(cfg):\n    LOG()\n    Shape.MAX()\n    cfg.RUN()\n",
+            vec![
+                in_def(0, "LOG", "LOG", None, 2),
+                in_def(0, "Shape.MAX", "MAX", None, 3),
+                in_def(0, "RUN", "RUN", None, 4),
+            ],
+            vec![("run", None)],
             None,
         ),
         (

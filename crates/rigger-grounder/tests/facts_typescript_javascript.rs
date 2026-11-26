@@ -1,10 +1,11 @@
 //! TYPESCRIPT AND JAVASCRIPT STAGE THEIR ROWS (spec 117, OTHER LANGUAGES): the facts the bundled
-//! TypeScript, TSX and JavaScript grammars give a file hold a `type` mention for a type in type
-//! position, an `impl` mention for each type an `implements` or `extends` clause names, a `const`
-//! mention for a constant read, a `field` mention for `x.f` not called while a called `x.f()`
-//! stays a call, a call named `Square.make` for `Square.make()`, and, as each one's doc span, the
-//! `/** */` block directly above the TypeScript function `area`, the TSX class `View` and the
-//! JavaScript class `Square`.
+//! TypeScript, TSX and JavaScript grammars give a file hold a `type` mention for a type named in
+//! type position by an identifier, a dotted name or a generic, an `impl` mention for each type an
+//! `implements` or `extends` clause names, a `const` mention for a constant identifier read, as
+//! `return LIMIT`, a `field` mention for `x.f` not called while a called `x.f()` stays a call, a
+//! call named `Square.make` for `Square.make()`, and, as each one's doc span, the `/** */` block
+//! directly above the TypeScript function `area`, the TSX class `View` and the JavaScript class
+//! `Square`.
 
 #![cfg(all(feature = "symbols", any(feature = "store", not(feature = "core"))))]
 
@@ -31,20 +32,21 @@ type Case = (
 
 /// TYPESCRIPT AND JAVASCRIPT STAGE THEIR ROWS: in TypeScript, and in TSX alike, an interface in
 /// an array type is a `type` mention, as is every type a type argument, a dotted name or a
-/// generic names; each type an `implements` or an interface's `extends` names, dotted or
-/// generic, is an `impl` mention, a generic one named without its type arguments, as is the class
-/// a class extends; and a constant read is a `const` mention. In JavaScript the class
-/// `extends Base` names is an `impl` mention, a dotted one qualified by its object; `x.f` not
-/// called is a `field` mention, read, written, an inner chain, a subscript's object, an argument
-/// or a private member alike, while a called `x.f()`, `new Ns.Box` and `new Ns.MAX()` are calls;
-/// a member spelled as a constant and read, as `Config.MAX`, `cfg.TIMEOUT` and `this.LIMIT` are,
-/// is a `const` mention; and `Square.make()` is a call named `Square.make` of the leaf `make`,
-/// each qualified by a capitalised object alone, a member chain by its last name, so
-/// `Ns.Kit.make()` is the call `Kit.make`. In TypeScript `x.f<T>()` and `Square.make<T>()` are
-/// calls of their leaf, unqualified, as `Square.make<T>()` is in TSX, and the uncalled
-/// instantiation `x.g<T>` is a field. The `/** */` block directly above the TypeScript function
-/// `area`, the TSX class `View` and the JavaScript class `Square` is each one's doc span, over the
-/// production extractor.
+/// generic names, a predefined type, as `number` or `string`, aside; each type an `implements`
+/// or an interface's `extends` names, dotted or generic, is an `impl` mention, a generic one
+/// named without its type arguments, as is the class a class extends; and a constant identifier
+/// read, as `return LIMIT`, is a `const` mention. In JavaScript the class `extends Base` names is
+/// an `impl` mention, a dotted one qualified by its object; `x.f` not called is a `field` mention,
+/// read, written, an inner chain, a subscript's object, an argument or a private member alike,
+/// while a called `x.f()`, `new Ns.Box` and `new Ns.MAX()` are calls; a member spelled as a
+/// constant and read, as `Config.MAX`, `cfg.TIMEOUT` and `this.LIMIT` are, is a `const` mention;
+/// and `Square.make()` is a call named `Square.make` of the leaf `make`, a member call on a
+/// capitalised object being qualified by that object alone and one on a capitalised member chain
+/// by the chain's last name, so `Ns.Kit.make()` is the call `Kit.make`. In TypeScript `x.f<T>()`
+/// and `Square.make<T>()` are calls of their leaf, unqualified, as `Square.make<T>()` is in TSX,
+/// and the uncalled instantiation `x.g<T>` is a field. The `/** */` block directly above the
+/// TypeScript function `area`, the TSX class `View` and the JavaScript class `Square` is each
+/// one's doc span, over the production extractor.
 #[test]
 fn typescript_and_javascript_stage_their_rows() {
     let at =
