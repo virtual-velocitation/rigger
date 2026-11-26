@@ -2067,12 +2067,13 @@ env: @BUILD_ENV@\n\
 \n\
 stages:\n  \
 # The conductor creates one baseline implement unit per acceptance criterion (the\n  \
-# deterministic decomposition); this planner REFINES that baseline via UnitProposed.\n  \
+# deterministic decomposition); this planner proposes every unit of it with its step\n  \
+# and reason via UnitProposed, refining the baseline where it must change.\n  \
 # A produces stage decomposes the whole spec, so it has no single coverage criterion\n  \
 # - it grounds on the spec's acceptance criteria, not a `coverage` label.\n  \
 plan:\n    \
 agent: planner\n    \
-produces: dag           # refine the spec's unit DAG at runtime\n\
+produces: dag           # propose the spec's unit DAG at runtime\n\
 \n  \
 # The adversarial plan-critique gate: BEFORE any implementer spawns, the adversary +\n  \
 # adjudicator review the PROPOSED unit DAG for the cross-unit hazards per-unit review\n  \
@@ -2424,8 +2425,9 @@ chain units in order by default.\n\
 Split a criterion whose one unit would be too large into ordered units (each `needs`\n\
 the one before it), each owning a named part. If you discover a NECESSARY sub-unit or\n\
 an ordering dependency the baseline missed, propose it. NEVER propose a unit that maps\n\
-to no acceptance criterion - that is scope creep. Propose each refinement the moment\n\
-you decide it. Only omit the id when you truly intend a new sub-unit.\n",
+to no acceptance criterion - that is scope creep. Propose every unit, one kept\n\
+unchanged included, with its step and reason, the moment you decide it. Only omit the\n\
+id when you truly intend a new sub-unit.\n",
     ),
     (
         "implementer.md",

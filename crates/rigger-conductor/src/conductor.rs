@@ -13,7 +13,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::budget::{self, BuildBudget};
-use crate::config::{AgentDef, Config, LaterRounds, RegenerateRule, ReviewStep, Stage};
+use crate::config::{AgentDef, Complexity, Config, LaterRounds, RegenerateRule, ReviewStep, Stage};
 use crate::config_store;
 use crate::contextgraph::{self, Graph, OpenGraph, RecordFold};
 #[cfg(test)]
@@ -3532,6 +3532,54 @@ struct UnitProposed {
     /// id is the natural choice) - that it is PERSISTED ON THE EVENT is not.
     #[serde(default)]
     episode: String,
+    /// The step the planner judged the unit's task at (spec 135, THE COMPLEXITY JUDGMENT), one of
+    /// the [`Complexity`] names as `render_plan_protocol` asks for it, read with
+    /// [`UnitProposed::complexity_reason`] through [`UnitProposed::pair`]. Kept raw, so a value of
+    /// any JSON type reaches the classifier; a JSON `null` reads as absent.
+    #[serde(default)]
+    complexity: Option<Value>,
+    /// The planner's one-sentence reason for [`UnitProposed::complexity`], kept verbatim.
+    #[serde(default)]
+    complexity_reason: Option<Value>,
+}
+
+/// What a [`UnitProposed`] carries for its unit's step and reason ([`UnitProposed::pair`]).
+enum ProposedPair {
+    /// Neither field: the unit stays as it is, unassessed when nothing set it, with no record.
+    Absent,
+    /// A step and its reason, the reason verbatim.
+    Valid(Complexity, String),
+    /// A pair the conductor refuses, saying what it carries instead of a step and a reason.
+    Refused(String),
+}
+
+impl UnitProposed {
+    /// Classify this proposal's `complexity` and `complexity_reason`: neither is
+    /// [`ProposedPair::Absent`]; a step named exactly as a [`Complexity`] is (no case folding)
+    /// beside a reason with non-whitespace text is [`ProposedPair::Valid`]; anything else is
+    /// [`ProposedPair::Refused`], naming what it carries.
+    fn pair(&self) -> ProposedPair {
+        let refused = |what: &str| ProposedPair::Refused(what.to_string());
+        let step = match (&self.complexity, &self.complexity_reason) {
+            (None, None) => return ProposedPair::Absent,
+            (None, Some(_)) => return refused("a reason with no step"),
+            (Some(Value::String(word)), _) => word,
+            (Some(_), _) => return refused("a step that is not a string"),
+        };
+        let Some(step) = Complexity::ALL.into_iter().find(|s| s.name() == step) else {
+            let names: Vec<&str> = Complexity::ALL.map(Complexity::name).to_vec();
+            return ProposedPair::Refused(format!(
+                "the step {step:?}, which is none of {}",
+                names.join(", ")
+            ));
+        };
+        match &self.complexity_reason {
+            None => refused("a step with no reason"),
+            Some(Value::String(reason)) if reason.trim().is_empty() => refused("a blank reason"),
+            Some(Value::String(reason)) => ProposedPair::Valid(step, reason.clone()),
+            Some(_) => refused("a reason that is not a string"),
+        }
+    }
 }
 
 /// The replayable TRAJECTORY of a completed run (spec 13, unit 2 - trajectory replay/eval):
@@ -14327,6 +14375,22 @@ impl RunCtx<'_> {
             }
             final_episode.insert(u.id, u.episode);
         }
+        // THE COMPLEXITY FREEZE (spec 135): the log position of each unit's FIRST `UnitStarted`
+        // in this run's slice. A proposal's step and reason are read only when it precedes that
+        // start (or the unit has none), so the pair a unit started at never moves after it, and
+        // a live fold and a resume's cold fold of the same log take the same pair.
+        let mut first_start: HashMap<String, crate::eventstore::Position> = HashMap::new();
+        for e in events
+            .iter()
+            .filter(|e| e.type_ == ledger::TYPE_UNIT_STARTED)
+        {
+            if let Ok(started) = serde_json::from_slice::<StartedCriterionProbe>(&e.data) {
+                first_start.entry(started.id).or_insert(e.position);
+            }
+        }
+        let reads = |unit: &str, at: crate::eventstore::Position| {
+            first_start.get(unit).is_none_or(|start| at < *start)
+        };
         // Run-scoped (Gap 11, completing spec-06 unit-1): only THIS run's proposals
         // fold. A prior run's UnitProposed must never resurrect as live work - its
         // terminal states are (correctly) scoped OUT of `terminal`, so an unscoped
@@ -14398,6 +14462,14 @@ impl RunCtx<'_> {
             //   - `!integrated && !terminal`: a started/integrated/terminal stage is NEVER
             //     mutated, so a late refinement can never disturb work already in flight.
             //
+            // THE COMPLEXITY FOLD (spec 135) sits inside the first guard and outside the
+            // second: a refine's step and reason ([`RunCtx::take_pair`]) are read when the
+            // refine precedes the unit's first `UnitStarted` (`reads`), not by the unit's state
+            // in `integrated`/`terminal`, so a resume that seeds the unit integrated folds the
+            // same pairs the live harvest did, and the pair a unit started at never moves. A
+            // RETARGET (below) is refused whole, its pair included: it neither takes a valid
+            // pair nor records a refused one.
+            //
             // THE TEXT FOLD: the refine's text resolves exactly as a first proposal's does
             // ([`RunCtx::resolve_served_criterion`]; unmatched text stays raw, the add
             // path's genuinely-new sub-unit shape), and replaces the unit's coverage ONLY
@@ -14416,15 +14488,23 @@ impl RunCtx<'_> {
             // with the same values (never appends), and the log's later refine is folded
             // last, so an identical event sequence rebuilds an identical DAG.
             if stages.contains_key(&u.id) {
-                if proposed.contains(&u.id)
-                    && !integrated.contains(&u.id)
-                    && !terminal.contains(&u.id)
-                {
+                if !proposed.contains(&u.id) {
+                    continue;
+                }
+                let refined_text = (!u.coverage.trim().is_empty()).then(|| {
+                    self.resolve_served_criterion(&u.coverage, &u.criterion_id)
+                        .unwrap_or_else(|| (String::new(), u.coverage.clone()))
+                });
+                if let Some(existing) = stages.get_mut(&u.id) {
+                    let retarget = refined_text
+                        .as_ref()
+                        .is_some_and(|(served, _)| *served != existing.criterion_id);
+                    if !retarget && reads(&u.id, e.position) {
+                        self.take_pair(existing, u.pair(), e.position)?;
+                    }
+                }
+                if !integrated.contains(&u.id) && !terminal.contains(&u.id) {
                     let refined_needs = with_gate_hold(u.needs, &u.id, gate.as_ref());
-                    let refined_text = (!u.coverage.trim().is_empty()).then(|| {
-                        self.resolve_served_criterion(&u.coverage, &u.criterion_id)
-                            .unwrap_or_else(|| (String::new(), u.coverage.clone()))
-                    });
                     if let Some(existing) = stages.get_mut(&u.id) {
                         existing.needs = refined_needs;
                         match refined_text {
@@ -14668,6 +14748,7 @@ impl RunCtx<'_> {
             // surfaces it. The single hold the baselines already carry, now uniform - and
             // the SAME `with_gate_hold` authority the same-id fold path re-applies, so a
             // refined re-emit stays held behind the gate exactly as its first proposal was.
+            let pair = reads(&u.id, e.position).then(|| u.pair());
             let needs = with_gate_hold(u.needs, &u.id, gate.as_ref());
             let id = u.id.clone();
             stages.insert(
@@ -14702,6 +14783,9 @@ impl RunCtx<'_> {
                     ..template.clone()
                 },
             );
+            if let (Some(pair), Some(stage)) = (pair, stages.get_mut(&id)) {
+                self.take_pair(stage, pair, e.position)?;
+            }
             // A LANDED CRITERION IS NOT BUILT AGAIN: a unit whose criterion an earlier run of
             // this spec already integrated reaches Integrated here, as it enters the DAG, with
             // no spawn, so its dependents are ready at once. Decided here, where a resumed step
@@ -14728,6 +14812,39 @@ impl RunCtx<'_> {
             self.emit(ledger::TYPE_DAG_RECORDED, body)?;
         }
         Ok(())
+    }
+
+    /// Fold one proposal's step and reason ([`UnitProposed::pair`]) into `stage`, the unit it
+    /// adds or refines, as `harvest_proposed` reads it from the proposal at log `position`: a
+    /// valid pair replaces the stage's, an absent one keeps it, and a refused one keeps it and
+    /// records an `unassessed-complexity` decision keyed on that position, so every later harvest
+    /// and a resume's cold fold record it once.
+    fn take_pair(
+        &self,
+        stage: &mut Stage,
+        pair: ProposedPair,
+        position: crate::eventstore::Position,
+    ) -> Result<(), Error> {
+        match pair {
+            ProposedPair::Absent => Ok(()),
+            ProposedPair::Valid(step, reason) => {
+                stage.complexity = Some(step);
+                stage.complexity_reason = reason;
+                Ok(())
+            }
+            ProposedPair::Refused(what) => self.emit_keyed(
+                &format!("{}/unassessed-complexity#{position}", stage.name),
+                contextgraph::TYPE_DECISION_MADE,
+                json!({
+                    "id": format!("unassessed-complexity:{}#{position}", stage.name),
+                    "summary": format!(
+                        "unassessed-complexity: proposed unit {} carries {what}, so its step and reason are not taken",
+                        stage.name
+                    ),
+                    "governs": [],
+                }),
+            ),
+        }
     }
 
     /// Resolve the acceptance criterion a proposal SERVES: match the planner-echoed
@@ -14967,10 +15084,12 @@ fn emit_protocol() -> String {
 /// The protocol a PLANNER (a `produces: dag`) stage follows: what the conductor does with the
 /// planner's output and the `UnitProposed` shape it reads, never how to plan - the planning
 /// policy lives in the planner's persona. The conductor has ALREADY created one deterministic
-/// baseline implement unit per acceptance criterion, which the planner REFINES; each
-/// refinement is a `UnitProposed` carrying the spec criterion it serves. Its groups' `{criteria}`
-/// slot holds the run's acceptance `criteria`, one line each ([`PLAN_NO_CRITERIA`] when there is
-/// none) and `{implementer}` the `implementer` agent id the conductor assigned the baseline.
+/// baseline implement unit per acceptance criterion; the planner keeps its decomposition,
+/// refines it where it must change, and proposes every unit, one kept unchanged included, as a
+/// `UnitProposed` carrying the spec criterion it serves and the unit's step and reason. Its
+/// groups' `{criteria}` slot holds the run's acceptance `criteria`, one line each
+/// ([`PLAN_NO_CRITERIA`] when there is none) and `{implementer}` the `implementer` agent id the
+/// conductor assigned the baseline.
 fn render_plan_protocol(implementer: &str, criteria: &[String]) -> String {
     let criteria = if criteria.is_empty() {
         PLAN_NO_CRITERIA.to_string()
@@ -15003,7 +15122,8 @@ fn render_plan_protocol(implementer: &str, criteria: &[String]) -> String {
 
 /// Build the plan-critique reviewer prompt (Unit 1, spec 10): the task framing and the
 /// output contract, never the method, which stands in each reviewer's persona. It names
-/// those decomposition rules, lists the proposed unit DAG and the deterministic rule-6
+/// those decomposition rules, lists the proposed unit DAG (each unit with the step and reason
+/// the planner gave it, or `unassessed` when it has none) and the deterministic rule-6
 /// blast-radius analysis, `overlap`, whose overlap header says the listed units are serialized
 /// only when `serialized` (the partition rule is in force for each of them) and otherwise that
 /// they run side by side unless one `needs` the other. Every file list is bounded and the overlap
@@ -15058,12 +15178,22 @@ fn build_dag_critique_prompt(
             left_out |= capped;
             list
         };
+        let complexity = st.complexity.map_or(DAG_NO_COMPLEXITY.to_string(), |step| {
+            fill(
+                DAG_COMPLEXITY,
+                &[
+                    ("step", step.name()),
+                    ("reason", &debug_escaped(&st.complexity_reason)),
+                ],
+            )
+        });
         b.push_str(&fill(
             DAG_UNIT_ROW,
             &[
                 ("name", name),
                 ("criterion", &debug_escaped(criterion)),
                 ("needs", &needs),
+                ("complexity", &complexity),
                 ("radius", &radius),
             ],
         ));
@@ -16647,8 +16777,10 @@ pub fn unit_worktree_dir(scratch_root: &str, unit_id: &str) -> String {
 
 /// A minimal, local decode shape for the ONE field [`prior_criterion_unit`] needs off a
 /// [`ledger::TYPE_UNIT_STARTED`] event - mirroring [`UnitProposed`]'s own local shape
-/// rather than depending on `ledger`'s private fold struct. `#[serde(default)]` on
-/// `criterion_id` so a `UnitStarted` predating this feature (spec 88) decodes with an
+/// rather than depending on `ledger`'s private fold struct. `RunCtx::harvest_proposed` reads its
+/// `id` too, for the position of each unit's first start (THE COMPLEXITY FREEZE).
+/// `#[serde(default)]` on `criterion_id` so a `UnitStarted` predating this feature (spec 88)
+/// decodes with an
 /// empty id rather than erroring, and an empty id never matches (guarded at the call
 /// site) - a legacy unit is simply never an adoption candidate.
 #[derive(Deserialize)]
@@ -21135,7 +21267,7 @@ mod tests {
         // The `render_plan_protocol` (refine-protocol) reaches the planner, naming the
         // implementer agent and the UnitProposed shape.
         assert!(
-            prompt.contains("UnitProposed") && prompt.contains("REFINE"),
+            prompt.contains("UnitProposed") && prompt.contains(PLAN_ROLE),
             "the planner prompt must carry the `render_plan_protocol` refine instructions; got:\n{prompt}"
         );
         assert!(
