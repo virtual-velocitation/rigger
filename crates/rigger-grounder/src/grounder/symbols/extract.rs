@@ -7,7 +7,7 @@
 //! already holds that node as a reference) also adds a read-off here, selected by the language
 //! `extract` is given.
 
-use crate::contextgraph::query::{MEMBER_SEPARATOR, PATH_SEPARATOR};
+use crate::contextgraph::query::separator_is_path;
 use crate::contextgraph::{
     CODE_KIND_CONSTANT, CODE_KIND_CONSTRUCTOR, CODE_KIND_DECLARATION, CODE_KIND_FIELD,
     CODE_KIND_FUNCTION, CODE_KIND_IMPL, CODE_KIND_MACRO, CODE_KIND_METHOD, CODE_KIND_MODULE,
@@ -495,11 +495,7 @@ impl CompiledTags {
         let mut written = None;
         for pair in leaves.windows(2) {
             let (separator, at) = kept_text(source, pair[0].end..pair[1].start, &left_out)?;
-            let path = match separator.as_str() {
-                PATH_SEPARATOR => true,
-                MEMBER_SEPARATOR => false,
-                _ => return None,
-            };
+            let path = separator_is_path(&separator)?;
             written = Some((at, path));
         }
         let qualifier = match written {
