@@ -2965,6 +2965,8 @@ mod tests {
                        "doc": "docs/decisions/one-renderer.md"}),
                 json!({"id": "docs/x.md#sec", "file": "docs/x.md", "line": 0,
                        "kind": "design-doc", "degree": 0, "title": "Sec", "doc": "docs/x.md"}),
+                json!({"id": "src/limits.rs", "file": "src/limits.rs", "line": 0,
+                       "kind": "file", "degree": 4, "lang": "rust"}),
             ],
             "each node's site object"
         );
