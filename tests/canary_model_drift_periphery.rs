@@ -35,7 +35,6 @@ use crate::common;
 use common::cli::pin_identity;
 use common::cli::run_rigger;
 use common::cli::temp_project;
-use common::cli::{lines_where, INIT_PIN_NOTES};
 
 /// Seed `<root>/.rigger/events.db` under `project` with TWO runs (`r1`, `r2`) on the
 /// conductor's run stream. `run1`/`run2` each list this run's `(alias, resolved)` pairs; a
@@ -134,9 +133,8 @@ fn seeded_project(
 }
 
 /// Neither `rigger validate` nor `rigger canary --if-model-changed` sees drift in `root`:
-/// validate succeeds with its config summary, no drift warning, and no line beyond the scaffold's
-/// pin notes ([`INIT_PIN_NOTES`], which name each seed's configured model) naming any of
-/// `never_named`, and the canary drift gate stays shut.
+/// validate succeeds with its config summary and no drift warning naming any of `never_named`,
+/// and the canary drift gate stays shut.
 fn assert_no_drift_seen(root: &Path, never_named: &[&str]) {
     let (out, err, ok) = run_rigger(root, &["validate"]);
     assert!(ok, "validate must succeed; stderr:\n{err}");
@@ -148,12 +146,10 @@ fn assert_no_drift_seen(root: &Path, never_named: &[&str]) {
         !err.to_lowercase().contains("resolved model id changed"),
         "no genuine metadata change, so no drift warning; stderr:\n{err}"
     );
-    let beyond_pins = lines_where(&err, |line| !INIT_PIN_NOTES.contains(&line));
     for text in never_named {
         assert!(
-            !beyond_pins.iter().any(|line| line.contains(text)),
-            "{text:?} must never reach validate's output beyond the scaffold's pin notes; \
-             stderr:\n{err}"
+            !err.contains(text),
+            "{text:?} must never reach validate's output; stderr:\n{err}"
         );
     }
 

@@ -14,7 +14,6 @@
 
 mod build_env;
 mod caller_sources;
-mod capability;
 mod config;
 mod csharp_definition_sources;
 mod docs_overlay;
@@ -39,17 +38,14 @@ mod production_boundary;
 mod project_skill;
 mod python_definition_sources;
 mod readers_source;
-mod resolution;
 mod resolver_tree;
 mod rust_definition_sources;
 mod scratch;
 #[cfg(any(feature = "store", not(feature = "core")))]
 mod shown;
 mod spawn;
-mod work;
 pub use build_env::*;
 pub use caller_sources::*;
-pub use capability::*;
 pub use config::*;
 pub use csharp_definition_sources::*;
 pub use docs_overlay::*;
@@ -74,14 +70,12 @@ pub use production_boundary::*;
 pub use project_skill::*;
 pub use python_definition_sources::*;
 pub use readers_source::*;
-pub use resolution::*;
 pub use resolver_tree::*;
 pub use rust_definition_sources::*;
 pub use scratch::*;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use shown::*;
 pub use spawn::*;
-pub use work::*;
 
 #[cfg(any(feature = "store", not(feature = "core")))]
 mod build_cache_guard;

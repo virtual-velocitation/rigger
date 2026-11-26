@@ -106,13 +106,62 @@
 use crate::common;
 use common::cli::run_rigger;
 use common::cli::temp_project;
-use common::cli::{both_fail, Surface};
 
 /// `rigger init` scaffolds a `.rigger/agents/` fleet that parses cleanly on its own, so
 /// overwriting ONLY `workflow.yml` afterward isolates the unknown-key failure to the one
 /// key under test rather than an unrelated agents-dir problem masking it.
 const WORKFLOW_WITH_UNKNOWN_KEY: &str =
     "defaults:\n  autonomy: auto_notify\n  max_parallel_unitz: 2\n";
+
+/// The surface pair that must fail on a fixture with the same text: the CLI command and the
+/// library call it resolves through.
+#[derive(Clone, Copy)]
+enum Surface {
+    /// `rigger validate` over [`rigger::config_store::load`].
+    Validate,
+    /// `rigger status` over [`rigger::config_store::read_store_config`] (store selection
+    /// resolves before any command requires an existing `events.db`).
+    Status,
+}
+
+/// A fresh `rigger init`ed project whose `.rigger/<rel>` is `content`, failing on both
+/// halves of `surface`: returns `(library error, CLI stderr)` after asserting the CLI fails
+/// and carries the library's exact text (spec 102 criterion 3: "the same text", not merely
+/// each containing a match for the same substring pattern independently).
+fn both_fail(surface: Surface, rel: &str, content: &str) -> (String, String) {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+
+    std::fs::write(root.join(".rigger").join(rel), content)
+        .unwrap_or_else(|e| panic!("write the .rigger/{rel} fixture: {e}"));
+
+    let (lib_err, command) = match surface {
+        Surface::Validate => (
+            rigger::config_store::load(root.to_str().unwrap())
+                .expect_err("the fixture must fail to load")
+                .to_string(),
+            "validate",
+        ),
+        Surface::Status => (
+            rigger::config_store::read_store_config(&root.join(".rigger"))
+                .expect_err("the fixture's store: block must fail to load")
+                .to_string(),
+            "status",
+        ),
+    };
+
+    let (_out, cli_err, cli_ok) = run_rigger(root, &[command]);
+    assert!(!cli_ok, "rigger {command} must fail on the fixture");
+    assert!(
+        cli_err.contains(&lib_err),
+        "rigger {command} and its library call must fail with the SAME text: \
+         lib=\"{lib_err}\" cli=\"{cli_err}\""
+    );
+    (lib_err, cli_err)
+}
 
 /// Both halves of `surface` fail on `workflow` naming the unknown key's dotted path `named`.
 fn both_name(surface: Surface, workflow: &str, named: &str) {

@@ -13,7 +13,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::budget::{self, BuildBudget};
-use crate::config::{AgentDef, Complexity, Config, LaterRounds, RegenerateRule, ReviewStep, Stage};
+use crate::config::{AgentDef, Config, LaterRounds, RegenerateRule, ReviewStep, Stage};
 use crate::config_store;
 use crate::contextgraph::{self, Graph, OpenGraph, RecordFold};
 #[cfg(test)]
@@ -3555,54 +3555,6 @@ struct UnitProposed {
     /// id is the natural choice) - that it is PERSISTED ON THE EVENT is not.
     #[serde(default)]
     episode: String,
-    /// The step the planner judged the unit's task at (spec 135, THE COMPLEXITY JUDGMENT), one of
-    /// the [`Complexity`] names as `render_plan_protocol` asks for it, read with
-    /// [`UnitProposed::complexity_reason`] through [`UnitProposed::pair`]. Kept raw, so a value of
-    /// any JSON type reaches the classifier; a JSON `null` reads as absent.
-    #[serde(default)]
-    complexity: Option<Value>,
-    /// The planner's one-sentence reason for [`UnitProposed::complexity`], kept verbatim.
-    #[serde(default)]
-    complexity_reason: Option<Value>,
-}
-
-/// What a [`UnitProposed`] carries for its unit's step and reason ([`UnitProposed::pair`]).
-enum ProposedPair {
-    /// Neither field: the unit stays as it is, unassessed when nothing set it, with no record.
-    Absent,
-    /// A step and its reason, the reason verbatim.
-    Valid(Complexity, String),
-    /// A pair the conductor refuses, saying what it carries instead of a step and a reason.
-    Refused(String),
-}
-
-impl UnitProposed {
-    /// Classify this proposal's `complexity` and `complexity_reason`: neither is
-    /// [`ProposedPair::Absent`]; a step named exactly as a [`Complexity`] is (no case folding)
-    /// beside a reason with non-whitespace text is [`ProposedPair::Valid`]; anything else is
-    /// [`ProposedPair::Refused`], naming what it carries.
-    fn pair(&self) -> ProposedPair {
-        let refused = |what: &str| ProposedPair::Refused(what.to_string());
-        let step = match (&self.complexity, &self.complexity_reason) {
-            (None, None) => return ProposedPair::Absent,
-            (None, Some(_)) => return refused("a reason with no step"),
-            (Some(Value::String(word)), _) => word,
-            (Some(_), _) => return refused("a step that is not a string"),
-        };
-        let Some(step) = Complexity::ALL.into_iter().find(|s| s.name() == step) else {
-            let names: Vec<&str> = Complexity::ALL.map(Complexity::name).to_vec();
-            return ProposedPair::Refused(format!(
-                "the step {step:?}, which is none of {}",
-                names.join(", ")
-            ));
-        };
-        match &self.complexity_reason {
-            None => refused("a step with no reason"),
-            Some(Value::String(reason)) if reason.trim().is_empty() => refused("a blank reason"),
-            Some(Value::String(reason)) => ProposedPair::Valid(step, reason.clone()),
-            Some(_) => refused("a reason that is not a string"),
-        }
-    }
 }
 
 /// The replayable TRAJECTORY of a completed run (spec 13, unit 2 - trajectory replay/eval):
@@ -14418,22 +14370,6 @@ impl RunCtx<'_> {
             }
             final_episode.insert(u.id, u.episode);
         }
-        // THE COMPLEXITY FREEZE (spec 135): the log position of each unit's FIRST `UnitStarted`
-        // in this run's slice. A proposal's step and reason are read only when it precedes that
-        // start (or the unit has none), so the pair a unit started at never moves after it, and
-        // a live fold and a resume's cold fold of the same log take the same pair.
-        let mut first_start: HashMap<String, crate::eventstore::Position> = HashMap::new();
-        for e in events
-            .iter()
-            .filter(|e| e.type_ == ledger::TYPE_UNIT_STARTED)
-        {
-            if let Ok(started) = serde_json::from_slice::<StartedCriterionProbe>(&e.data) {
-                first_start.entry(started.id).or_insert(e.position);
-            }
-        }
-        let reads = |unit: &str, at: crate::eventstore::Position| {
-            first_start.get(unit).is_none_or(|start| at < *start)
-        };
         // Run-scoped (Gap 11, completing spec-06 unit-1): only THIS run's proposals
         // fold. A prior run's UnitProposed must never resurrect as live work - its
         // terminal states are (correctly) scoped OUT of `terminal`, so an unscoped
@@ -14505,14 +14441,6 @@ impl RunCtx<'_> {
             //   - `!integrated && !terminal`: a started/integrated/terminal stage is NEVER
             //     mutated, so a late refinement can never disturb work already in flight.
             //
-            // THE COMPLEXITY FOLD (spec 135) sits inside the first guard and outside the
-            // second: a refine's step and reason ([`RunCtx::take_pair`]) are read when the
-            // refine precedes the unit's first `UnitStarted` (`reads`), not by the unit's state
-            // in `integrated`/`terminal`, so a resume that seeds the unit integrated folds the
-            // same pairs the live harvest did, and the pair a unit started at never moves. A
-            // RETARGET (below) is refused whole, its pair included: it neither takes a valid
-            // pair nor records a refused one.
-            //
             // THE TEXT FOLD: the refine's text resolves exactly as a first proposal's does
             // ([`RunCtx::resolve_served_criterion`]; unmatched text stays raw, the add
             // path's genuinely-new sub-unit shape), and replaces the unit's coverage ONLY
@@ -14531,28 +14459,21 @@ impl RunCtx<'_> {
             // with the same values (never appends), and the log's later refine is folded
             // last, so an identical event sequence rebuilds an identical DAG.
             if stages.contains_key(&u.id) {
-                if !proposed.contains(&u.id) {
-                    continue;
-                }
-                let refined_text = (!u.coverage.trim().is_empty()).then(|| {
-                    self.resolve_served_criterion(&u.coverage, &u.criterion_id)
-                        .unwrap_or_else(|| (String::new(), u.coverage.clone()))
-                });
-                let retarget = match (&refined_text, stages.get(&u.id)) {
-                    (Some((served, _)), Some(existing)) => *served != existing.criterion_id,
-                    _ => false,
-                };
-                if !retarget && reads(&u.id, e.position) {
-                    if let Some(existing) = stages.get_mut(&u.id) {
-                        self.take_pair(existing, u.pair(), e.position)?;
-                    }
-                }
-                if !integrated.contains(&u.id) && !terminal.contains(&u.id) {
+                if proposed.contains(&u.id)
+                    && !integrated.contains(&u.id)
+                    && !terminal.contains(&u.id)
+                {
                     let refined_needs = with_gate_hold(u.needs, &u.id, gate.as_ref());
+                    let refined_text = (!u.coverage.trim().is_empty()).then(|| {
+                        self.resolve_served_criterion(&u.coverage, &u.criterion_id)
+                            .unwrap_or_else(|| (String::new(), u.coverage.clone()))
+                    });
                     if let Some(existing) = stages.get_mut(&u.id) {
                         existing.needs = refined_needs;
                         match refined_text {
-                            Some((_, text)) if !retarget => existing.coverage = text,
+                            Some((served, text)) if served == existing.criterion_id => {
+                                existing.coverage = text;
+                            }
                             Some(_) => self.emit_keyed(
                                 &format!("{}/refine-retarget#{}", u.id, e.position),
                                 TYPE_SCOPE_CREEP,
@@ -14790,7 +14711,6 @@ impl RunCtx<'_> {
             // surfaces it. The single hold the baselines already carry, now uniform - and
             // the SAME `with_gate_hold` authority the same-id fold path re-applies, so a
             // refined re-emit stays held behind the gate exactly as its first proposal was.
-            let pair = reads(&u.id, e.position).then(|| u.pair());
             let needs = with_gate_hold(u.needs, &u.id, gate.as_ref());
             let id = u.id.clone();
             stages.insert(
@@ -14825,9 +14745,6 @@ impl RunCtx<'_> {
                     ..template.clone()
                 },
             );
-            if let (Some(pair), Some(stage)) = (pair, stages.get_mut(&id)) {
-                self.take_pair(stage, pair, e.position)?;
-            }
             // A LANDED CRITERION IS NOT BUILT AGAIN: a unit whose criterion an earlier run of
             // this spec already integrated reaches Integrated here, as it enters the DAG, with
             // no spawn, so its dependents are ready at once. Decided here, where a resumed step
@@ -14854,39 +14771,6 @@ impl RunCtx<'_> {
             self.emit(ledger::TYPE_DAG_RECORDED, body)?;
         }
         Ok(())
-    }
-
-    /// Fold one proposal's step and reason ([`UnitProposed::pair`]) into `stage`, the unit it
-    /// adds or refines, as `harvest_proposed` reads it from the proposal at log `position`: a
-    /// valid pair replaces the stage's, an absent one keeps it, and a refused one keeps it and
-    /// records an `unassessed-complexity` decision keyed on that position, so every later harvest
-    /// and a resume's cold fold record it once.
-    fn take_pair(
-        &self,
-        stage: &mut Stage,
-        pair: ProposedPair,
-        position: crate::eventstore::Position,
-    ) -> Result<(), Error> {
-        match pair {
-            ProposedPair::Absent => Ok(()),
-            ProposedPair::Valid(step, reason) => {
-                stage.complexity = Some(step);
-                stage.complexity_reason = reason;
-                Ok(())
-            }
-            ProposedPair::Refused(what) => self.emit_keyed(
-                &format!("{}/unassessed-complexity#{position}", stage.name),
-                contextgraph::TYPE_DECISION_MADE,
-                json!({
-                    "id": format!("unassessed-complexity:{}#{position}", stage.name),
-                    "summary": format!(
-                        "unassessed-complexity: proposed unit {} carries {what}, so its step and reason are not taken",
-                        stage.name
-                    ),
-                    "governs": [],
-                }),
-            ),
-        }
     }
 
     /// Resolve the acceptance criterion a proposal SERVES: match the planner-echoed
@@ -15126,12 +15010,10 @@ fn emit_protocol() -> String {
 /// The protocol a PLANNER (a `produces: dag`) stage follows: what the conductor does with the
 /// planner's output and the `UnitProposed` shape it reads, never how to plan - the planning
 /// policy lives in the planner's persona. The conductor has ALREADY created one deterministic
-/// baseline implement unit per acceptance criterion; the planner keeps its decomposition,
-/// refines it where it must change, and proposes every unit, one kept unchanged included, as a
-/// `UnitProposed` carrying the spec criterion it serves and the unit's step and reason. Its
-/// groups' `{criteria}` slot holds the run's acceptance `criteria`, one line each
-/// ([`PLAN_NO_CRITERIA`] when there is none) and `{implementer}` the `implementer` agent id the
-/// conductor assigned the baseline.
+/// baseline implement unit per acceptance criterion, which the planner REFINES; each
+/// refinement is a `UnitProposed` carrying the spec criterion it serves. Its groups' `{criteria}`
+/// slot holds the run's acceptance `criteria`, one line each ([`PLAN_NO_CRITERIA`] when there is
+/// none) and `{implementer}` the `implementer` agent id the conductor assigned the baseline.
 fn render_plan_protocol(implementer: &str, criteria: &[String]) -> String {
     let criteria = if criteria.is_empty() {
         PLAN_NO_CRITERIA.to_string()
@@ -15164,8 +15046,7 @@ fn render_plan_protocol(implementer: &str, criteria: &[String]) -> String {
 
 /// Build the plan-critique reviewer prompt (Unit 1, spec 10): the task framing and the
 /// output contract, never the method, which stands in each reviewer's persona. It names
-/// those decomposition rules, lists the proposed unit DAG (each unit with the step and reason
-/// the planner gave it, or `unassessed` when it has none) and the deterministic rule-6
+/// those decomposition rules, lists the proposed unit DAG and the deterministic rule-6
 /// blast-radius analysis, `overlap`, whose overlap header says the listed units are serialized
 /// only when `serialized` (the partition rule is in force for each of them) and otherwise that
 /// they run side by side unless one `needs` the other. Every file list is bounded and the overlap
@@ -15220,22 +15101,12 @@ fn build_dag_critique_prompt(
             left_out |= capped;
             list
         };
-        let complexity = st.complexity.map_or(DAG_NO_COMPLEXITY.to_string(), |step| {
-            fill(
-                DAG_COMPLEXITY,
-                &[
-                    ("step", step.name()),
-                    ("reason", &debug_escaped(&st.complexity_reason)),
-                ],
-            )
-        });
         b.push_str(&fill(
             DAG_UNIT_ROW,
             &[
                 ("name", name),
                 ("criterion", &debug_escaped(criterion)),
                 ("needs", &needs),
-                ("complexity", &complexity),
                 ("radius", &radius),
             ],
         ));
@@ -16819,10 +16690,8 @@ pub fn unit_worktree_dir(scratch_root: &str, unit_id: &str) -> String {
 
 /// A minimal, local decode shape for the ONE field [`prior_criterion_unit`] needs off a
 /// [`ledger::TYPE_UNIT_STARTED`] event - mirroring [`UnitProposed`]'s own local shape
-/// rather than depending on `ledger`'s private fold struct. `RunCtx::harvest_proposed` reads its
-/// `id` too, for the position of each unit's first start (THE COMPLEXITY FREEZE).
-/// `#[serde(default)]` on `criterion_id` so a `UnitStarted` predating this feature (spec 88)
-/// decodes with an
+/// rather than depending on `ledger`'s private fold struct. `#[serde(default)]` on
+/// `criterion_id` so a `UnitStarted` predating this feature (spec 88) decodes with an
 /// empty id rather than erroring, and an empty id never matches (guarded at the call
 /// site) - a legacy unit is simply never an adoption candidate.
 #[derive(Deserialize)]
@@ -17989,7 +17858,6 @@ fn validate_acyclic(stages: &BTreeMap<String, Stage>) -> Result<(), Error> {
 mod tests {
     use super::*;
     use crate::config;
-    use crate::config::Complexity;
     use crate::eventstore::sqlite::Store;
     use crate::eventstore::{ExpectedRevision, Filter};
     use crate::gate::ExecRunner;
@@ -18030,12 +17898,11 @@ mod tests {
         assert_winner_reviewed_sha_is_round_start, speculation_regen_door_cfg,
     };
     use crate::test_support::{
-        critique_reject, dag_complexity, dag_critique_prompt, dag_critique_verdict_paragraph,
-        keyed_index, keyed_payload, pair_of, payloads_of_type, plan_protocol_text, policy_counts,
-        run_log, spec_defect_halt_text, stop_records, the_stop_records,
-        unassessed_complexity_record, unknown_step, wave_lessons, DAG_DISJOINT_OVERLAP,
-        DAG_PRIOR_REJECT_HEADER, DAG_UNASSESSED, REPLAN_REVISE, STOP_ESCALATED_KEY,
-        STOP_LESSON_KEY, STOP_SPEC_DEFECT_KEY, WIDGET_CRITERION,
+        critique_reject, dag_critique_prompt, dag_critique_verdict_paragraph, keyed_index,
+        keyed_payload, payloads_of_type, plan_protocol_text, policy_counts, run_log,
+        spec_defect_halt_text, stop_records, the_stop_records, wave_lessons, DAG_DISJOINT_OVERLAP,
+        DAG_PRIOR_REJECT_HEADER, STOP_ESCALATED_KEY, STOP_LESSON_KEY, STOP_SPEC_DEFECT_KEY,
+        WIDGET_CRITERION,
     };
     use crate::test_support::{
         critique_stage, fan_out_stage, plan_stage, review_stage_cfg, workflow_cfg,
@@ -21314,7 +21181,7 @@ mod tests {
         // The `render_plan_protocol` (refine-protocol) reaches the planner, naming the
         // implementer agent and the UnitProposed shape.
         assert!(
-            prompt.contains("UnitProposed") && prompt.contains(PLAN_ROLE),
+            prompt.contains("UnitProposed") && prompt.contains("REFINE"),
             "the planner prompt must carry the `render_plan_protocol` refine instructions; got:\n{prompt}"
         );
         assert!(
@@ -22034,29 +21901,11 @@ mod tests {
     }
 
     /// The state the refined unit `u-a` is in when its same-id refines fold.
-    #[derive(Clone, Copy, Debug)]
+    #[derive(Clone, Copy)]
     enum RefinedUnit {
         NotStarted,
         Integrated,
         Terminal,
-    }
-
-    impl RefinedUnit {
-        /// The fresh `(proposed, integrated, terminal)` sets a harvest starts from with `u-a` in
-        /// this state, as a resume seeds them from the log.
-        fn sets(self) -> (HashSet<String>, HashSet<String>, HashSet<String>) {
-            let (mut integrated, mut terminal) = (HashSet::new(), HashSet::new());
-            match self {
-                RefinedUnit::NotStarted => {}
-                RefinedUnit::Integrated => {
-                    integrated.insert("u-a".to_string());
-                }
-                RefinedUnit::Terminal => {
-                    terminal.insert("u-a".to_string());
-                }
-            }
-            (HashSet::new(), integrated, terminal)
-        }
     }
 
     /// The criterion a same-id refine fixture's proposal echoes by id, and the one its unit
@@ -22113,7 +21962,19 @@ mod tests {
             &driver,
             vec![REFINE_CRIT_A.to_string(), REFINE_CRIT_B.to_string()],
         );
-        let fresh_sets = || state.sets();
+        let fresh_sets = || {
+            let (mut integrated, mut terminal) = (HashSet::new(), HashSet::new());
+            match state {
+                RefinedUnit::NotStarted => {}
+                RefinedUnit::Integrated => {
+                    integrated.insert("u-a".to_string());
+                }
+                RefinedUnit::Terminal => {
+                    terminal.insert("u-a".to_string());
+                }
+            }
+            (HashSet::<String>::new(), integrated, terminal)
+        };
         let scope_creep_units = || -> Vec<Value> {
             let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
             payloads_of_type(&events, TYPE_SCOPE_CREEP)
@@ -22294,351 +22155,6 @@ mod tests {
             ],
             (UNMATCHED_TEXT, Cites::Nothing),
             1,
-        );
-    }
-
-    /// One event of a complexity fixture's log: `u-a` proposed with the text of the criterion it
-    /// echoes and the JSON object's `complexity` and `complexity_reason` fields merged into its
-    /// payload (the first adding the unit, each later one a same-id refine), or the named unit's
-    /// `UnitStarted`.
-    enum Logged {
-        Proposed(Cites, Value),
-        Started(&'static str),
-    }
-
-    const STEP_REASON: &str = "the alpha parser is one pure function over a fixed grammar";
-    const LATER_REASON: &str = "the alpha error type threads through every caller of the module";
-
-    /// `u-a` is proposed and refined by `log`'s proposals among `log`'s `UnitStarted`s, and a
-    /// harvest runs with `u-a` in each state of [`RefinedUnit`], each over a fresh store of the
-    /// same log, as the live harvest and a resume that seeds the unit integrated or terminal
-    /// fold it: `u-a` must end on the step and reason `want`, and the `DecisionMade`s recorded
-    /// must be exactly one `unassessed-complexity` record per `(index, what)` of `refused`, the
-    /// log entry at `index` refused for carrying `what`, keyed by that entry's log position. A
-    /// second harvest of the same log and a cold fold of it keep the pair and record nothing
-    /// more.
-    fn assert_planner_records_complexity(
-        log: &[Logged],
-        want: (Option<Complexity>, &str),
-        refused: &[(usize, String)],
-    ) {
-        let cfg = supersede_cfg();
-        let want = (want.0, want.1.to_string());
-        for state in [
-            RefinedUnit::NotStarted,
-            RefinedUnit::Integrated,
-            RefinedUnit::Terminal,
-        ] {
-            let st = Store::open(":memory:").unwrap();
-            let events: Vec<Event> = log
-                .iter()
-                .map(|entry| match entry {
-                    Logged::Proposed(cites, pair) => {
-                        let text = match cites {
-                            Cites::A => REFINE_CRIT_A,
-                            Cites::B => REFINE_CRIT_B,
-                            Cites::Nothing => UNMATCHED_TEXT,
-                        };
-                        let mut payload = json!({
-                            "id": "u-a",
-                            "agent": "worker",
-                            "criterion": text,
-                            "criterion_id": cites.id(),
-                            "gates": ["ok"],
-                            "needs": [],
-                        });
-                        let fields = pair.as_object().unwrap().clone();
-                        payload.as_object_mut().unwrap().extend(fields);
-                        Event::new(TYPE_UNIT_PROPOSED, serde_json::to_vec(&payload).unwrap())
-                    }
-                    Logged::Started(unit) => Event::new(
-                        ledger::TYPE_UNIT_STARTED,
-                        serde_json::to_vec(&json!({"id": unit})).unwrap(),
-                    ),
-                })
-                .collect();
-            st.append(STREAM, ExpectedRevision::Any, &events).unwrap();
-            let logged = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
-            let want_records: Vec<Value> = refused
-                .iter()
-                .map(|(index, what)| {
-                    unassessed_complexity_record("u-a", logged[*index].position, what)
-                })
-                .collect();
-            let records = || {
-                let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
-                payloads_of_type(&events, contextgraph::TYPE_DECISION_MADE)
-            };
-            let pair = |stages: &BTreeMap<String, Stage>| {
-                let unit = &stages["u-a"];
-                (unit.complexity, unit.complexity_reason.clone())
-            };
-            let driver = Stub::new();
-            let deps = stub_deps(
-                &st,
-                &driver,
-                vec![REFINE_CRIT_A.to_string(), REFINE_CRIT_B.to_string()],
-            );
-
-            let ctx = RunCtx::for_test(&cfg, &deps);
-            let mut stages = seed_refine_dag(&deps.criteria);
-            let (mut proposed, mut integrated, mut terminal) = state.sets();
-            ctx.harvest_proposed(&mut stages, &mut proposed, &mut integrated, &mut terminal)
-                .unwrap();
-            assert_eq!(pair(&stages), want, "{state:?}: u-a's step and reason");
-            assert_eq!(records(), want_records, "{state:?}: the records");
-
-            ctx.harvest_proposed(&mut stages, &mut proposed, &mut integrated, &mut terminal)
-                .unwrap();
-            assert_eq!(pair(&stages), want, "{state:?}: a second harvest's pair");
-            assert_eq!(
-                records(),
-                want_records,
-                "{state:?}: a second harvest's records"
-            );
-
-            let mut cold = RunCtx::for_test(&cfg, &deps);
-            cold.replayed_keys = crate::replay_keys::ReplayKeys::seeded(
-                &st.read_stream(STREAM, 0, Direction::Forward).unwrap(),
-            );
-            let mut cold_stages = seed_refine_dag(&deps.criteria);
-            let (mut proposed, mut integrated, mut terminal) = state.sets();
-            cold.harvest_proposed(
-                &mut cold_stages,
-                &mut proposed,
-                &mut integrated,
-                &mut terminal,
-            )
-            .unwrap();
-            assert_eq!(pair(&cold_stages), want, "{state:?}: a cold fold's pair");
-            assert_eq!(records(), want_records, "{state:?}: a cold fold's records");
-        }
-    }
-
-    crate::test_cases! {
-        an_added_unit_takes_its_proposals_step_and_reason: assert_planner_records_complexity(
-            &[Logged::Proposed(Cites::A, pair_of(Complexity::Hard, STEP_REASON))],
-            (Some(Complexity::Hard), STEP_REASON),
-            &[],
-        );
-        a_refine_with_a_valid_pair_replaces_the_earlier_pair: assert_planner_records_complexity(
-            &[
-                Logged::Proposed(Cites::A, pair_of(Complexity::Routine, STEP_REASON)),
-                Logged::Proposed(Cites::A, pair_of(Complexity::Hard, LATER_REASON)),
-            ],
-            (Some(Complexity::Hard), LATER_REASON),
-            &[],
-        );
-        a_refine_with_no_pair_keeps_the_earlier_pair: assert_planner_records_complexity(
-            &[
-                Logged::Proposed(Cites::A, pair_of(Complexity::Involved, STEP_REASON)),
-                Logged::Proposed(Cites::A, json!({})),
-            ],
-            (Some(Complexity::Involved), STEP_REASON),
-            &[],
-        );
-        a_refine_with_a_refused_pair_keeps_the_earlier_pair_and_records_it: assert_planner_records_complexity(
-            &[
-                Logged::Proposed(Cites::A, pair_of(Complexity::Involved, STEP_REASON)),
-                Logged::Proposed(
-                    Cites::A,
-                    json!({"complexity": "trivial", "complexity_reason": LATER_REASON}),
-                ),
-            ],
-            (Some(Complexity::Involved), STEP_REASON),
-            &[(1, unknown_step("trivial"))],
-        );
-        a_refine_with_no_text_and_a_valid_pair_replaces_the_earlier_pair: assert_planner_records_complexity(
-            &[
-                Logged::Proposed(Cites::A, pair_of(Complexity::Routine, STEP_REASON)),
-                Logged::Proposed(
-                    Cites::A,
-                    json!({
-                        "criterion": "",
-                        "criterion_id": "",
-                        "complexity": Complexity::Hard.name(),
-                        "complexity_reason": LATER_REASON,
-                    }),
-                ),
-            ],
-            (Some(Complexity::Hard), LATER_REASON),
-            &[],
-        );
-        a_refine_with_no_text_and_a_refused_pair_keeps_the_earlier_pair_and_records_it: assert_planner_records_complexity(
-            &[
-                Logged::Proposed(Cites::A, pair_of(Complexity::Routine, STEP_REASON)),
-                Logged::Proposed(
-                    Cites::A,
-                    json!({
-                        "criterion": "",
-                        "criterion_id": "",
-                        "complexity": Complexity::Hard.name(),
-                    }),
-                ),
-            ],
-            (Some(Complexity::Routine), STEP_REASON),
-            &[(1, "a step with no reason".to_string())],
-        );
-        a_refine_after_the_units_first_start_is_not_read: assert_planner_records_complexity(
-            &[
-                Logged::Proposed(Cites::A, pair_of(Complexity::Routine, STEP_REASON)),
-                Logged::Started("u-a"),
-                Logged::Proposed(Cites::A, pair_of(Complexity::Hard, LATER_REASON)),
-            ],
-            (Some(Complexity::Routine), STEP_REASON),
-            &[],
-        );
-        a_refine_between_the_units_first_and_second_start_is_not_read: assert_planner_records_complexity(
-            &[
-                Logged::Proposed(Cites::A, pair_of(Complexity::Routine, STEP_REASON)),
-                Logged::Started("u-a"),
-                Logged::Proposed(Cites::A, pair_of(Complexity::Hard, LATER_REASON)),
-                Logged::Started("u-a"),
-            ],
-            (Some(Complexity::Routine), STEP_REASON),
-            &[],
-        );
-        another_units_start_does_not_freeze_the_pair: assert_planner_records_complexity(
-            &[
-                Logged::Proposed(Cites::A, pair_of(Complexity::Routine, STEP_REASON)),
-                Logged::Started("u-b"),
-                Logged::Proposed(Cites::A, pair_of(Complexity::Hard, LATER_REASON)),
-            ],
-            (Some(Complexity::Hard), LATER_REASON),
-            &[],
-        );
-        a_refused_pair_after_the_units_first_start_records_nothing: assert_planner_records_complexity(
-            &[
-                Logged::Proposed(Cites::A, pair_of(Complexity::Routine, STEP_REASON)),
-                Logged::Started("u-a"),
-                Logged::Proposed(
-                    Cites::A,
-                    json!({"complexity": "trivial", "complexity_reason": LATER_REASON}),
-                ),
-            ],
-            (Some(Complexity::Routine), STEP_REASON),
-            &[],
-        );
-        a_proposal_with_no_pair_is_unassessed_with_no_record: assert_planner_records_complexity(
-            &[Logged::Proposed(Cites::A, json!({}))],
-            (None, ""),
-            &[],
-        );
-        a_proposal_with_a_null_step_and_a_null_reason_is_unassessed_with_no_record: assert_planner_records_complexity(
-            &[Logged::Proposed(
-                Cites::A,
-                json!({"complexity": null, "complexity_reason": null}),
-            )],
-            (None, ""),
-            &[],
-        );
-        an_unknown_step_is_refused: assert_planner_records_complexity(
-            &[Logged::Proposed(
-                Cites::A,
-                json!({"complexity": "trivial", "complexity_reason": STEP_REASON}),
-            )],
-            (None, ""),
-            &[(0, unknown_step("trivial"))],
-        );
-        a_step_in_another_case_is_refused: assert_planner_records_complexity(
-            &[Logged::Proposed(
-                Cites::A,
-                json!({
-                    "complexity": Complexity::Hard.name().to_uppercase(),
-                    "complexity_reason": STEP_REASON,
-                }),
-            )],
-            (None, ""),
-            &[(0, unknown_step(&Complexity::Hard.name().to_uppercase()))],
-        );
-        a_null_step_with_a_reason_is_refused: assert_planner_records_complexity(
-            &[Logged::Proposed(
-                Cites::A,
-                json!({"complexity": null, "complexity_reason": STEP_REASON}),
-            )],
-            (None, ""),
-            &[(0, "a reason with no step".to_string())],
-        );
-        a_step_that_is_not_a_string_is_refused: assert_planner_records_complexity(
-            &[Logged::Proposed(
-                Cites::A,
-                json!({"complexity": 3, "complexity_reason": STEP_REASON}),
-            )],
-            (None, ""),
-            &[(0, "a step that is not a string".to_string())],
-        );
-        a_step_with_no_reason_is_refused: assert_planner_records_complexity(
-            &[Logged::Proposed(
-                Cites::A,
-                json!({"complexity": Complexity::Hard.name()}),
-            )],
-            (None, ""),
-            &[(0, "a step with no reason".to_string())],
-        );
-        a_step_with_a_null_reason_is_refused: assert_planner_records_complexity(
-            &[Logged::Proposed(
-                Cites::A,
-                json!({"complexity": Complexity::Hard.name(), "complexity_reason": null}),
-            )],
-            (None, ""),
-            &[(0, "a step with no reason".to_string())],
-        );
-        a_blank_reason_is_refused: assert_planner_records_complexity(
-            &[Logged::Proposed(Cites::A, pair_of(Complexity::Hard, " \n\t "))],
-            (None, ""),
-            &[(0, "a blank reason".to_string())],
-        );
-        a_reason_that_is_not_a_string_is_refused: assert_planner_records_complexity(
-            &[Logged::Proposed(
-                Cites::A,
-                json!({"complexity": Complexity::Hard.name(), "complexity_reason": [STEP_REASON]}),
-            )],
-            (None, ""),
-            &[(0, "a reason that is not a string".to_string())],
-        );
-        each_refused_proposal_of_a_unit_records_its_own_decision: assert_planner_records_complexity(
-            &[
-                Logged::Proposed(
-                    Cites::A,
-                    json!({"complexity": "trivial", "complexity_reason": STEP_REASON}),
-                ),
-                Logged::Proposed(Cites::A, json!({"complexity": Complexity::Hard.name()})),
-            ],
-            (None, ""),
-            &[
-                (0, unknown_step("trivial")),
-                (1, "a step with no reason".to_string()),
-            ],
-        );
-        a_refine_retargeting_another_criterion_takes_no_valid_pair: assert_planner_records_complexity(
-            &[
-                Logged::Proposed(Cites::A, pair_of(Complexity::Routine, STEP_REASON)),
-                Logged::Proposed(Cites::B, pair_of(Complexity::Hard, LATER_REASON)),
-            ],
-            (Some(Complexity::Routine), STEP_REASON),
-            &[],
-        );
-        a_refine_retargeting_another_criterion_records_no_refused_pair: assert_planner_records_complexity(
-            &[
-                Logged::Proposed(Cites::A, pair_of(Complexity::Routine, STEP_REASON)),
-                Logged::Proposed(
-                    Cites::B,
-                    json!({"complexity": "trivial", "complexity_reason": LATER_REASON}),
-                ),
-            ],
-            (Some(Complexity::Routine), STEP_REASON),
-            &[],
-        );
-        a_reason_is_kept_verbatim: assert_planner_records_complexity(
-            &[Logged::Proposed(
-                Cites::A,
-                pair_of(Complexity::Involved, "  a \"quoted\" path\\name\nover two lines  "),
-            )],
-            (
-                Some(Complexity::Involved),
-                "  a \"quoted\" path\\name\nover two lines  ",
-            ),
-            &[],
         );
     }
 
@@ -34043,9 +33559,8 @@ stage "implement" adjudicator "adj" failed
         // The operator layer on `cfg.instructions`, here one file named as no built-in, is
         // composed into EVERY spawned agent's system prompt - the implementer and all three
         // review tiers - after the persona and every built-in entry, none replaced or switched
-        // off: the law, the working discipline, the communication discipline and the complexity
-        // considerations. An agent with no persona still carries the built-in engineering
-        // principles.
+        // off: the law, the working discipline and the communication discipline. An agent with
+        // no persona still carries the built-in engineering principles.
         let mut cfg = Config {
             instructions: vec![Instruction {
                 name: "10-house".into(),
@@ -59581,72 +59096,14 @@ stage "implement" adjudicator "adj" failed
             let driver = critique_over(&units, partition);
             let prompt = driver.adj_prompts.lock().unwrap()[0].clone();
             let radius = units.map(|(_, file, _)| format!("1 file(s): {file}"));
-            let rows: Vec<[&str; 5]> = units
+            let rows: Vec<[&str; 4]> = units
                 .iter()
                 .zip(&radius)
-                .map(|((id, _, criterion), radius)| {
-                    [*id, *criterion, "plan-critique", DAG_UNASSESSED, radius]
-                })
+                .map(|((id, _, criterion), radius)| [*id, *criterion, "plan-critique", radius])
                 .collect();
             assert_eq!(prompt, dag_critique_prompt(&rows, overlap));
         }
     }
-
-    /// Each unit row of the DAG critique prompt shows its stage's step and reason, the reason
-    /// escaped as the criterion is, so a quote, a backslash, a newline or a slot look-alike in
-    /// it reads as one quoted string, and `unassessed` for a stage with no step.
-    #[test]
-    fn a_unit_row_shows_its_step_and_reason_or_unassessed() {
-        const ODD_REASON: &str = "a \"quoted\" path\\name,\na {radius} look-alike";
-        let table: [ComplexityRow; 4] = [
-            ("u-a", &["a.rs"], None),
-            (
-                "u-b",
-                &["b.rs"],
-                Some((Complexity::Routine, "one pure function")),
-            ),
-            (
-                "u-c",
-                &["c.rs"],
-                Some((Complexity::Involved, "two modules share it")),
-            ),
-            ("u-d", &["d.rs"], Some((Complexity::Hard, ODD_REASON))),
-        ];
-        let units: Vec<Proposed> = table
-            .iter()
-            .map(|(name, radius, _)| (*name, WIDGET_CRITERION, &[][..], *radius))
-            .collect();
-        let (mut stages, radii) = proposed_dag(&units);
-        for (name, _, pair) in &table {
-            if let Some((step, reason)) = pair {
-                let stage = stages.get_mut(*name).unwrap();
-                stage.complexity = Some(*step);
-                stage.complexity_reason = reason.to_string();
-            }
-        }
-        let overlap = DagOverlap::new(&stages, &radii);
-        let prompt = build_dag_critique_prompt(&stages, &radii, &overlap, false, "", false);
-        let shown: Vec<(String, String)> = table
-            .iter()
-            .map(|(_, radius, pair)| {
-                let complexity = pair.map_or(DAG_UNASSESSED.to_string(), |(step, reason)| {
-                    dag_complexity(step, reason)
-                });
-                (complexity, format!("1 file(s): {}", radius.join(", ")))
-            })
-            .collect();
-        let rows: Vec<[&str; 5]> = table
-            .iter()
-            .zip(&shown)
-            .map(|((name, _, _), (complexity, radius))| {
-                [*name, WIDGET_CRITERION, "none", complexity, radius]
-            })
-            .collect();
-        assert_eq!(prompt, dag_critique_prompt(&rows, DAG_DISJOINT_OVERLAP));
-    }
-
-    /// One row of the DAG row complexity test: a unit's `(name, blast radius, step and reason)`.
-    type ComplexityRow<'a> = (&'a str, &'a [&'a str], Option<(Complexity, &'a str)>);
 
     /// One proposed unit of a plan-critique test: its `(name, criterion, needs, blast radius)`.
     type Proposed<'a> = (&'a str, &'a str, &'a [&'a str], &'a [&'a str]);
@@ -61807,11 +61264,6 @@ stage "implement" adjudicator "adj" failed
             re_plan_prompt.contains("REJECTED your previous decomposition"),
             "the second planner prompt is the plan-critique re-emit directive; got:\n{re_plan_prompt}"
         );
-        // The re-emit asks for every unit again, each with its step and reason (spec 135).
-        assert!(
-            re_plan_prompt.contains(REPLAN_REVISE),
-            "the re-emit directive must ask for every unit with its step and reason; got:\n{re_plan_prompt}"
-        );
         // The refine directive: re-emit under the EXACT existing id updates in place.
         assert!(
             re_plan_prompt.contains("re-emit it under its EXACT existing unit-id"),
@@ -63081,9 +62533,7 @@ stage "implement" adjudicator "adj" failed
     /// rows' lists filled into their slots, a first plan whose overlap the rule does not
     /// serialize, one whose overlapping units `needs` orders, one whose common file stands in the
     /// common row and whose lists name fewer files than they count, followed by the lookup
-    /// sentence, an overlap block over its budget, a re-review no re-plan proposed for, and a
-    /// first plan whose one unit carries a step and a reason holding a quote, a backslash and a
-    /// slot look-alike, filled escaped; every other unit row is unassessed.
+    /// sentence, an overlap block over its budget, and a re-review no re-plan proposed for.
     #[test]
     fn the_plan_critique_and_re_plan_prompts_are_their_groups_on_each_branch() {
         use crate::prompt_surface_fixtures::{assert_renders, GroupPicks};
@@ -63100,19 +62550,13 @@ stage "implement" adjudicator "adj" failed
                 &[("spec_ambiguity", spawn::CAUSE_SPEC_AMBIGUITY)],
             )
         };
-        let unassessed = dag(&["DAG_NO_COMPLEXITY"]);
         let unit_rows = |names: &[&str], slots: &[(&str, &str)]| {
             names
                 .iter()
                 .map(|name| {
                     fill(
                         &dag(&["DAG_UNIT_ROW"]),
-                        &[
-                            &[("name", *name)],
-                            slots,
-                            &[("complexity", unassessed.as_str())],
-                        ]
-                        .concat(),
+                        &[&[("name", *name)], slots].concat(),
                     )
                 })
                 .collect::<String>()
@@ -63330,41 +62774,6 @@ stage "implement" adjudicator "adj" failed
                         "DAG_UNITS_HEADER"
                     ]),
                     unit_rows(&["{name}"], &bare),
-                    dag(&["DAG_OVERLAP_DISJOINT"]),
-                    contract()
-                ),
-            ),
-            (
-                "a first plan whose unit carries a step and a reason",
-                {
-                    let (mut stages, radii) = proposed_dag(&[("{name}", "  ", &[], &[])]);
-                    let stage = stages.get_mut("{name}").unwrap();
-                    stage.complexity = Some(Complexity::Hard);
-                    stage.complexity_reason = r#"keep "a\b" {radius}"#.to_string();
-                    let overlap = DagOverlap::new(&stages, &radii);
-                    build_dag_critique_prompt(&stages, &radii, &overlap, true, "", false)
-                },
-                format!(
-                    "{}{}{}{}",
-                    dag(&["DAG_CRITIQUE_OPENER", "DAG_UNITS_HEADER"]),
-                    unit_rows(
-                        &["{name}"],
-                        &[
-                            (
-                                "complexity",
-                                &fill(
-                                    &dag(&["DAG_COMPLEXITY"]),
-                                    &[
-                                        ("step", Complexity::Hard.name()),
-                                        ("reason", r#"keep \"a\\b\" {radius}"#)
-                                    ]
-                                )
-                            ),
-                            bare[0],
-                            bare[1],
-                            bare[2]
-                        ]
-                    ),
                     dag(&["DAG_OVERLAP_DISJOINT"]),
                     contract()
                 ),

@@ -1,6 +1,6 @@
 //! The conductor's and the canary's prompt texts (spec 121, criterion 16), each one `pub const`
 //! whose doc comment opens with its class: the decision and finding protocols, the planner's
-//! proposal protocol, the adjudicator's verdict contract, the retry, review-round and gate-evidence
+//! refine protocol, the adjudicator's verdict contract, the retry, review-round and gate-evidence
 //! blocks, the grounding sections and their elision notes, the DAG critique and re-plan prompts,
 //! and the canary's review and adjudicator prompts. A renderer in `conductor.rs` or
 //! `canary_store.rs` formats from these through `fill` wherever a const carries a `{slot}`. The
@@ -17,12 +17,10 @@ pub const EMIT_PROTOCOL: &str = "Record each decision you make by calling the ri
 pub const EMIT_LIVE: &str =
     "This writes it to the shared event log live, so other agents see it immediately.";
 
-/// FRAMING: the planner's role: keep the baseline's decomposition, refine it where it must
-/// change, and propose every unit with its step and reason.
+/// FRAMING: the planner's role and its refine-not-re-decompose rule.
 pub const PLAN_ROLE: &str = "You are the planner. The conductor has ALREADY created one baseline \
      implement unit per acceptance criterion below - the spec is decomposed by construction. \
-     Keep that baseline's decomposition, refine it where it must change, and propose every unit \
-     with its step and reason. ";
+     Your job is to REFINE that baseline, not to re-decompose it. ";
 
 /// CONTRACT: how a split part and a refinement name the criterion they serve, the id the
 /// conductor pairs a unit with its baseline by.
@@ -49,29 +47,23 @@ pub const PLAN_COPY_TEXT: &str =
 pub const PLAN_REAL_SPLIT: &str =
     "Several units echoing the SAME id (a real split) all run and replace the one baseline.\n";
 
-/// CONTRACT: how the planner proposes a unit, one `UnitProposed` per criterion with its step (one
-/// of the `Complexity` names) and its reason, the `rigger_emit` call and the JSON shape the
-/// conductor harvests, `{implementer}` holding the implementer agent id.
-pub const PLAN_UNIT_PROPOSED: &str = "Propose one UnitProposed per criterion, one you keep \
-     unchanged included, each under your own id (never a baseline's id) and echoing that \
-     criterion's id; each part of a split and each new sub-unit is a UnitProposed of its own. \
-     Give each unit the step its task needs in `complexity` and one sentence saying why in \
-     `complexity_reason`. Call the rigger_emit tool with type \"UnitProposed\" and \
-     data:\n{\"id\":\"<short-id>\",\"agent\":\"{implementer}\",\"criterion\":\"<the spec \
-     criterion it serves>\",\"criterion_id\":\"<the id shown in [brackets] next to that \
-     criterion>\",\"needs\":[\"<unit ids it depends on>\"],\
-     \"complexity\":\"routine|involved|hard\",\"complexity_reason\":\"<one sentence>\"}\n";
+/// CONTRACT: how the planner proposes a unit, the `rigger_emit` call and the `UnitProposed` JSON
+/// shape the conductor harvests, `{implementer}` holding the implementer agent id.
+pub const PLAN_UNIT_PROPOSED: &str = "Propose each refinement by calling the rigger_emit tool \
+     with type \"UnitProposed\" and data:\n{\"id\":\"<short-id>\",\"agent\":\"{implementer}\",\
+     \"criterion\":\"<the spec criterion it serves>\",\"criterion_id\":\"<the id shown in \
+     [brackets] next to that criterion>\",\"needs\":[\"<unit ids it depends on>\"]}\n";
 
 /// FRAMING: what an unmatched id does, and that every proposed unit runs the fan-out template's
 /// gates.
 pub const PLAN_UNMATCHED: &str = "A unit whose `criterion_id` is none of the ids below still \
      runs, but as a genuinely-new sub-unit that the conductor flags as unmatched. Every unit you \
-     propose - a unit kept unchanged, a refinement, a split, or a new sub-unit - automatically \
-     runs the fan-out template's own gates; you never need to name them.\n\n";
+     propose - a refinement, a split, or a new sub-unit - automatically runs the fan-out \
+     template's own gates; you never need to name them.\n\n";
 
 /// CONTRACT: the acceptance criteria a proposal echoes, `{criteria}` holding one `- [{id}]
 /// {text}` line per criterion, or [`PLAN_NO_CRITERIA`] when the spec enumerates none.
-pub const PLAN_CRITERIA_LEAD: &str = "The acceptance criteria to propose against (echo the [id] \
+pub const PLAN_CRITERIA_LEAD: &str = "The acceptance criteria to refine against (echo the [id] \
      shown next to each criterion into that unit's `criterion_id`, and copy the text into \
      `criterion`):\n{criteria}";
 
@@ -431,11 +423,10 @@ pub const DAG_CRITIQUE_OPENER: &str = "You are the plan-critique gate. Review th
 /// FRAMING: the header over the proposed units.
 pub const DAG_UNITS_HEADER: &str = "Proposed units:\n";
 
-/// FRAMING: one proposed unit's row: its `{name}`, its escaped `{criterion}`, its `{needs}`, its
-/// `{complexity}` (a [`DAG_COMPLEXITY`] or [`DAG_NO_COMPLEXITY`]) and its blast `{radius}`, a
-/// [`DAG_FILE_LIST`].
-pub const DAG_UNIT_ROW: &str = "- `{name}`: criterion=\"{criterion}\"; needs=[{needs}]; \
-     complexity={complexity}; blast radius=[{radius}]\n";
+/// FRAMING: one proposed unit's row: its `{name}`, its escaped `{criterion}`, its `{needs}` and
+/// its blast `{radius}`, a [`DAG_FILE_LIST`].
+pub const DAG_UNIT_ROW: &str =
+    "- `{name}`: criterion=\"{criterion}\"; needs=[{needs}]; blast radius=[{radius}]\n";
 
 /// FRAMING: what fills a unit row's `{criterion}` when the unit owns none.
 pub const DAG_NO_CRITERION: &str = "(no criterion)";
@@ -445,13 +436,6 @@ pub const DAG_NO_NEEDS: &str = "none";
 
 /// FRAMING: what fills a unit row's `{radius}` when no file was grounded.
 pub const DAG_NO_RADIUS: &str = "(none grounded)";
-
-/// FRAMING: what fills a unit row's `{complexity}` when the planner gave the unit a step: the
-/// `{step}` name and its escaped `{reason}`.
-pub const DAG_COMPLEXITY: &str = "{step} (\"{reason}\")";
-
-/// FRAMING: what fills a unit row's `{complexity}` when the unit has no step.
-pub const DAG_NO_COMPLEXITY: &str = "unassessed";
 
 /// FRAMING: a list of files: their `{count}`, the `{files}` it names and `{more}`, which holds
 /// [`DAG_FILES_MORE`] when it names fewer files than it counts, else nothing.
@@ -524,10 +508,10 @@ pub const DAG_CRITIQUE_CONTRACT: &str = "\nRender your final verdict as a JSON l
      \"cause\":\"decomposition-conflict\".\n";
 
 /// FRAMING: the plan critique's rejection `{feedback}` a re-plan opens with, and the revise
-/// sentence asking for every unit again with its step and reason.
+/// sentence.
 pub const REPLAN_LEAD: &str = "The plan-critique gate REJECTED your previous \
-     decomposition:\n{feedback}\n\nRevise the unit DAG to resolve it, then re-emit every unit \
-     with its step and reason. ";
+     decomposition:\n{feedback}\n\nRevise the unit DAG to resolve it, then re-emit your \
+     UnitProposed refinements. ";
 
 /// CONTRACT: how a re-plan's ids refine or replace the units an earlier pass proposed.
 pub const REPLAN_ID_CONTRACT: &str = "To REFINE an existing unit, re-emit it under its EXACT \
@@ -651,8 +635,6 @@ pub fn prompt_groups() -> &'static [rigger_domain::prompt_surface::Group] {
             DAG_NO_CRITERION,
             DAG_NO_NEEDS,
             DAG_NO_RADIUS,
-            DAG_COMPLEXITY,
-            DAG_NO_COMPLEXITY,
             DAG_FILE_LIST,
             DAG_FILES_MORE,
             DAG_OVERLAP_DISJOINT,
@@ -723,12 +705,10 @@ mod tests {
         ("CANARY_VERDICT", "CONTRACT"),
         ("CODE_NEIGHBORHOOD_HEADER", "FRAMING"),
         ("CONFLICT_RESOLUTION", "FRAMING"),
-        ("DAG_COMPLEXITY", "FRAMING"),
         ("DAG_CRITIQUE_CONTRACT", "CONTRACT"),
         ("DAG_CRITIQUE_OPENER", "FRAMING"),
         ("DAG_FILES_MORE", "FRAMING"),
         ("DAG_FILE_LIST", "FRAMING"),
-        ("DAG_NO_COMPLEXITY", "FRAMING"),
         ("DAG_NO_CRITERION", "FRAMING"),
         ("DAG_NO_NEEDS", "FRAMING"),
         ("DAG_NO_RADIUS", "FRAMING"),

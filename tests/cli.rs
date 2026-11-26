@@ -39,7 +39,6 @@ use common::cli::temp_project;
 use common::cli::temp_repoless_project;
 use common::cli::temp_store_project;
 use common::cli::validate_after_init;
-use common::cli::INIT_PIN_NOTES;
 use common::cli::UNDECLARED_BUILD_REPORT;
 use common::cli::{assert_stopped_at_the_grounder, stopping_at_the_grounder};
 use common::cli::{
@@ -49,9 +48,8 @@ use common::cli::{
 };
 use common::cli::{escalate_solo_unit, REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW};
 use common::cli::{
-    fake_claude_env, how_the_run_ended, install_fake_claude, plant_stale_stream, run_on_arms,
-    run_on_arms_beside, run_on_arms_beside_with, run_recording, POLLS_BESIDE_A_RUN,
-    RECORDING_WORKER_ARM,
+    fake_claude_env, install_fake_claude, plant_stale_stream, run_on_arms, run_on_arms_beside,
+    run_on_arms_beside_with, run_recording, POLLS_BESIDE_A_RUN, RECORDING_WORKER_ARM,
 };
 use common::fixtures::file_len;
 use common::fixtures::{
@@ -12645,6 +12643,17 @@ stages:
 "#,
 };
 
+/// The lines of a `rigger run`'s stdout that say how it ended: its run state, then any halt.
+fn how_the_run_ended(out: &str) -> Vec<&str> {
+    out.lines()
+        .filter(|line| {
+            ["done: ", "incomplete: ", "halted: "]
+                .iter()
+                .any(|end| line.starts_with(end))
+        })
+        .collect()
+}
+
 /// Spec 105's RESUME BY SESSION across two `rigger run`s: given a reviewed unit whose run the
 /// operator interrupted while its adjudicator was live, once its implementer and its lens had
 /// answered, when the operator runs again, then the restart answers each spawn its run ended from
@@ -19194,33 +19203,6 @@ fn validate_warns_when_a_tier_resolved_model_repointed_between_runs() {
     assert!(
         err.contains("rigger canary --if-model-changed"),
         "the advisory recommends the drift-gated canary; stderr:\n{err}"
-    );
-}
-
-/// Spec 135, PINS ARE NOTED: given a `rigger init` project whose recorded runs re-point the
-/// `opus` tier, when the operator runs `rigger validate`, then it exits 0 and its stderr carries
-/// the scaffold's pin notes ([`INIT_PIN_NOTES`]) with the model-drift warning on the lines right
-/// after them: a pin note is never dropped, and never fails validate, while the drift fires.
-#[test]
-fn validate_prints_the_pin_notes_beside_the_model_drift_warning_and_exits_0() {
-    let (_out, err) =
-        validate_after_model_move("pins-beside-drift", "claude-opus-4-1", "claude-opus-4-8");
-    let drift = [
-        "warning: a tier's resolved model id changed since the previous run (a silent alias \
-         re-point):",
-        "  - opus: claude-opus-4-1 -> claude-opus-4-8",
-        "Run `rigger canary --if-model-changed` to re-measure the review panel against the \
-         seeded-defect corpus before trusting a run under the new model.",
-    ];
-    let from_the_first_pin_note: Vec<&str> = err
-        .lines()
-        .skip_while(|line| *line != INIT_PIN_NOTES[0])
-        .take(INIT_PIN_NOTES.len() + drift.len())
-        .collect();
-    assert_eq!(
-        from_the_first_pin_note,
-        [INIT_PIN_NOTES.as_slice(), &drift].concat(),
-        "the pin notes, then the drift warning, as consecutive stderr lines; stderr:\n{err}"
     );
 }
 
@@ -31554,29 +31536,26 @@ fn instructions_prints_a_table_check_that_asks_no_gate_run() {
     }
 }
 
-/// Spec 120's THE COMMUNICATION DISCIPLINE IS A SHADOWABLE BUILT-IN and spec 135's THE
-/// CONSIDERATIONS ARE BUILT IN, operator-facing: given a fresh project, when the operator runs
-/// `rigger instructions`, then the built-in layer it prints closes with the `communication`
-/// section and then the `complexity` section, each carrying its checked-in source's text, the
-/// communication section appears once, and the heading the conductor once appended appears
-/// nowhere.
+/// Spec 120's THE COMMUNICATION DISCIPLINE IS A SHADOWABLE BUILT-IN, operator-facing: given a
+/// fresh project, when the operator runs `rigger instructions`, then the built-in layer it prints
+/// closes with the `communication` section carrying its checked-in source's text, the section
+/// appears once, and the heading the conductor once appended appears nowhere.
 #[test]
-fn instructions_prints_the_communication_discipline_then_the_complexity_considerations_last() {
+fn instructions_prints_the_communication_discipline_as_the_last_built_in() {
     use common::fixtures::{
         assert_communication_section_once, builtin_instruction_source, printed_built_in_layer,
         RENDERED_COMMUNICATION_SECTION,
     };
     let proj = temp_project();
     let out = run_rigger_ok(proj.path(), &["instructions"]);
-    let closing = format!(
-        "{RENDERED_COMMUNICATION_SECTION}{}\n\n## complexity (built-in)\n{}\n",
-        repo_text(&builtin_instruction_source("communication")).trim_end(),
-        repo_text(&builtin_instruction_source("complexity")).trim_end()
+    let communication = format!(
+        "{RENDERED_COMMUNICATION_SECTION}{}\n",
+        repo_text(&builtin_instruction_source("communication")).trim_end()
     );
     assert!(
-        printed_built_in_layer(&out).ends_with(&closing),
-        "the built-in layer closes with the communication section, then the complexity \
-         section, each with its source's text; got:\n{out}"
+        printed_built_in_layer(&out).ends_with(&communication),
+        "the built-in layer closes with the communication section and its source's text; \
+         got:\n{out}"
     );
     assert_communication_section_once(&out, RENDERED_COMMUNICATION_SECTION);
 }
@@ -31675,7 +31654,6 @@ fn run_spawns_the_worker_with_a_same_named_operator_file_in_place_of_its_built_i
                 builtin_section("engineering-principles"),
                 builtin_section("working-discipline"),
                 ("communication", house),
-                builtin_section("complexity"),
                 (COMMUNICATION_NEAR_NAME, near),
             ]
         ),
@@ -31687,7 +31665,7 @@ fn run_spawns_the_worker_with_a_same_named_operator_file_in_place_of_its_built_i
 /// Spec 120's AN EMPTY SAME-NAMED OPERATOR FILE SWITCHES A BUILT-IN OFF, end to end: given a
 /// project whose `.rigger/instructions/` holds an empty `working-discipline.md`, when the
 /// operator runs `rigger run`, then the worker's system prompt carries no section for the
-/// working-discipline built-in or for the file, and the other three built-ins stand unchanged in
+/// working-discipline built-in or for the file, and the other two built-ins stand unchanged in
 /// their order under the bare heading.
 #[cfg(unix)]
 #[test]
@@ -31706,7 +31684,6 @@ fn run_spawns_the_worker_with_no_section_for_a_built_in_an_empty_same_named_file
             &[
                 builtin_section("engineering-principles"),
                 builtin_section("communication"),
-                builtin_section("complexity"),
             ]
         ),
         "the empty file switches the working-discipline built-in off and is not appended; \
@@ -31741,7 +31718,7 @@ fn prime_first_line_names_the_instructions_in_force_on_the_recent_decisions_path
         lines.next(),
         Some(
             "# Rigger instructions in force: engineering-principles, working-discipline, \
-             communication, complexity (+2 operator files) - see rigger instructions"
+             communication (+2 operator files) - see rigger instructions"
         ),
         "got:\n{out}"
     );
@@ -31852,8 +31829,8 @@ fn instructions_validate_and_prime_report_a_built_in_in_force_beside_a_near_name
         assert_eq!(
             common::cli::prime_first_line(root, &[]).as_deref(),
             Some(
-                "# Rigger instructions in force: engineering-principles, communication, \
-                 complexity (+2 operator files) - see rigger instructions"
+                "# Rigger instructions in force: engineering-principles, communication (+2 \
+                 operator files) - see rigger instructions"
             ),
             "the near name {near:?} leaves the communication built-in in force and is counted"
         );
@@ -31877,92 +31854,6 @@ fn validate_warns_of_no_built_in_for_a_near_named_or_other_operator_file() {
     layer[1] = op(COMMUNICATION_NEAR_NAME, REPLACING_COMMUNICATION_BODY);
     write_operator_layer(root, &layer[..2]);
     assert_validate_names_the_shadowed_built_ins(root, &[]);
-}
-
-/// Spec 135's THE CONSIDERATIONS ARE BUILT IN, read from the file: given a project whose
-/// `.rigger/instructions/` holds `complexity.md` beside two operator files that sort before it,
-/// when the operator runs `rigger instructions`, `rigger validate`, `rigger prime` and, on unix,
-/// `rigger run`, then a body that is not blank replaces the complexity built-in in its own place
-/// and a blank one - empty, a lone byte order mark, ASCII whitespace, a byte order mark before an
-/// em space - switches it off: each reporter names that state, the file is never listed or counted
-/// as an operator file, and the worker's system prompt carries the file's body as the complexity
-/// section, or no complexity section, before the two operator files.
-#[test]
-fn a_complexity_file_replaces_the_considerations_or_switches_them_off_for_every_reporter_and_the_spawn(
-) {
-    use common::cli::{
-        assert_validate_names_the_shadowed_built_ins, prime_first_line, write_operator_layer,
-    };
-    use common::fixtures::{
-        complexity_advisory, complexity_file_rows, house_and_team_operator_layer, op,
-        rendered_layer_closing_with_complexity, COMPLEXITY_FILE,
-    };
-    let operator = house_and_team_operator_layer();
-    let printed_operator: String = operator
-        .iter()
-        .map(|file| format!("\n## {}\n{}\n", file.name, file.body))
-        .collect();
-    for (body, verb, printed) in complexity_file_rows() {
-        let in_force = match printed {
-            Some(_) => {
-                "# Rigger instructions in force: engineering-principles, working-discipline, \
-                 communication, complexity (replaced) (+2 operator files) - see rigger instructions"
-            }
-            None => {
-                "# Rigger instructions in force: engineering-principles, working-discipline, \
-                 communication (+2 operator files) - see rigger instructions"
-            }
-        };
-        let dir = temp_git_project_with_commit();
-        let root = dir.path();
-        write_workflow_fixture(root, &LIVENESS_WORKFLOW);
-        let layer: Vec<_> = house_and_team_operator_layer()
-            .into_iter()
-            .chain([op("complexity", body)])
-            .collect();
-        write_operator_layer(root, &layer);
-        let complexity = format!(
-            "\n## complexity ({verb} by {COMPLEXITY_FILE})\n{}",
-            printed.map(|body| format!("{body}\n")).unwrap_or_default()
-        );
-        assert_eq!(
-            run_rigger_ok(root, &["instructions"]),
-            rendered_layer_closing_with_complexity(&complexity, &printed_operator),
-            "the complexity file of body {body:?} leaves the complexity built-in {verb} in its \
-             place and is listed under no operator heading"
-        );
-        assert_validate_names_the_shadowed_built_ins(root, &[&complexity_advisory(verb)]);
-        assert_eq!(
-            prime_first_line(root, &[]).as_deref(),
-            Some(in_force),
-            "the complexity file of body {body:?} is never counted as an operator file"
-        );
-        #[cfg(unix)]
-        {
-            use common::cli::run_capturing_system_prompt;
-            use common::fixtures::{builtin_section, expected_composed_prompt, persona};
-            let sections: Vec<(&str, &str)> = [
-                "engineering-principles",
-                "working-discipline",
-                "communication",
-            ]
-            .map(builtin_section)
-            .into_iter()
-            .chain(printed.map(|body| ("complexity", body)))
-            .chain(
-                operator
-                    .iter()
-                    .map(|file| (file.name.as_str(), file.body.as_str())),
-            )
-            .collect();
-            assert_eq!(
-                run_capturing_system_prompt(root, &["run"]),
-                expected_composed_prompt(&persona(UNISOLATED_WORKER), &sections),
-                "the complexity file of body {body:?} stands in the complexity section in its \
-                 place, or leaves none, and the operator files follow the built-ins"
-            );
-        }
-    }
 }
 
 rigger::test_cases! {

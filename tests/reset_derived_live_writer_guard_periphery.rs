@@ -24,8 +24,7 @@
 //! What this file OWNS and what it deliberately does not:
 //!   - OWNS: the three live signals and the definition they make up, the dead-driver run that
 //!     proceeds, the quiet-machinery baseline, `--force-live`, each signal judged against its own
-//!     window and read where the run writes it (the scratch root read fail-closed, from a
-//!     `defaults` parse that never validates the workflow), a liveness
+//!     window and read where the run writes it (the scratch root read fail-closed), a liveness
 //!     fault that does not end a spawn, the operator's way past an unbounded spawn, and the help
 //!     and skills that state the definition.
 //!   - NOT OWNED: the `--derived` prune's own selection/report/reclamation mechanics (spec 60,
@@ -61,11 +60,9 @@ use common::cli::WorkflowFixture;
 use common::cli::SEEDED_MEMO_REMOVED_LINE;
 use common::cli::SPAWN;
 use common::cli::UNISOLATED_WORKER;
-use common::fixtures::capability_table;
 use common::fixtures::registry_entries;
 use common::fixtures::seed_registry;
 use common::fixtures::subdirectory_of;
-use common::fixtures::JUDGING_FLOOR;
 use common::git::git_out;
 use common::git::nested_worktree;
 use common::git::temp_git_project_with_commit;
@@ -610,38 +607,18 @@ fn reset_derived_reads_a_marker_stamped_under_the_default_scratch_root() {
     );
 }
 
-/// With `defaults.workdir` configured in the store's `workflow.yml` beside `extra` (further
-/// `defaults` keys, two-space indented, or empty), a run stamps its markers under that workdir -
-/// not the default cache root - and the guard reads them there.
-fn assert_reads_a_marker_under_a_configured_workdir_beside(extra: &str) {
+/// With `defaults.workdir` configured in the store's `workflow.yml`, a run stamps its markers
+/// under that workdir - not the default cache root - and the guard reads them there.
+#[test]
+fn reset_derived_reads_a_marker_stamped_under_a_configured_workdir() {
     let dir = temp_store_project();
     let root = dir.path();
-    let (_workdir, scratch_root) = configure_workdir(root, extra);
+    let (_workdir, scratch_root) = configure_workdir(root, "");
     assert_refused_naming_the_spawn(
         reset_from_with_a_fresh_marker_under(root, root, "", &scratch_root),
         0..300,
         "s ago, bound 300s)",
     );
-}
-
-rigger::test_cases! {
-    /// With `defaults.workdir` configured in the store's `workflow.yml`, a run stamps its markers
-    /// under that workdir - not the default cache root - and the guard reads them there.
-    reset_derived_reads_a_marker_stamped_under_a_configured_workdir:
-        assert_reads_a_marker_under_a_configured_workdir_beside("");
-    /// The scratch root is read from a parse of `defaults` that never validates it: beside a
-    /// `defaults.capability` whose judging row the floor refuses, the configured workdir still
-    /// resolves, and the guard reads the fresh marker there.
-    reset_derived_reads_a_marker_under_a_configured_workdir_beside_a_table_the_floor_refuses: {
-        for (judging, verdict) in JUDGING_FLOOR {
-            if verdict.is_err() {
-                assert_reads_a_marker_under_a_configured_workdir_beside(&format!(
-                    "  capability: {}\n",
-                    capability_table(judging)
-                ));
-            }
-        }
-    };
 }
 
 /// The scratch root is read FAIL-CLOSED: a `defaults` block that cannot be parsed - `workdir`
