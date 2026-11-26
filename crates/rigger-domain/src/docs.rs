@@ -181,11 +181,14 @@ fn discipline_body(ctx: &DocsContext) -> String {
         "The knowledge graph is the lookup surface - reach for it before grepping the project's \
          sources. One call answers most lookups: `rigger graph --lookup <term>...` (the \
          `rigger_graph` tool's `lookup`) answers each term at once from the graph (definition \
-         site, callers, callees), a live scan of your working tree and the project's ranked prose \
+         site, the doc's first line, the referrers on one line per label - `called by`, `reads`, \
+         `type use` and the rest - and the callees), a live scan of your working tree and the \
+         project's ranked prose \
          (specs, criteria, decisions, findings, lessons, docs), each section labelled by its \
          source. Three verbs answer the narrower questions you have about the code: `rigger graph \
          --around <file|entity>` (structure: who calls X, and the caller/callee neighborhood), \
-         `rigger graph --show <entity>` (text: an entity's definition site and its body, or for a \
+         `rigger graph --show <entity>` (text: an entity's definition site, doc, referrers and \
+         body, or for a \
          name no entity carries, the names it is nearest to), and \
          `rigger peers <file>...` (memory: the prior decisions, findings, and lessons about the \
          files). Grep over the project's sources is a fallback worth reporting, not a habit: if the \
