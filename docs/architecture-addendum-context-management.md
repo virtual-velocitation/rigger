@@ -106,8 +106,9 @@ identifier or a `::` path (a symbol), or a path the tree holds (a file, indexed 
 multi-word span (a command line), a directory fragment, a path the tree does not hold and a
 language keyword name nothing; a criterion naming no code has the empty radius. The `safe` view is
 uncapped and holds:
-- every file that defines or references a named symbol the index defines (the index records the
-  references its grammar parses, so a call written inside a macro invocation is not one);
+- every file that defines a named symbol the index defines, calls it or names it in an
+  implementation header (the index records the references its grammar parses, so a call written
+  inside a macro invocation is not one; no other reference places a file);
 - every file a named path holds;
 - for a named symbol the index does NOT define (a string-literal event name, a name nothing defines
   yet), every file holding it as a whole identifier - a name ending in `_` is a family prefix

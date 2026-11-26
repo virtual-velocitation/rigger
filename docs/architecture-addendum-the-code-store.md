@@ -931,9 +931,9 @@ call), and REFERENCES from F. A call the qualified-mention rule gives no edge yi
 | up-hop (callers of D) | definition D | direct resolutions to D, plus placeholder edges whose leaf is D's leaf, one keyed by a qualified name only when its down-hop holds D | callers |
 | tagged reference | Mention `Tagged(k)` | definitions of the leaf whose kind `reference_candidate_kinds(k)` names, a non-target kind included (a `field` reference's are a field, a property, a constant, a static or a variant): for any `k` but `field`, exactly one same-file | EXTRACTED |
 | | | else exactly one in the project | INFERRED |
-| | | else | no edge; counted as unresolved |
+| | | else | no edge |
 | | | for `k` = `field`, the same-file step skipped and a constant, static or variant left to the qualified-mention rule: exactly one `field` or `property` definition in the project, in F or not | INFERRED |
-| | | else | no edge; counted as unresolved |
+| | | else | no edge |
 | module | ModuleDecl in F | F is a child when the first declaration reaching it carries no path attribute, the walk starting at the files no declaration's list names and going down a depth at a time, each depth in path order, the first declaring file in path order the walk has not visited when a depth runs out starting the next as a root: the first path that is a file in the view of its `as_child` list when F is a child, else of its `as_root` list | CONTAINS edge to that file, marked `test` when the declaration, F or that file is test code |
 | proof | Mention `Call` that is test code: its `test` mark, a Test-scope file, or a file in the out-of-line test-module closure | written `Q::leaf` or `Q.leaf`, the qualified-mention rule over every candidate, product and test: exactly one kept, that definition when it is product, none when it is test; none for several kept, or for a call that rule gives no edge; otherwise exactly one same-file candidate: that definition when it is product, none when it is test; else exactly one same-file product candidate; else exactly one product candidate in the project | +1 to that definition's `proven_by`, and `file:line` added to its `proof_evidence` |
 | duplicate id | two definitions with one id | `definition_precedence(kind, line)` | one node |
