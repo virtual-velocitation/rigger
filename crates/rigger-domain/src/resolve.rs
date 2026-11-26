@@ -357,6 +357,16 @@ pub(crate) fn def_leaves(facts: &FileFacts, local: &str) -> Vec<String> {
     leaves
 }
 
+/// The site a fact of `facts` enclosed by the definition at `enclosing`, an index in its
+/// definitions, sits in: that definition's entity id, with the definition, else at file level the
+/// file's id.
+fn site_of(facts: &FileFacts, enclosing: Option<u32>) -> (String, Option<&Def>) {
+    match enclosing.and_then(|i| facts.defs.get(i as usize)) {
+        Some(d) => (entity_id(&facts.path, &d.local), Some(d)),
+        None => (facts.path.clone(), None),
+    }
+}
+
 /// Where the module declarations of `view`, whose code files are `code_files`, `declaring` those
 /// that declare a module held elsewhere, place their files: the files each reaches as a child,
 /// and every declaration that reaches a code file, as (declaring file, test mark, target). The
@@ -891,10 +901,8 @@ impl<'v> Resolver<'v> {
             };
             let test = self.mention_is_test(facts, m);
             let (listed, ambiguous) = self.listed(facts, m, test);
-            let (site, kind) = match m.enclosing.and_then(|i| facts.defs.get(i as usize)) {
-                Some(d) => (entity_id(&facts.path, &d.local), kinds[d.local.as_str()]),
-                None => (facts.path.clone(), KIND_FILE),
-            };
+            let (site, def) = site_of(facts, m.enclosing);
+            let kind = def.map_or(KIND_FILE, |d| kinds[d.local.as_str()]);
             for to in listed {
                 let (site, kind) = (site.clone(), kind.to_string());
                 let line = m.line;
@@ -1047,15 +1055,14 @@ impl<'v> Resolver<'v> {
         mut sink: impl FnMut(&str, &'static str, &str, &'static str, bool),
     ) {
         let file = facts.path.as_str();
-        let ids: Vec<std::cell::OnceCell<String>> = vec![Default::default(); facts.defs.len()];
-        let entity = |i: u32| {
-            let held = ids.get(i as usize)?;
-            Some(
-                held.get_or_init(|| entity_id(file, &facts.defs[i as usize].local))
-                    .as_str(),
-            )
+        // Each site's id ([`site_of`]), built once: a definition's at its index, the file's
+        // after them.
+        let sites: Vec<std::cell::OnceCell<String>> =
+            vec![Default::default(); facts.defs.len() + 1];
+        let from_of = |i: Option<u32>| {
+            let at = i.map_or(facts.defs.len(), |i| (i as usize).min(facts.defs.len()));
+            sites[at].get_or_init(|| site_of(facts, i).0).as_str()
         };
-        let from_of = |i: Option<u32>| i.and_then(entity).unwrap_or(file);
         // A product reference is held only by a product edge, so showing tests changes no
         // product edge. A call's reference runs from the file, so only one from the file is held;
         // each target maps to whether a product call references it, and a call landing on a
@@ -1111,10 +1118,7 @@ impl<'v> Resolver<'v> {
     ) {
         let file = facts.path.as_str();
         let file_test = self.is_test_file(file);
-        let from_of = |i: Option<u32>| match i.and_then(|i| facts.defs.get(i as usize)) {
-            Some(d) => entity_id(file, &d.local),
-            None => file.to_string(),
-        };
+        let from_of = |i: Option<u32>| site_of(facts, i).0;
         for decl in &facts.modules {
             let Some(target) = self.module_target(file, decl) else {
                 continue;
