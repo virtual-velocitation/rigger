@@ -325,10 +325,12 @@ impl<'v> CodeGraph<'v> {
 
     /// The candidate ids a walk's down-hop from `id` reaches when `id` is a placeholder keyed by a
     /// qualified name, in id order: those its down-hop keeps ([`Resolver::down_hop`]) in the
-    /// product pool under every filter, the pool [`Resolver::callers`] reads a product call in,
-    /// and, when the filter shows tests, those it keeps in the test pool beside them, never in
-    /// their place, since a product call and a test call of one name in one file land on one
-    /// placeholder; none for any other id.
+    /// product pool under every filter and, when the filter shows tests, those it keeps in the
+    /// pool a test call resolves against ([`Pool::All`]) beside them, never in their place, since
+    /// a product call and a test call of one name in one file land on one placeholder; none for
+    /// any other id. The union serves every call on the placeholder, so a walk up from a test
+    /// candidate reaches a product caller that [`Resolver::callers`], reading a product call's
+    /// down-hop in the product pool alone, does not list.
     pub fn down_hop(&self, id: &str) -> Option<Vec<String>> {
         split_path(leaf_of(id)?).0?;
         let kept = |pool| self.resolver.down_hop(id, pool).map(Hop::into_vec);

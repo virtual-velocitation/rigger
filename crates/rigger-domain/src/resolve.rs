@@ -11,7 +11,7 @@
 //! | up-hop | the edges landing on a definition, or on a placeholder whose candidates hold it |
 //! | tagged reference | candidates of the tag's kinds in the file's language: one same-file is `extracted`, else one in the view is `inferred`, else no edge; a `field` reference no qualifier narrows reads its field and property candidates alone and skips the same-file step: one in the view, in its file or not, is `inferred`, else no edge, so it reaches a constant, a static or a variant only through a qualifier that keeps it |
 //! | held reference | a tagged reference whose node already references the target, or the placeholder of its leaf from that node, keyed by the leaf or by a call's qualified name, writes no edge |
-//! | module | the first path that is a code file in the view of its `as_child` list when the first declaration reaching the declaring file carries no `#[path]` attribute, walking down from the files no declaration names a depth at a time in path order, else of its `as_root` list ([`module_target`]): a `CONTAINS` edge to it from the declaring definition |
+//! | module | the first path that is a code file in the view of its `as_child` list when the first declaration reaching the declaring file carries no `#[path]` attribute, walking down from the files no declaration names a depth at a time in path order, else of its `as_root` list ([`Resolver::module_target`]): a `CONTAINS` edge to it from the declaring definition |
 //! | structure | each id's one `CONTAINS`, from the parent of the definition that settles it, else from its file |
 //! | proof | a test call its qualifier narrows, among every call-target candidate, test ones too: the one it keeps when that one is product, and none when it is test, it keeps several, or its qualifier makes it no link; any other test call: the one same-file call-target candidate when it is product and none when it is test, else one same-file product call-target candidate, else one in the view |
 //! | duplicate id, kind precedence | one entity per id, its kind, line and `CONTAINS` parent by [`definition_precedence`] |
@@ -78,7 +78,7 @@ const INTENT_RELS: [&str; 9] = [
 /// The file a module declaration reaches: the first path that is a code file of its `as_child`
 /// list when its declaring file is a `child` ([`reach`]), else of its `as_root` list. The module
 /// rule and the test-module closure both read it, so they cannot disagree.
-pub fn module_target(
+fn module_target(
     decl: &ModuleDecl,
     child: bool,
     is_code_file: impl Fn(&str) -> bool,
@@ -950,7 +950,7 @@ impl<'v> Resolver<'v> {
         self.is_test(m.test, &facts.path)
     }
 
-    /// The test calls of `facts`: its call mentions that are test code, in source order.
+    /// The test calls of `facts`: its call mentions that are test code, in mention order.
     fn test_calls<'a>(
         &'a self,
         facts: &'a FileFacts,
@@ -1510,9 +1510,8 @@ pub fn resettle(
     }
     qualifiers.extend(leaves.iter().cloned());
     let targets = |r: &Resolver, leaf: &str| -> Vec<(String, bool)> {
-        let candidates = r.candidates(leaf);
-        let calls = candidates.iter().filter(|c| Pool::All.calls(c));
-        calls.map(|c| (c.id.clone(), c.test)).collect()
+        let calls = r.call_targets(leaf, Pool::All).into_iter();
+        calls.map(|c| (c.id, c.test)).collect()
     };
     let mut redo: BTreeSet<String> = reached.iter().map(|p| p.to_string()).collect();
     for leaf in leaves
@@ -1620,6 +1619,22 @@ pub(crate) mod tests {
             name: name.into(),
             ..mention(kind, path_leaf(name), enclosing, line, test)
         }
+    }
+
+    /// A call written `name` (`Q::leaf`) from its file's first definition.
+    fn qualified_call(name: &str, line: u32, test: bool) -> Mention {
+        qualified(MentionKind::Call, name, Some(0), line, test)
+    }
+
+    /// A `const` reference written `name` (`Q::leaf`) from its file's first definition.
+    fn qualified_const(name: &str, line: u32, test: bool) -> Mention {
+        qualified(
+            MentionKind::Tagged("const".into()),
+            name,
+            Some(0),
+            line,
+            test,
+        )
     }
 
     /// A test's call written `name` (`Q::leaf`) from the definition at `enclosing`.
@@ -1980,7 +1995,7 @@ pub(crate) mod tests {
 
     /// The rows a store settles from `view` alone, settling it whole: its test files and its
     /// proof calls.
-    fn settled_rows(view: &FactsView) -> (Vec<String>, Vec<ProofCall>) {
+    pub(crate) fn settled_rows(view: &FactsView) -> (Vec<String>, Vec<ProofCall>) {
         let whole = Resolver::new(view);
         let test_files = whole.test_files().into_iter().map(str::to_string).collect();
         (test_files, whole.proof_calls().to_vec())
@@ -3188,8 +3203,6 @@ pub(crate) mod tests {
     /// mention keeps the unqualified rule.
     #[test]
     fn a_qualifier_reaches_its_implementations_and_their_traits_alone() {
-        let qualified_call =
-            |name: &str, line| qualified(MentionKind::Call, name, Some(0), line, false);
         let shape = code(
             "src/shape.rs",
             "rust",
@@ -3233,10 +3246,10 @@ pub(crate) mod tests {
             Scope::Product,
             vec![def("run", "function", 1, None, false)],
             vec![
-                qualified_call("Wrapper::area", 2),
-                qualified_call("Source::from", 3),
-                qualified_call("Holder::area", 4),
-                qualified_call("Holder::paint", 5),
+                qualified_call("Wrapper::area", 2, false),
+                qualified_call("Source::from", 3, false),
+                qualified_call("Holder::area", 4, false),
+                qualified_call("Holder::paint", 5, false),
                 qualified(
                     MentionKind::Tagged("variant".into()),
                     "Shape::Empty",
@@ -3282,17 +3295,6 @@ pub(crate) mod tests {
     /// would hand the test mentions the product answer.
     #[test]
     fn a_test_implementation_narrows_test_mentions_alone() {
-        let qualified_call =
-            |name: &str, line, test| qualified(MentionKind::Call, name, Some(0), line, test);
-        let qualified_const = |name: &str, line, test| {
-            qualified(
-                MentionKind::Tagged("const".into()),
-                name,
-                Some(0),
-                line,
-                test,
-            )
-        };
         let shape = code(
             "src/shape.rs",
             "rust",
@@ -3435,15 +3437,9 @@ pub(crate) mod tests {
             Scope::Product,
             vec![def("run", "function", 1, None, false)],
             vec![
-                qualified(MentionKind::Call, "Square::area", Some(0), 2, false),
-                qualified(
-                    MentionKind::Tagged("const".into()),
-                    "Square::SIDES",
-                    Some(0),
-                    3,
-                    false,
-                ),
-                qualified(MentionKind::Call, "Square::name", Some(0), 4, false),
+                qualified_call("Square::area", 2, false),
+                qualified_const("Square::SIDES", 3, false),
+                qualified_call("Square::name", 4, false),
             ],
         );
         let view = FactsView::new(stamp(), vec![shape, square, user]);
@@ -3470,7 +3466,6 @@ pub(crate) mod tests {
     /// keeping one would leave a call on its placeholder and a reference on no edge.
     #[test]
     fn a_qualified_mention_narrows_only_the_candidates_its_rule_reads() {
-        let qualified_call = |name: &str| qualified(MentionKind::Call, name, Some(0), 2, false);
         let config = code(
             "src/config.hpp",
             "cpp",
@@ -3496,7 +3491,7 @@ pub(crate) mod tests {
             "cpp",
             Scope::Product,
             vec![def("main", "function", 1, None, false)],
-            vec![qualified_call("Config::load")],
+            vec![qualified_call("Config::load", 2, false)],
         );
         let point = code(
             "src/point.rs",
@@ -3523,7 +3518,7 @@ pub(crate) mod tests {
             "rust",
             Scope::Product,
             vec![def("plot", "function", 1, None, false)],
-            vec![qualified_call("Point::x")],
+            vec![qualified_call("Point::x", 2, false)],
         );
         let limits = code(
             "src/limits.rs",
@@ -3560,13 +3555,7 @@ pub(crate) mod tests {
             "rust",
             Scope::Product,
             vec![def("cap", "function", 1, None, false)],
-            vec![qualified(
-                MentionKind::Tagged("const".into()),
-                "Limits::MAX",
-                Some(0),
-                2,
-                false,
-            )],
+            vec![qualified_const("Limits::MAX", 2, false)],
         );
         let view = FactsView::new(
             stamp(),

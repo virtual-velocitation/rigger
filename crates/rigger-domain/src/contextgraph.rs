@@ -574,9 +574,9 @@ pub struct EntitySite {
     pub degree: usize,
     /// The node's attrs, whole; [`site_fields`] gives the closed list of them a surface prints.
     pub attrs: BTreeMap<String, String>,
-    /// A `file` node's unresolved references (spec 117, READERS): the sorted distinct leaves of
-    /// its live `type`, `const` and `use` rows that resolve to nothing, read at its site read;
-    /// empty for any other node and for a site [`entity_site`] builds.
+    /// A `file` node's unresolved reference leaves (spec 117, READERS), as
+    /// [`Neighbors::unresolved`] answers them at its site read; empty for any other node and for a
+    /// site [`entity_site`] builds. No half records reference rows, so every half answers none.
     pub unresolved: Vec<String>,
     /// The node's doc (spec 117, READERS), as [`ContextGraph::doc`] reads it at the composed
     /// graph's [`ContextGraph::locate`]: a definition's doc comment or a file's leading doc,
@@ -1356,7 +1356,9 @@ pub trait Neighbors: Send + Sync {
     /// The nodes whose [`query::member_file`] is `file` (THE MEMBER RULE).
     fn members(&self, file: &str) -> Result<Vec<Node>, Error>;
     /// The nodes a leaf binds: those whose [`query::node_name`] is `leaf`, and those whose id's
-    /// text after its first `::` is `leaf` or `leaf` behind the [`PLACEHOLDER_SIGIL`].
+    /// text after its first `::` is `leaf` or a name behind the [`PLACEHOLDER_SIGIL`] that is
+    /// `leaf` or whose leaf ([`query::path_leaf`]) is: a placeholder keyed by a qualified name
+    /// (`<file>::%T.leaf`) binds its leaf.
     fn leaf_nodes(&self, leaf: &str) -> Result<Vec<Node>, Error>;
     /// Every node of `kind`, ordered by id.
     fn of_kind(&self, kind: &str) -> Result<Vec<Node>, Error>;
@@ -1554,13 +1556,16 @@ impl CodeEntityExtracted {
 }
 
 /// The [`EdgeInferred::ref_kind`] of a TYPE reference (spec 117): a Rust type name, an uppercase
-/// path segment, or a struct literal's or pattern's name.
+/// path segment, or a struct literal's or pattern's name, and, in any language, a
+/// `@reference.class`, `@reference.type` or `@reference.interface` capture of its tags query.
 pub const REF_KIND_TYPE: &str = "type";
 /// The [`EdgeInferred::ref_kind`] of a CONST read (spec 117): an all-caps Rust identifier, or the
 /// final identifier of a whole path, read in expression position or matched in a refutable
-/// pattern, or a format string's inline capture so spelled.
+/// pattern, or a format string's inline capture so spelled, and, in any language, a
+/// `@reference.constant` capture of its tags query.
 pub const REF_KIND_CONST: &str = "const";
-/// The [`EdgeInferred::ref_kind`] of a USE (spec 117): one imported leaf of a Rust `use`.
+/// The [`EdgeInferred::ref_kind`] of a USE (spec 117): one imported leaf of a Rust `use`, and, in
+/// any language, a `@reference.import` capture of its tags query.
 pub const REF_KIND_USE: &str = "use";
 /// The [`EdgeInferred::ref_kind`] of a FIELD reference (spec 117, NEW TAGS): a member read or
 /// written without a call.

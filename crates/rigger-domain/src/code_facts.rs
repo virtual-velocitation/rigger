@@ -125,8 +125,8 @@ impl Recorded<'_> {
         self.widest(defs).map(|d| d.end_line)
     }
 
-    /// The definition among `defs` whose end [`Self::widest_end`] gives, the last of a tie: the
-    /// one whose doc span is the recorded definition's.
+    /// The definition among `defs` whose end [`Self::widest_end`] gives, the last of an end-line
+    /// tie: the one a node's doc span is read off.
     pub fn widest<'d, D: Copy + Into<Bound<'d>>>(
         &self,
         defs: impl IntoIterator<Item = D>,
@@ -167,7 +167,7 @@ pub struct Mention {
 
 /// One module declared in a file (Rust's `mod foo;`). Its two lists depend on the declaring file
 /// alone; which list the view tries, and the first path in it that is a file in the tree, are
-/// picked at read ([`crate::resolve::module_target`]).
+/// picked at read ([`crate::resolve::Resolver::module_target`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ModuleDecl {
     pub name: String,

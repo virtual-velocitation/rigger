@@ -1229,9 +1229,9 @@ mod tests {
     use crate::composed::{Composed, Honesty, Whole};
     use crate::contextgraph::query::node_name;
     use crate::contextgraph::{ContextGraph, Direction, TIER_AMBIGUOUS};
-    use crate::resolve::tests::{fixture, stamp};
+    use crate::resolve::tests::{fixture, settled_rows, stamp};
     use crate::resolve::ProofCall;
-    use crate::resolve::Resolver;
+    use crate::test_support::matching_honesty;
     use std::borrow::Cow;
 
     /// Asserts two answers are the same, by their debug text: nodes and edges are compared
@@ -1328,14 +1328,8 @@ mod tests {
 
     impl Settles {
         fn of(view: FactsView) -> Self {
-            let resolver = Resolver::new(&view);
-            let test_files = (view.files())
-                .filter(|f| resolver.is_test_file(f.path))
-                .map(|f| f.path.to_string())
-                .collect();
-            let proofs = resolver.proof_calls().to_vec();
+            let (test_files, proofs) = settled_rows(&view);
             assert!(!proofs.is_empty(), "the fixture holds proofs");
-            drop(resolver);
             Settles {
                 view,
                 test_files,
@@ -1541,6 +1535,14 @@ mod tests {
         }
     }
 
+    /// What a reader knows of a worktree its view compares with as `compared`.
+    fn honesty(compared: Compared) -> Honesty {
+        Honesty {
+            compared,
+            ..matching_honesty()
+        }
+    }
+
     /// Composed over a neighbourhood answers every search as composed over the whole graph: the
     /// subgraph, the walks both ways, the referrers, the lookup of a definition, the hidden tests
     /// and the hidden tests proving what a subgraph shows, the view read from its facts, its
@@ -1549,11 +1551,6 @@ mod tests {
     fn composed_near_answers_every_search_as_composed_whole() {
         let view = view();
         let records = Indexed::default();
-        let honesty = || Honesty {
-            worktree: "wt".into(),
-            compared: crate::code_view::Compared::Overlaid(0),
-            behind: None,
-        };
         let seeds = [
             "src/a.rs::run",
             "src/a.rs",
@@ -1572,8 +1569,8 @@ mod tests {
             ]
         }) {
             let filter = ViewFilter { tests };
-            let whole = Composed::new(&records, &view, filter, honesty()).unwrap();
-            let near = Composed::near(&records, read, filter, honesty(), None).unwrap();
+            let whole = Composed::new(&records, &view, filter, matching_honesty()).unwrap();
+            let near = Composed::near(&records, read, filter, matching_honesty(), None).unwrap();
             for seed in seeds {
                 let at = format!("{tests:?} {held} {seed}");
                 same!(
@@ -1692,11 +1689,6 @@ mod tests {
     #[test]
     fn hidden_provers_are_the_distinct_tests_proving_the_nodes_shown_while_tests_are_hidden() {
         let records = Indexed::default();
-        let honesty = |compared| Honesty {
-            worktree: "wt".into(),
-            compared,
-            behind: None,
-        };
         let (run, helper) = ("src/a.rs::run", "src/a.rs::helper");
         let (compared, uncomparable) = (Compared::Overlaid(0), Compared::Uncomparable);
         let cases: &[(Tests, Compared, &[&str], usize)] = &[
@@ -1766,11 +1758,6 @@ mod tests {
     #[test]
     fn hidden_placeholder_callers_are_the_tests_calling_through_a_placeholder() {
         let records = Indexed::default();
-        let honesty = |compared| Honesty {
-            worktree: "wt".into(),
-            compared,
-            behind: None,
-        };
         let (run, draw, other) = ("src/a.rs::run", "src/b.rs::draw", "src/c.rs::draw");
         let (compared, uncomparable) = (Compared::Overlaid(0), Compared::Uncomparable);
         let cases: &[(Tests, Compared, &[&str], usize)] = &[
@@ -2258,14 +2245,9 @@ mod tests {
     fn near_folds_qualified_callers() {
         use crate::contextgraph::{around, REL_CALLS, TIER_EXTRACTED};
         use crate::resolve::tests::narrowing_fixture;
-        use crate::test_support::edge;
+        use crate::test_support::{edge, halves};
         let view = narrowing_fixture();
         let records = Indexed::default();
-        let honesty = || Honesty {
-            worktree: "wt".into(),
-            compared: Compared::Overlaid(0),
-            behind: None,
-        };
         let (new, open) = (
             "src/code_view.rs::FactsView::new",
             "src/composed.rs::Composed::open",
@@ -2313,18 +2295,16 @@ mod tests {
             ),
         ];
         for (shows, tests, seed, want) in cases {
-            let filter = ViewFilter { tests };
-            let whole = Composed::new(&records, &view, filter, honesty()).unwrap();
-            let near = Composed::near(&records, &view, filter, honesty(), None).unwrap();
+            let [(_, whole), (_, near)] = halves(&records, &view, tests);
             let seed = [seed.to_string()];
             let at = format!("{tests:?} {}: {shows}", seed[0]);
-            let drawn = around(&whole, &seed, 2).unwrap();
+            let drawn = around(&*whole, &seed, 2).unwrap();
             let callers: Vec<Edge> = (drawn.graph.edges.iter())
                 .filter(|e| e.rel == REL_CALLS && e.to == seed[0])
                 .cloned()
                 .collect();
             same!(callers, want, "whole {at}");
-            let got = around(&near, &seed, 2).unwrap();
+            let got = around(&*near, &seed, 2).unwrap();
             same!(got.graph, drawn.graph, "near {at}");
             assert_eq!(got.tests_hidden, drawn.tests_hidden, "near {at}");
         }
@@ -2333,7 +2313,7 @@ mod tests {
     /// A MODULE ROOT IS DECIDED AT READ in both code halves (spec 117): over the resolver's
     /// module-root fixture, the edges into a file, from the whole graph and from a neighbourhood
     /// folding the files declaring it, are the `CONTAINS` edges of the declarations reaching it
-    /// through the list their declaring file's place picks ([`Resolver::module_target`]); a file
+    /// through the list their declaring file's place picks ([`crate::resolve::Resolver::module_target`]); a file
     /// only a declaration's other list names has none.
     #[test]
     fn a_module_is_folded_from_the_files_whose_place_reaches_it() {

@@ -598,8 +598,11 @@ impl Whole {
 
     /// [`Self::at`], reading the test calls landing on a placeholder that a callers walk reaches
     /// ([`CodeGraph::placeholder_calls`]), the down-hops of its placeholders keyed by a qualified
-    /// name ([`CodeGraph::down_hop`]) and its entities' referrers ([`CodeGraph::referrers`]) only
-    /// when `walked`: a read that is never walked leaves them unresolved.
+    /// name ([`CodeGraph::down_hop`]) and its entities' referrers ([`CodeGraph::referrers`]) into
+    /// the half only when `walked`: a read that is never walked holds none of them, though each
+    /// placeholder node keyed by a qualified name carries its down-hop as its
+    /// [`crate::contextgraph::query::CANDIDATES_ATTR`] either way, as [`CodeGraph`] writes it on
+    /// every read.
     fn read(view: &dyn CodeView, filter: ViewFilter, resolution: f64, walked: bool) -> Self {
         let computed = computed_at(view, resolution);
         let grains: Vec<&Groupings> = std::iter::once(view.groupings())
@@ -1562,7 +1565,7 @@ impl<C: CodeHalf> ContextGraph for Composed<'_, C> {
             return Vec::new();
         }
         let mut referrers = self.code.referrers(id);
-        referrers.retain(|r| !r.test || tests != Tests::Exclude);
+        referrers.retain(|r| !r.test || tests.admits(true));
         referrers
     }
     fn nodes_of_kind(&self, kind: &str) -> Result<Vec<Node>, Error> {
@@ -3187,19 +3190,17 @@ mod tests {
         }
     }
 
-    /// An extractor whose doc text names the language it read the span's lines as.
+    /// An extractor whose doc text names the language it read the span's lines as; it extracts as
+    /// [`crate::test_support::NoDocRule`] does.
     struct LangMarked;
 
     impl Extract for LangMarked {
         fn fingerprint(&self) -> u64 {
-            0
+            crate::test_support::NoDocRule.fingerprint()
         }
 
-        fn extract(&self, entry: &Entry, _bytes: &[u8]) -> FileFacts {
-            FileFacts {
-                path: entry.path.clone(),
-                ..FileFacts::default()
-            }
+        fn extract(&self, entry: &Entry, bytes: &[u8]) -> FileFacts {
+            crate::test_support::NoDocRule.extract(entry, bytes)
         }
 
         fn doc_text(&self, lang: &str, raw: &str) -> String {
