@@ -2,8 +2,8 @@
 //! under the code store by the store's fingerprint, the file's path and its content, so a
 //! one-shot read extracts each content once.
 //!
-//! An entry is a one-file snapshot ([`encode`]) at `memo/<fingerprint>-<path hash>-<content
-//! id>.facts`, stamped with the store's fingerprint and the content's identity (its content id,
+//! An entry is a one-file snapshot with an empty code half ([`encode_without_half`]) at
+//! `memo/<fingerprint>-<path hash>-<content id>.facts`, stamped with the store's fingerprint and the content's identity (its content id,
 //! crc32 and length), published atomically and unsynced ([`write_atomic_as`]) once it reads back
 //! as the facts it holds. A read takes an entry only when it decodes whole with that stamp and
 //! holds the facts of that one path; any other entry is absent and removed, and the file is
@@ -18,10 +18,10 @@
 //! removes the whole memo, and `rigger validate` reports its size.
 
 use crate::code::dir_source::content_id;
-use crate::code::snapshot::{encode, Snapshot};
+use crate::code::snapshot::{encode_without_half, Snapshot};
 use crate::format::{crc32, write_atomic_as, Durability, TEMP};
 use rigger_domain::code_facts::{FileFacts, Stamp, Tip};
-use rigger_domain::code_view::{CodeView, FactsView, Groupings};
+use rigger_domain::code_view::{CodeView, FactsView};
 use rigger_domain::playbooks::fnv1a_64;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
@@ -89,7 +89,7 @@ impl DiskMemo {
         std::fs::create_dir_all(&self.dir)
             .map_err(|e| format!("create {}: {e}", self.dir.display()))?;
         let view = FactsView::new(self.stamp(bytes), vec![facts.clone()]);
-        let snap = Snapshot::decode(encode(&view, &Groupings::default())?)?;
+        let snap = Snapshot::decode(encode_without_half(&view)?)?;
         if self.facts_in(&snap, &facts.path, bytes).as_ref() != Some(facts) {
             return Err(format!(
                 "the memo entry of {} does not read back",

@@ -58,7 +58,7 @@ use rigger_domain::code_view::{
     ViewFilter,
 };
 use rigger_domain::composed::{HalfRows, Indexed};
-use rigger_domain::contextgraph::{Edge, Node};
+use rigger_domain::contextgraph::{Edge, Graph, Node};
 use rigger_domain::resolve::ProofCall;
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
@@ -489,9 +489,28 @@ fn width_of(kind: u16) -> usize {
 
 /// The bytes of `view`'s snapshot with `groupings`: a pure function of the two.
 pub fn encode(view: &dyn CodeView, groupings: &Groupings) -> Result<Vec<u8>, String> {
-    let mut enc = Encoder::default();
     let graph = CodeGraph::new(view, ViewFilter::default());
     let half = Indexed::resolved(&graph, groupings);
+    encode_with(view, &graph, groupings, &half.half_rows())
+}
+
+/// The bytes of `view`'s snapshot with no groupings and an empty code half: an entry of the facts
+/// memo, which nothing reads but its files' facts.
+pub(crate) fn encode_without_half(view: &dyn CodeView) -> Result<Vec<u8>, String> {
+    let graph = CodeGraph::new(view, ViewFilter::default());
+    let none = Indexed::new(Graph::default(), Vec::new());
+    encode_with(view, &graph, &Groupings::default(), &none.half_rows())
+}
+
+/// The bytes of `view`'s snapshot, `graph` read over it, with `groupings` and the code half
+/// `half`.
+fn encode_with(
+    view: &dyn CodeView,
+    graph: &CodeGraph<'_>,
+    groupings: &Groupings,
+    half: &HalfRows<'_>,
+) -> Result<Vec<u8>, String> {
+    let mut enc = Encoder::default();
     let resolver = graph.resolver();
     let stamp = view.stamp();
     let mut header = Vec::new();
@@ -509,7 +528,7 @@ pub fn encode(view: &dyn CodeView, groupings: &Groupings) -> Result<Vec<u8>, Str
         }
     }
     enc.proofs(resolver.proof_calls())?;
-    enc.half(&half.half_rows())?;
+    enc.half(half)?;
     let (leaf_defs, leaf_mentions) = (
         std::mem::take(&mut enc.leaf_defs),
         std::mem::take(&mut enc.leaf_mentions),
