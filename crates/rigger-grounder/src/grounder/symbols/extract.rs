@@ -1761,10 +1761,12 @@ fn rust_references(structure: &StructuralNodes, source: &[u8], scope: &Scope) ->
         .impls
         .iter()
         .flat_map(|&block| {
-            ["trait", "type"]
+            let trait_leaf = block
+                .child_by_field_name("trait")
+                .and_then(base_type_identifier);
+            trait_leaf
                 .into_iter()
-                .filter_map(move |field| block.child_by_field_name(field))
-                .filter_map(base_type_identifier)
+                .chain(impl_self_leaf(block))
                 .map(move |leaf| (leaf, block.byte_range()))
         })
         .collect();
@@ -2328,8 +2330,8 @@ fn qualifier_segment(path: tree_sitter::Node) -> Option<tree_sitter::Node> {
 }
 
 /// The type or trait `Self` and a `self` receiver name at `node`: the self type's identifier of
-/// the innermost impl or trait enclosing `node` when that is an impl ([`base_type_identifier`],
-/// its generics, path and reference stripped), else that trait's name; outside every impl and
+/// the innermost impl or trait enclosing `node` when that is an impl ([`impl_self_leaf`], its
+/// generics, path and reference stripped), else that trait's name; outside every impl and
 /// trait of `node`'s tree, the one its invocation's `scope` names ([`Scope::owner`], `None` in the
 /// file's own read); `None` for a self type naming no single type (`impl Tr for [u8]`).
 fn self_qualifier(node: tree_sitter::Node, source: &[u8], scope: &Scope) -> Option<String> {
@@ -2339,10 +2341,17 @@ fn self_qualifier(node: tree_sitter::Node, source: &[u8], scope: &Scope) -> Opti
         return scope.owner.clone();
     };
     let named = match owner.kind() {
-        "impl_item" => base_type_identifier(owner.child_by_field_name("type")?)?,
+        "impl_item" => impl_self_leaf(owner)?,
         _ => owner.child_by_field_name("name")?,
     };
     Some(named.utf8_text(source).ok()?.to_string())
+}
+
+/// The identifier an `impl_item`'s self type names ([`base_type_identifier`]: its generics, path
+/// and reference stripped), `None` for one naming no single type (`impl Tr for [u8]`): the one
+/// type its header's self row stages and a `Self` or `self` inside it is qualified by.
+fn impl_self_leaf(block: tree_sitter::Node) -> Option<tree_sitter::Node> {
+    base_type_identifier(block.child_by_field_name("type")?)
 }
 
 /// Whether `node`, an `identifier`, a whole `scoped_identifier` or the `generic_function` a
