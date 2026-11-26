@@ -54,6 +54,22 @@ pub enum MentionKind {
     Tagged(String),
 }
 
+impl MentionKind {
+    /// The kind of a reference the extractor tags `tag`: a call when it tags none. The one map
+    /// from a reference's tag to its kind, [`Self::tag`] its inverse.
+    pub fn from_tag(tag: Option<&str>) -> Self {
+        tag.map_or(Self::Call, |tag| Self::Tagged(tag.to_string()))
+    }
+
+    /// The tag a reference of this kind carries, none for a call ([`Self::from_tag`]'s inverse).
+    pub fn tag(&self) -> Option<&str> {
+        match self {
+            Self::Call => None,
+            Self::Tagged(tag) => Some(tag),
+        }
+    }
+}
+
 /// One definition in a file.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Def {

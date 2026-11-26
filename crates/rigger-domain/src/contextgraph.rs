@@ -1647,13 +1647,9 @@ const REFERRED_BY: [&str; REFERRER_LABELS.len()] = [
 /// The label a referrer whose mention is of `kind` is listed under ([`REFERRER_LABELS`]); `None`
 /// for a tag the table holds no row for.
 pub fn referrer_label(kind: &MentionKind) -> Option<&'static str> {
-    let tag = match kind {
-        MentionKind::Call => None,
-        MentionKind::Tagged(tag) => Some(tag.as_str()),
-    };
     REFERRER_LABELS
         .iter()
-        .find(|(row, _)| *row == tag)
+        .find(|(row, _)| *row == kind.tag())
         .map(|(_, label)| *label)
 }
 
@@ -2118,9 +2114,7 @@ mod referrer_label_rule {
             REFERRER_LABELS, listed,
             "one row per tag, in the spec's order"
         );
-        let kind = |tag: Option<&str>| {
-            tag.map_or(MentionKind::Call, |tag| MentionKind::Tagged(tag.into()))
-        };
+        let kind = MentionKind::from_tag;
         assert_eq!(
             listed.map(|(tag, _)| referrer_label(&kind(tag))),
             listed.map(|(_, label)| Some(label)),
