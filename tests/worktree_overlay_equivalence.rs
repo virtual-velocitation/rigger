@@ -111,7 +111,8 @@ fn the_overlaid_worktree_answers_what_a_commit_of_its_content_answers() {
     for ((case, got), (_, want)) in overlaid.iter().zip(&committed) {
         assert_eq!(got, want, "{case}");
     }
-    // The premise: the changes moved the answer, a test-ness flip both ways among them.
+    // The premise: the changes moved the answer, a test-ness flip both ways and the module root
+    // move among them.
     let whole = |answers: &[(String, String)], tests: &str| {
         let case = format!("whole, tests {tests}");
         let (_, answer) = answers.iter().find(|(c, _)| *c == case).unwrap();
@@ -122,6 +123,11 @@ fn the_overlaid_worktree_answers_what_a_commit_of_its_content_answers() {
         ("\"src/lib_tests/more.rs::more_origin\"", false, true),
         ("\"src/added.rs::vanish\"", false, true),
         ("\"src/twins/right/leaf.rs::right_value\"", true, false),
+        (
+            "from: \"src/twins.rs::left::leaf\", to: \"src/twins/left/leaf.rs\"",
+            false,
+            true,
+        ),
     ] {
         let (b, c) = (whole(&before, "exclude"), whole(&committed, "exclude"));
         assert_eq!((b.contains(id), c.contains(id)), (was, is), "{id}");

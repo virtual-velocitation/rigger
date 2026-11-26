@@ -657,18 +657,7 @@ fn the_lookup_names_referrers_by_kind() {
     run_rigger_ok(root, &["graph", "build"]);
     // (the term, its block's lines from its heading to the next section's)
     let cases: [(&str, &[&str]); 3] = [
-        (
-            "LIMIT",
-            &[
-                "### LIMIT",
-                "exact match: 1 entity",
-                "- src/lib.rs:3 src/lib.rs::LIMIT (constant)",
-                "  The most widgets one bin holds.",
-                "  reads: src/lib.rs:11 src/lib.rs::spill (function); src/lib.rs:16 src/lib.rs::fits (function)",
-                "",
-                "## text",
-            ],
-        ),
+        ("LIMIT", LIMIT_READ_BY_PRODUCTS),
         (
             "Bin",
             &[
@@ -873,9 +862,7 @@ fn show_prints_the_doc_and_the_referrers() {
     ];
     for (args, entries) in rows {
         let out = common::cli::past_label(&run_rigger_ok(root, args));
-        let printed: Vec<&str> = (out.lines().skip(2))
-            .take_while(|l| !common::cli::is_body_line(l) && !l.starts_with("  ("))
-            .collect();
+        let printed: Vec<&str> = common::cli::printed_entry_lines(&out).collect();
         assert_eq!(printed, entries, "{args:?}:\n{out}");
     }
 }

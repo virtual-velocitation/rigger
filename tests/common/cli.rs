@@ -2159,12 +2159,32 @@ pub fn body_line_count(out: &str) -> usize {
     out.lines().filter(|l| is_body_line(l)).count()
 }
 
+/// The `  <entry> <value>` lines a `rigger graph --show` output prints after its header line,
+/// until the body or the note.
+pub fn printed_entry_lines(out: &str) -> impl Iterator<Item = &str> {
+    (out.lines().skip(2)).take_while(|line| !line.starts_with("  (") && !is_body_line(line))
+}
+
+/// An entry line's entry and value: a `referenced by <label>` entry whole, its label one of
+/// [`REFERRER_LABELS`](rigger::contextgraph::REFERRER_LABELS) (spec 117, READERS), else the
+/// line's first word.
+fn entry_and_value(line: &str) -> (&str, &str) {
+    let line = line.trim_start();
+    let referrers = rigger::contextgraph::REFERRER_LABELS
+        .iter()
+        .find_map(|(_, label)| {
+            let entry = format!("referenced by {label}");
+            let value = line.strip_prefix(entry.as_str())?.strip_prefix(' ')?;
+            Some((&line[..entry.len()], value))
+        });
+    referrers.unwrap_or_else(|| line.split_once(' ').expect("an entry line"))
+}
+
 /// The entry and value pairs a `rigger graph --show` output prints, in order (spec 119, SHOW IS
 /// ONE RENDERER): the header's `file`, `line`, `kind` and `degree` (no `site:` part for a node with
-/// no file), then one `  <entry> <value>` line each until the body or the note.
+/// no file), then each of its [`printed_entry_lines`] ([`entry_and_value`]).
 pub fn printed_site_entries(out: &str) -> Vec<(String, String)> {
-    let mut lines = out.lines().skip(1);
-    let header = lines.next().expect("a header line");
+    let header = out.lines().nth(1).expect("a header line");
     let mut pairs: Vec<(&str, &str)> = Vec::new();
     let rest = match header.strip_prefix("  site: ") {
         Some(site) => {
@@ -2179,11 +2199,7 @@ pub fn printed_site_entries(out: &str) -> Vec<(String, String)> {
         rest.split("   ")
             .map(|part| part.split_once(' ').expect("an entry")),
     );
-    pairs.extend(
-        lines
-            .take_while(|line| !line.starts_with("  (") && !is_body_line(line))
-            .map(|line| line.trim_start().split_once(' ').expect("an entry line")),
-    );
+    pairs.extend(printed_entry_lines(out).map(entry_and_value));
     pairs
         .into_iter()
         .map(|(key, value)| (key.to_string(), value.to_string()))

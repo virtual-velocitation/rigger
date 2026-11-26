@@ -418,7 +418,7 @@ fn graph_build_lands_another_language_s_type_reference_as_a_staged_edge_never_a_
     use rigger::contextgraph::TIER_EXTRACTED;
 
     for (file, source, definitions, paint, draw) in TYPE_USERS {
-        let (_project, graph) = common::cli::built_graph(&[(file, source)]);
+        let (landed, live) = one_file_graph(file, source);
 
         let mut edges =
             common::fixtures::a_call_from(file, paint, &entity_id(file, draw), TIER_EXTRACTED);
@@ -429,21 +429,41 @@ fn graph_build_lands_another_language_s_type_reference_as_a_staged_edge_never_a_
         ));
         edges.sort();
         assert_eq!(
-            common::fixtures::landed(&graph),
-            edges,
+            landed, edges,
             "{file}: the call lands as a call, and the type reference on its one same-file \
              definition as no call"
         );
-        let ids: Vec<String> = definitions
-            .iter()
-            .map(|path| entity_id(file, path))
-            .collect();
         assert_eq!(
-            common::fixtures::live_file_and_entity_ids(&graph.whole().unwrap()),
-            [vec![file.to_string()], ids],
+            live,
+            file_and_definitions(file, definitions),
             "{file}: no placeholder stands for `Kestrel` or the undefined `Wren`"
         );
     }
+}
+
+/// What `rigger graph build` folds for a project of the one `file` holding `source`: its
+/// `REFERENCES` and `CALLS` edges ([`common::fixtures::landed`]) and its live file and code-entity
+/// ids.
+#[cfg(feature = "symbols")]
+fn one_file_graph(
+    file: &str,
+    source: &str,
+) -> (Vec<common::fixtures::LandedEdge>, [Vec<String>; 2]) {
+    let (_project, graph) = common::cli::built_graph(&[(file, source)]);
+    (
+        common::fixtures::landed(&graph),
+        common::fixtures::live_file_and_entity_ids(&graph.whole().unwrap()),
+    )
+}
+
+/// The live file and code-entity ids [`one_file_graph`] gives for `file` when its code entities
+/// are its `definitions` (their id paths, sorted) alone, no placeholder among them.
+#[cfg(feature = "symbols")]
+fn file_and_definitions(file: &str, definitions: &[&str]) -> [Vec<String>; 2] {
+    use rigger::contextgraph::query::entity_id;
+
+    let ids = definitions.iter().map(|path| entity_id(file, path));
+    [vec![file.to_string()], ids.collect()]
 }
 
 /// The TypeScript row's source of [`CONSTRUCTING_FILES`], the TSX and JavaScript rows' too.
@@ -487,16 +507,8 @@ fn graph_build_lands_a_constructor_as_a_call_onto_its_class() {
     let (found, expected): (Vec<_>, Vec<_>) = CONSTRUCTING_FILES
         .into_iter()
         .map(|(file, source, definitions, maker)| {
-            let (_project, graph) = common::cli::built_graph(&[(file, source)]);
-            let found = (
-                file,
-                common::fixtures::landed(&graph),
-                common::fixtures::live_file_and_entity_ids(&graph.whole().unwrap()),
-            );
-            let ids: Vec<String> = definitions
-                .iter()
-                .map(|path| entity_id(file, path))
-                .collect();
+            let (landed, live) = one_file_graph(file, source);
+            let found = (file, landed, live);
             let expected = (
                 file,
                 common::fixtures::a_call_from(
@@ -505,7 +517,7 @@ fn graph_build_lands_a_constructor_as_a_call_onto_its_class() {
                     &entity_id(file, "Square"),
                     TIER_EXTRACTED,
                 ),
-                [vec![file.to_string()], ids],
+                file_and_definitions(file, definitions),
             );
             (found, expected)
         })

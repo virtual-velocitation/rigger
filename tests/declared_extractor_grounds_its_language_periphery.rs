@@ -1018,8 +1018,8 @@ fn each_stored_mention_reads_its_tags_referrer_label_whichever_extractor_gave_it
             .into_iter()
             .flat_map(|path| {
                 let held = graph.view.file(path);
-                held.map_or_else(Vec::new, |facts| facts.into_owned().mentions)
-                    .into_iter()
+                let facts = held.unwrap_or_else(|| panic!("the code store holds {path}"));
+                (facts.into_owned().mentions.into_iter())
                     .map(move |m| (path, m.line, m.name, referrer_label(&m.kind)))
             })
             .collect();

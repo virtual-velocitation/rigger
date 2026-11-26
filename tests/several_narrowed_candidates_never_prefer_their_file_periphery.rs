@@ -25,6 +25,7 @@ use common::lens::files_lens_rows;
 use rigger::code_facts::FileFacts;
 use rigger::code_view::{FactsView, Tests};
 use rigger::composed::Indexed;
+use rigger::contextgraph::query::leaf_of;
 use rigger::contextgraph::{
     Direction, Graph, Node, CODE_KIND_FUNCTION, CODE_KIND_IMPL, CODE_KIND_METHOD, CODE_KIND_TRAIT,
     CODE_KIND_TYPE, REF_KIND_IMPL,
@@ -464,9 +465,9 @@ fn a_hidden_test_call_is_filed_under_what_its_own_qualifier_keeps_on_either_half
     }
 }
 
-/// Whether `node` is a placeholder: its id holds `::%`.
+/// Whether `node` is a placeholder: its id names a leaf ([`leaf_of`]).
 fn is_placeholder(node: &Node) -> bool {
-    node.id.contains("::%")
+    leaf_of(&node.id).is_some()
 }
 
 /// `whole`, a code half's whole graph, with its placeholders ([`is_placeholder`]) made the members
