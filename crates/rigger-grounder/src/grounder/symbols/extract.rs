@@ -1510,7 +1510,8 @@ fn read_tokens(
     if let Some((end, items)) =
         items.and_then(|tree| Some((tree.included_ranges().last()?.end_byte, tree)))
     {
-        out.push((items, vec![span.start..end]));
+        let read = span.start..end;
+        out.push((items, vec![read]));
         return false;
     }
     let Some(args) = args else {
