@@ -30670,29 +30670,63 @@ fn graph_show_prints_each_node_through_the_one_site_renderer() {
              \x20 doc docs/x.md\n"
                 .to_string()
                 + &stale("docs/x.md:0"),
+            "show src/limits.rs\n\
+             \x20 site: src/limits.rs:0   kind file   degree 5\n\
+             \x20 lang rust\n\
+             \x20 doc_comment limits\n"
+                .to_string()
+                + &stale("src/limits.rs:0"),
         ],
         "each node's show output"
     );
 
-    let view =
-        common::fixtures::files_view(&rigger_grounder::facts::FactsExtractor, &SHOWN_TREE_SOURCES);
-    let composed = common::fixtures::view_graph(&graph, &view);
-    assert_shown_tree_function_carries_proven_by(&composed);
-    for ((id, site), out) in shown_tree_sites(&composed).iter().zip(&shown) {
-        // The degree is the production composition's, which adds the community edges the
-        // oracle's composition does not hold; the literals above pin it.
-        let without_degree = |pairs: Vec<(String, String)>| {
-            pairs
-                .into_iter()
-                .filter(|(key, _)| key != "degree")
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(
-            without_degree(common::cli::printed_site_entries(out)),
-            without_degree(common::cli::site_entries_as_printed(site)),
-            "{id}: the CLI prints site_fields"
-        );
-    }
+    with_shown_tree_graph(root, &graph, |composed| {
+        assert_shown_tree_function_carries_proven_by(composed);
+        for ((id, site), out) in shown_tree_sites(composed).iter().zip(&shown) {
+            // The degree is the production composition's, which adds the community edges the
+            // oracle's composition does not hold; the literals above pin it.
+            let without_degree = |pairs: Vec<(String, String)>| {
+                pairs
+                    .into_iter()
+                    .filter(|(key, _)| key != "degree")
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                without_degree(common::cli::printed_site_entries(out)),
+                without_degree(common::cli::site_entries_as_printed(site)),
+                "{id}: the CLI prints site_fields"
+            );
+        }
+    });
+}
+
+/// Calls `read` with the graph the shown tree's oracles locate through: `records` composed with
+/// the code view of [`SHOWN_TREE_SOURCES`](common::fixtures::SHOWN_TREE_SOURCES) under the default
+/// filter, its code half resolved near the ids it is asked about and a node's doc read from the
+/// worktree `root` through the facts extractor, as the binary's `--show` and `rigger_graph`
+/// `show` open the graph they locate through.
+#[cfg(feature = "symbols")]
+fn with_shown_tree_graph(
+    root: &std::path::Path,
+    records: &dyn rigger::contextgraph::Neighbors,
+    read: impl FnOnce(&dyn rigger::contextgraph::ContextGraph),
+) {
+    let extract = rigger_grounder::facts::FactsExtractor;
+    let view = common::fixtures::files_view(&extract, &common::fixtures::SHOWN_TREE_SOURCES);
+    let lines = rigger_store::code::WorktreeLines::new(root);
+    let docs = rigger::composed::DocReader {
+        lines: &lines,
+        extract: &extract,
+    };
+    let graph = rigger::composed::Composed::near(
+        records,
+        &view,
+        rigger::code_view::ViewFilter::default(),
+        common::fixtures::matching_honesty(),
+        Some(docs),
+    )
+    .expect("the shown tree composes");
+    read(&graph)
 }
 
 /// GIVEN a graph holding a decision governing `src/reader.rs`, whose alias `src/aka.rs` names a
@@ -31064,11 +31098,10 @@ fn mcp_rigger_graph_show_and_around_render_every_node_through_site_fields() {
         .position(|id| *id == "f-shown")
         .unwrap();
     assert_shown_tree_finding_shows_past_the_depth_bound(&sites[finding]);
-    let view =
-        common::fixtures::files_view(&rigger_grounder::facts::FactsExtractor, &SHOWN_TREE_SOURCES);
-    let composed = common::fixtures::view_graph(&graph, &view);
-    common::fixtures::assert_shown_tree_sites_are_site_fields(&composed, &sites);
-    common::fixtures::assert_shown_tree_around_is_entity_sites(&composed, &nodes);
+    with_shown_tree_graph(root, &graph, |composed| {
+        common::fixtures::assert_shown_tree_sites_are_site_fields(composed, &sites);
+        common::fixtures::assert_shown_tree_around_is_entity_sites(composed, &nodes);
+    });
 }
 
 /// The shipped skill's lookup section states the graph-first rule for a human reader
