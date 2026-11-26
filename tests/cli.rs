@@ -39,6 +39,7 @@ use common::cli::temp_project;
 use common::cli::temp_repoless_project;
 use common::cli::temp_store_project;
 use common::cli::validate_after_init;
+use common::cli::INIT_PIN_NOTES;
 use common::cli::UNDECLARED_BUILD_REPORT;
 use common::cli::{assert_stopped_at_the_grounder, stopping_at_the_grounder};
 use common::cli::{
@@ -19203,6 +19204,33 @@ fn validate_warns_when_a_tier_resolved_model_repointed_between_runs() {
     assert!(
         err.contains("rigger canary --if-model-changed"),
         "the advisory recommends the drift-gated canary; stderr:\n{err}"
+    );
+}
+
+/// Spec 135, PINS ARE NOTED: given a `rigger init` project whose recorded runs re-point the
+/// `opus` tier, when the operator runs `rigger validate`, then it exits 0 and its stderr carries
+/// the scaffold's pin notes ([`INIT_PIN_NOTES`]) with the model-drift warning on the lines right
+/// after them: a pin note is never dropped, and never fails validate, while the drift fires.
+#[test]
+fn validate_prints_the_pin_notes_beside_the_model_drift_warning_and_exits_0() {
+    let (_out, err) =
+        validate_after_model_move("pins-beside-drift", "claude-opus-4-1", "claude-opus-4-8");
+    let drift = [
+        "warning: a tier's resolved model id changed since the previous run (a silent alias \
+         re-point):",
+        "  - opus: claude-opus-4-1 -> claude-opus-4-8",
+        "Run `rigger canary --if-model-changed` to re-measure the review panel against the \
+         seeded-defect corpus before trusting a run under the new model.",
+    ];
+    let from_the_first_pin_note: Vec<&str> = err
+        .lines()
+        .skip_while(|line| *line != INIT_PIN_NOTES[0])
+        .take(INIT_PIN_NOTES.len() + drift.len())
+        .collect();
+    assert_eq!(
+        from_the_first_pin_note,
+        [INIT_PIN_NOTES.as_slice(), &drift].concat(),
+        "the pin notes, then the drift warning, as consecutive stderr lines; stderr:\n{err}"
     );
 }
 
