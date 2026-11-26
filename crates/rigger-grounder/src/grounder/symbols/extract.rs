@@ -292,12 +292,7 @@ fn record_def(
 /// Stage the reference `staged` at byte `pos`, into `ref_positions` and `refs` at one index: the
 /// one writer of the pair, so the caller attribution and test regions that key each reference
 /// on its position read the reference at the same index.
-fn stage_ref(
-    ref_positions: &mut Vec<usize>,
-    refs: &mut Vec<SymRef>,
-    pos: usize,
-    staged: SymRef,
-) {
+fn stage_ref(ref_positions: &mut Vec<usize>, refs: &mut Vec<SymRef>, pos: usize, staged: SymRef) {
     ref_positions.push(pos);
     refs.push(staged);
 }
