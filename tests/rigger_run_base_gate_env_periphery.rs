@@ -46,6 +46,7 @@
 //! lanes.
 
 use crate::common;
+use crate::real_gate_run::{run_real_gate_and_agent, write_agent_running};
 
 use std::path::Path;
 
@@ -53,12 +54,6 @@ use common::env_test_lock;
 use rigger::config::BuildConfig;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::Event;
-
-#[path = "common/real_driver_spy.rs"]
-mod real_driver_spy;
-#[path = "common/real_gate_run.rs"]
-mod real_gate_run;
-use real_gate_run::{run_real_gate_and_agent, write_agent_running};
 
 // `env_test_lock()` serializes every test in this file that touches the real ambient `RIGGER_RUN_BASE` process
 // env (only the "unset" test below removes it) against a concurrent thread that might

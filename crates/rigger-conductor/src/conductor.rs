@@ -18,7 +18,7 @@ use crate::config_store;
 use crate::contextgraph::{self, Graph, OpenGraph, RecordFold};
 #[cfg(test)]
 use crate::eventstore::Direction;
-use crate::eventstore::{Appended, Event, EventStore};
+use crate::eventstore::{Appended, Event, EventStore, Position};
 use crate::failure::{self, Signal};
 use crate::gate::{self, Gate};
 use crate::grounder::{BlastRadius, Grounder, StampedRadius};
@@ -1944,26 +1944,49 @@ impl LaneError {
     }
 }
 
-/// The attempt a speculation group of `unit` numbers its lane 0 at, read from the run slice
-/// `events` at the group's start. The group's RE-ENTRY BOUNDARY is the
-/// later in log order of the unit's latest `UnitResumed` (an operator's grant after its
-/// escalation) and its latest compensating `UnitFailed` ([`META_COMPENSATED`]). With no boundary
-/// the base is 0; past one it is one past the highest attempt over the spawn ids of the unit the
-/// run requested before it, so a re-entered lane never asks for an id a host would answer from
-/// the log, and a crash-resume of a parked group, which adds no boundary, keeps its ids. A
-/// crashed lane's request counts.
-fn speculation_lane_base(events: &[Event], unit: &str) -> u32 {
+/// The index in the run slice `events` of `unit`'s RE-ENTRY BOUNDARY, the later in log order of
+/// its latest `UnitResumed` (an operator's grant after its escalation) and its latest
+/// compensating `UnitFailed` ([`META_COMPENSATED`]), or `None` when the slice holds neither.
+/// These are the only two re-entries of a speculation group after its winner, and each adds one,
+/// so the boundary tells one group of the unit from the next: [`speculation_lane_base`] numbers
+/// a re-entered group's lanes past it, and [`speculation_key`] keys the group's records by it.
+fn re_entry_boundary(events: &[Event], unit: &str) -> Option<usize> {
     let names = |e: &Event, field: &str| {
         serde_json::from_slice::<Value>(&e.data)
             .is_ok_and(|v| v.get(field).and_then(Value::as_str) == Some(unit))
     };
-    let boundary = events.iter().rposition(|e| {
+    events.iter().rposition(|e| {
         (e.type_ == ledger::TYPE_UNIT_RESUMED && names(e, "unit"))
             || (e.type_ == ledger::TYPE_UNIT_FAILED
                 && e.meta.contains_key(META_COMPENSATED)
                 && names(e, "id"))
-    });
-    let Some(boundary) = boundary else {
+    })
+}
+
+/// The record a speculation group writes when none of its lanes wins, keyed at its lane base.
+const SPECULATION_LOST: &str = "speculation-lost";
+/// The record a winning speculation group writes for each earlier lane whose merge broke
+/// post-merge, keyed at that lane's attempt.
+const SPECULATION_BREAK: &str = "speculation-break";
+
+/// The replay key of `unit`'s speculation `record` ([`SPECULATION_LOST`] or
+/// [`SPECULATION_BREAK`]) at `n`, for the group entered at `entry`: the log position of the
+/// unit's [`re_entry_boundary`] when the group opened, `none` when there was none. The attempt
+/// alone repeats across groups under a driver that records no spawn request, whose lanes number
+/// from 0 again past a boundary; the entry does not, so a crash-resume of one group, which adds
+/// no boundary, records once, and a later group records its own.
+fn speculation_key(unit: &str, record: &str, entry: Option<Position>, n: u32) -> String {
+    let entry = entry.map_or_else(|| "none".to_string(), |at| at.to_string());
+    format!("{unit}/{record}#{entry}#{n}")
+}
+
+/// The attempt a speculation group of `unit` numbers its lane 0 at, read from the run slice
+/// `events` at the group's start. With no [`re_entry_boundary`] the base is 0; past one it is
+/// one past the highest attempt over the spawn ids of the unit the run requested before it, so
+/// a re-entered lane never asks for an id a host would answer from the log, and a crash-resume
+/// of a parked group, which adds no boundary, keeps its ids. A crashed lane's request counts.
+fn speculation_lane_base(events: &[Event], unit: &str) -> u32 {
+    let Some(boundary) = re_entry_boundary(events, unit) else {
         return 0;
     };
     spawn::recorded_lenient(&events[..boundary])
@@ -8585,8 +8608,11 @@ impl RunCtx<'_> {
         // A re-entered group numbers its lanes past every attempt its
         // run recorded before the re-entry, so a grant or a compensation re-drives the lanes
         // instead of answering the first entry's ids from the log. Lane `n` runs at attempt
-        // `base + n`; its worktree and branch stay keyed by `n`.
-        let base = speculation_lane_base(&self.read_current_run()?, &st.name);
+        // `base + n`; its worktree and branch stay keyed by `n`. The group's records are keyed
+        // by its entry, the position of the boundary it re-entered past ([`speculation_key`]).
+        let run = self.read_current_run()?;
+        let base = speculation_lane_base(&run, &st.name);
+        let entry = re_entry_boundary(&run, &st.name).map(|at| run[at].position);
 
         // PHASE A: park/spawn every candidate. Lane worktree dirs are kept ALIVE across a
         // park (removed only at a terminal outcome below), so the out-of-process worker
@@ -8880,7 +8906,7 @@ impl RunCtx<'_> {
                 // winner, but no code lands. Record the winner's deferred green/verified/reviewed
                 // (the verified-but-unmerged checkpoint - the group is terminal here, so no later
                 // lane is in flight), cancel the other candidates, and stop.
-                self.record_lane_breaks(st, &lost)?;
+                self.record_lane_breaks(st, entry, &lost)?;
                 self.emit_speculation_winner_status(
                     st,
                     attempt,
@@ -8941,7 +8967,7 @@ impl RunCtx<'_> {
             // green/verified/reviewed lifecycle, then the group / winner / losers on the existing
             // UnitIntegrated (no new event type), then cancel every displaced candidate. An
             // earlier lane whose merge broke post-merge records its failure first.
-            self.record_lane_breaks(st, &lost)?;
+            self.record_lane_breaks(st, entry, &lost)?;
             self.emit_speculation_winner_status(
                 st,
                 attempt,
@@ -8995,7 +9021,8 @@ impl RunCtx<'_> {
         // Record why the group lost as the unit's failure, one past its
         // last lane, so an operator's grant re-drives every lane told it, as a single lane
         // re-entering after its own failure is told, and teach it as the escalation's lesson. Keyed
-        // by the entry's lane base, so a relaunch replaying this entry records it once. A group
+        // by the group's entry and lane base ([`speculation_key`]), so a relaunch replaying this
+        // entry records it once and a later group past a boundary records its own. A group
         // whose every lane crashed or lost to infrastructure records and teaches neither: an
         // outage is no feedback for the author.
         // A lane whose merge broke post-merge is part of this one record, which names that
@@ -9007,8 +9034,16 @@ impl RunCtx<'_> {
             if let Some(sha) = &break_sha {
                 meta.push((META_WORKTREE_SHA, sha));
             }
+            // A log an older build wrote keys this record with no entry part, read as entry
+            // `none`: a group at no boundary whose record that log holds records nothing more.
+            let older = format!("{}/{SPECULATION_LOST}#{base}", st.name);
+            let key = if entry.is_none() && self.replayed_keys.contains(&older) {
+                older
+            } else {
+                speculation_key(&st.name, SPECULATION_LOST, entry, base)
+            };
             self.emit_keyed_meta(
-                &format!("{}/speculation-lost#{base}", st.name),
+                &key,
                 ledger::TYPE_UNIT_FAILED,
                 failure.failed_body(
                     &st.name,
@@ -9040,14 +9075,22 @@ impl RunCtx<'_> {
     /// Record, once a later lane of `st`'s speculation group won, each earlier lane whose merge
     /// broke post-merge as its own `UnitFailed`: the merge-break evidence (gap 61) at the
     /// lane's attempt, cause `integrate-conflict` (spec 69, criterion 3), and the lane
-    /// worktree's sha. A group with no winner carries these in its one record instead.
-    fn record_lane_breaks(&self, st: &Stage, lost: &LostLanes) -> Result<(), Error> {
+    /// worktree's sha. Each is keyed by the group's `entry` and the lane's attempt
+    /// ([`speculation_key`]), so a resumed winner path over a log that already holds it records
+    /// it once. A group with no winner carries these in its one record instead.
+    fn record_lane_breaks(
+        &self,
+        st: &Stage,
+        entry: Option<Position>,
+        lost: &LostLanes,
+    ) -> Result<(), Error> {
         for lane in &lost.breaks {
             let failure = PriorFailure {
                 gate_evidence: lane.evidence.clone(),
                 ..Default::default()
             };
-            self.emit_meta(
+            self.emit_keyed_meta(
+                &speculation_key(&st.name, SPECULATION_BREAK, entry, lane.attempt),
                 ledger::TYPE_UNIT_FAILED,
                 failure.failed_body(
                     &st.name,
@@ -17863,6 +17906,10 @@ mod tests {
     };
     use crate::test_support::{
         critique_stage, fan_out_stage, plan_stage, review_stage_cfg, workflow_cfg,
+    };
+    use crate::test_support::{
+        failed_keys_beside, the_compensation, the_grant, LANE_0_BREAK_KEY,
+        TWO_LOST_GROUPS_SPLIT_BY_A_GRANT, TWO_WINNING_GROUPS_SPLIT_BY_A_COMPENSATION,
     };
     use crate::test_support::{MergeBreakDriver, MERGE_BREAK_BASE, REJECT_FEATURE};
     use std::path::Path;
@@ -32630,6 +32677,24 @@ stage "implement" adjudicator "adj" failed
     /// green, before a later unit's review queued a compensation naming `s`. The relaunch drains
     /// it. Returns what every re-entered lane is told: the compensation's contradiction.
     fn a_compensated_group(store: &Store, repo: &str) -> String {
+        let contradiction = CONTRADICTION.to_string();
+        let condemned = s_integrated_then_condemned(repo);
+        seed_events_in_run(store, &[], &[]);
+        park_lane_requests(store, 0..2);
+        let mut events = vec![lane_0_merge_break(), postmerge_verdict(0, true)];
+        events.extend(condemned);
+        store
+            .append(STREAM, ExpectedRevision::Any, &events)
+            .unwrap();
+        contradiction
+    }
+
+    /// The contradiction a later unit's review names when it condemns `s`'s integrated change.
+    const CONTRADICTION: &str = "s's integrated change contradicts the later unit";
+
+    /// `s` integrating at a fresh commit of `repo`, and a later unit's review then queueing a
+    /// compensation naming `s` for [`CONTRADICTION`].
+    fn s_integrated_then_condemned(repo: &str) -> [Event; 2] {
         std::fs::write(Path::new(repo).join("s.rs"), "fn s_condemned() {}\n").unwrap();
         for args in [
             &["add", "s.rs"][..],
@@ -32638,33 +32703,19 @@ stage "implement" adjudicator "adj" failed
             run_git(repo, args);
         }
         let commit_c = trimmed_stdout(&run_git(repo, &["rev-parse", "HEAD"]));
-        let contradiction = "s's integrated change contradicts the later unit".to_string();
-        seed_events_in_run(store, &[], &[]);
-        park_lane_requests(store, 0..2);
-        store
-            .append(
-                STREAM,
-                ExpectedRevision::Any,
-                &[
-                    lane_0_merge_break(),
-                    postmerge_verdict(0, true),
-                    Event::new(
-                        ledger::TYPE_UNIT_INTEGRATED,
-                        serde_json::to_vec(&json!({"id": "s", "commit": commit_c})).unwrap(),
-                    ),
-                    Event::new(
-                        ledger::TYPE_UNIT_STATUS,
-                        serde_json::to_vec(
-                            &json!({"id": "s", "status": STATUS_COMPENSATION_QUEUED}),
-                        )
-                        .unwrap(),
-                    )
-                    .with_meta(META_COMPENSATE_TARGET, "s")
-                    .with_meta(META_CONTRADICTION, &contradiction),
-                ],
+        [
+            Event::new(
+                ledger::TYPE_UNIT_INTEGRATED,
+                serde_json::to_vec(&json!({"id": "s", "commit": commit_c})).unwrap(),
+            ),
+            Event::new(
+                ledger::TYPE_UNIT_STATUS,
+                serde_json::to_vec(&json!({"id": "s", "status": STATUS_COMPENSATION_QUEUED}))
+                    .unwrap(),
             )
-            .unwrap();
-        contradiction
+            .with_meta(META_COMPENSATE_TARGET, "s")
+            .with_meta(META_CONTRADICTION, CONTRADICTION),
+        ]
     }
 
     /// A speculating unit re-entered past a boundary (an operator's grant
@@ -32689,16 +32740,8 @@ stage "implement" adjudicator "adj" failed
             ..stub_deps(&store, &driver, Vec::new())
         };
         let rs = run_isolated(&spec_cfg(2), &deps).unwrap();
-        let lanes: Vec<String> = driver
-            .spawn_ids
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|id| spawn::spawn_role(id) == ROLE_IMPLEMENTER)
-            .cloned()
-            .collect();
         assert_eq!(
-            lanes,
+            implementer_lanes(&driver),
             [
                 spawn_id("s", ROLE_IMPLEMENTER, 2),
                 spawn_id("s", ROLE_IMPLEMENTER, 3)
@@ -32781,10 +32824,7 @@ stage "implement" adjudicator "adj" failed
     /// how) escalates with the loss recorded and its lesson naming it, so an operator's grant
     /// re-drives its lanes as fresh sessions told why the group lost, exactly as a single lane
     /// re-entering after its own failure is told and taught.
-    fn assert_a_group_whose_lanes_all_lose_re_enters_told_why(
-        lose: fn(&mut Config, &mut Stub) -> &'static str,
-        why: &str,
-    ) {
+    fn assert_a_group_whose_lanes_all_lose_re_enters_told_why(lose: Lose, why: &str) {
         let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let store = Store::open(":memory:").unwrap();
@@ -32825,16 +32865,8 @@ stage "implement" adjudicator "adj" failed
             ..stub_deps(&store, &driver, Vec::new())
         };
         let rs = run_isolated(&spec_cfg(2), &deps).unwrap();
-        let lanes: Vec<String> = driver
-            .spawn_ids
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|id| spawn::spawn_role(id) == ROLE_IMPLEMENTER)
-            .cloned()
-            .collect();
         assert_eq!(
-            lanes,
+            implementer_lanes(&driver),
             [
                 spawn_id("s", ROLE_IMPLEMENTER, 2),
                 spawn_id("s", ROLE_IMPLEMENTER, 3)
@@ -32869,6 +32901,249 @@ stage "implement" adjudicator "adj" failed
                 every_lane_git_refused,
                 "every lane git-refused",
             );
+    }
+
+    /// The implementer lanes `driver` was asked to spawn, in spawn order.
+    fn implementer_lanes(driver: &Stub) -> Vec<String> {
+        driver
+            .spawn_ids
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|id| spawn::spawn_role(id) == ROLE_IMPLEMENTER)
+            .cloned()
+            .collect()
+    }
+
+    /// How every lane of a group loses, set up on the run's config and driver; returns what each
+    /// re-entered lane is told.
+    type Lose = fn(&mut Config, &mut Stub) -> &'static str;
+
+    /// Run the speculating unit `s` of a width-2 [`spec_cfg`] over `store`'s log against `repo`,
+    /// under the cli-like [`Stub`], which records no spawn request: every lane loses as `lose`
+    /// sets up, or is approved when there is none. Returns the unit's status and the implementer
+    /// lanes the run spawned.
+    fn run_speculating_s(
+        store: &Store,
+        repo: &str,
+        lose: Option<Lose>,
+    ) -> (ledger::Status, Vec<String>) {
+        let mut cfg = spec_cfg(2);
+        let mut driver = approving_speculation_stub();
+        if let Some(lose) = lose {
+            lose(&mut cfg, &mut driver);
+        }
+        let deps = Deps {
+            run_branch: branch_of(repo),
+            repo: repo.to_string(),
+            ..stub_deps(store, &driver, Vec::new())
+        };
+        let rs = run_isolated(&cfg, &deps).unwrap();
+        (rs.units["s"].status, implementer_lanes(&driver))
+    }
+
+    /// The replay key an older build gave a lost group of `s` at lane base 0: no entry part.
+    const OLDER_LOST_KEY: &str = "s/speculation-lost#0";
+
+    /// A winning group of `s` whose process died after it recorded lane 0's broken merge (lane
+    /// 0's post-merge verdict red, its break keyed) and before its winner's `green`.
+    fn a_winner_path_crashed_after_its_lane_break(store: &Store, _repo: &str) {
+        seed_events_in_run(
+            store,
+            &[],
+            &[
+                postmerge_verdict(0, false),
+                lane_0_merge_break().with_meta(META_REPLAY_KEY, LANE_0_BREAK_KEY),
+            ],
+        );
+    }
+
+    /// [`a_winner_path_crashed_after_its_lane_break`] whose winner then integrated, before a
+    /// later unit's review queued a compensation naming `s`, which the run drains.
+    fn a_winning_group_then_a_compensation(store: &Store, repo: &str) {
+        a_winner_path_crashed_after_its_lane_break(store, repo);
+        store
+            .append(
+                STREAM,
+                ExpectedRevision::Any,
+                &s_integrated_then_condemned(repo),
+            )
+            .unwrap();
+    }
+
+    /// A group of `s` whose every lane was review-rejected, which escalated, and which an
+    /// operator then granted an attempt.
+    fn a_lost_group_then_a_grant(store: &Store, repo: &str) {
+        run_speculating_s(store, repo, Some(every_lane_review_rejected));
+        grant_resume(store, "s", 1);
+    }
+
+    /// The record an older build wrote for a group of `s` at lane base 0 whose every lane was
+    /// review-rejected, under [`OLDER_LOST_KEY`].
+    fn an_older_lost_record() -> Event {
+        let failure = PriorFailure {
+            review_reason: EVERY_LANE_REJECTED.into(),
+            ..Default::default()
+        };
+        let body = failure.failed_body(
+            "s",
+            2,
+            safety::MAX_RETRIES,
+            &review_failure_cause(EVERY_LANE_REJECTED),
+        );
+        Event::new(ledger::TYPE_UNIT_FAILED, serde_json::to_vec(&body).unwrap())
+            .with_meta(META_REPLAY_KEY, OLDER_LOST_KEY)
+    }
+
+    /// An older build's lost group of `s` whose process died before it escalated.
+    fn an_older_lost_group_crashed_before_its_escalation(store: &Store, _repo: &str) {
+        seed_events_in_run(store, &[], &[an_older_lost_record()]);
+    }
+
+    /// An older build's lost group of `s`, escalated, and then granted an attempt by an operator.
+    fn an_older_lost_group_then_a_grant(store: &Store, _repo: &str) {
+        seed_events_in_run(
+            store,
+            &[],
+            &[
+                an_older_lost_record(),
+                Event::new(
+                    ledger::TYPE_UNIT_ESCALATED,
+                    serde_json::to_vec(&json!({"id": "s"})).unwrap(),
+                ),
+            ],
+        );
+        grant_resume(store, "s", 1);
+    }
+
+    /// One row of THE CONDUCTOR RESOLVES EVERY SPAWN ONCE.
+    struct ResolveOnce {
+        /// Writes the log the run under test opens on, an earlier run of the conductor included.
+        seed: fn(&Store, &str),
+        /// How the run's lanes all lose, or `None` when they are approved.
+        lose: Option<Lose>,
+        /// Picks the one re-entry boundary the run's log holds, whose position fills `{entry}`.
+        boundary: Option<fn(&Event) -> bool>,
+        /// The replay keys of `s`'s `UnitFailed` records the run leaves, in log order, `""` for
+        /// an unkeyed one.
+        records: &'static [&'static str],
+    }
+
+    /// THE CONDUCTOR RESOLVES EVERY SPAWN ONCE: over the log `row.seed` writes, a run of `s`'s
+    /// speculation group under a driver that records no spawn request re-drives lanes 0 and 1,
+    /// escalating when they lose and integrating when they are approved, and leaves exactly
+    /// `row.records` as the replay keys of `s`'s `UnitFailed` records. A record of the group is
+    /// keyed by the group's re-entry boundary, so a crash-resume of one group, which adds no
+    /// boundary, records it once, and a later group past a boundary records its own.
+    fn assert_the_conductor_resolves_every_spawn_once(row: ResolveOnce) {
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let store = Store::open(":memory:").unwrap();
+        (row.seed)(&store, &repo_path);
+        let (status, lanes) = run_speculating_s(&store, &repo_path, row.lose);
+        assert_eq!(
+            lanes,
+            [
+                spawn_id("s", ROLE_IMPLEMENTER, 0),
+                spawn_id("s", ROLE_IMPLEMENTER, 1)
+            ],
+            "premise: the run re-drives the group's two lanes from attempt 0"
+        );
+        let settled = if row.lose.is_some() {
+            ledger::Status::Escalated
+        } else {
+            ledger::Status::Integrated
+        };
+        assert_eq!(status, settled, "premise: the group settles");
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let (records, expected, entry) = failed_keys_beside(&events, row.boundary, row.records);
+        assert_eq!(
+            records, expected,
+            "s's UnitFailed records, by replay key, the boundary at {entry:?}"
+        );
+    }
+
+    crate::test_cases! {
+        a_resumed_winner_path_records_its_lane_break_once:
+            assert_the_conductor_resolves_every_spawn_once(ResolveOnce {
+                seed: a_winner_path_crashed_after_its_lane_break,
+                lose: None,
+                boundary: None,
+                records: &[LANE_0_BREAK_KEY],
+            });
+        two_winning_groups_split_by_a_compensation_each_record_their_broken_lane:
+            assert_the_conductor_resolves_every_spawn_once(ResolveOnce {
+                seed: a_winning_group_then_a_compensation,
+                lose: None,
+                boundary: Some(the_compensation),
+                records: TWO_WINNING_GROUPS_SPLIT_BY_A_COMPENSATION,
+            });
+        two_lost_groups_at_base_0_split_by_a_grant_each_record_once:
+            assert_the_conductor_resolves_every_spawn_once(ResolveOnce {
+                seed: a_lost_group_then_a_grant,
+                lose: Some(every_lane_review_rejected),
+                boundary: Some(the_grant),
+                records: TWO_LOST_GROUPS_SPLIT_BY_A_GRANT,
+            });
+        an_older_lost_key_reads_as_entry_none_on_a_crash_resume:
+            assert_the_conductor_resolves_every_spawn_once(ResolveOnce {
+                seed: an_older_lost_group_crashed_before_its_escalation,
+                lose: Some(every_lane_review_rejected),
+                boundary: None,
+                records: &[OLDER_LOST_KEY],
+            });
+        an_older_lost_key_holds_no_later_groups_record:
+            assert_the_conductor_resolves_every_spawn_once(ResolveOnce {
+                seed: an_older_lost_group_then_a_grant,
+                lose: Some(every_lane_review_rejected),
+                boundary: Some(the_grant),
+                records: &[OLDER_LOST_KEY, "s/speculation-lost#{entry}#0"],
+            });
+    }
+
+    /// A group re-entered past a drained compensation runs lanes 2 and 3; lane 2's merge breaks
+    /// post-merge (its red verdict at that attempt is on the log) and lane 3 wins, so the one
+    /// keyed record the run leaves is lane 2's break, keyed by the compensation's position and
+    /// that lane's own attempt.
+    #[test]
+    fn a_re_entered_group_keys_its_broken_lane_by_that_lanes_attempt() {
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let store = Store::open(":memory:").unwrap();
+        a_compensated_group(&store, &repo_path);
+        store
+            .append(
+                STREAM,
+                ExpectedRevision::Any,
+                &[postmerge_verdict(2, false)],
+            )
+            .unwrap();
+        let (status, lanes) = run_speculating_s(&store, &repo_path, None);
+        assert_eq!(
+            lanes,
+            [
+                spawn_id("s", ROLE_IMPLEMENTER, 2),
+                spawn_id("s", ROLE_IMPLEMENTER, 3)
+            ],
+            "premise: the re-entered group runs lanes 2 and 3"
+        );
+        assert_eq!(
+            status,
+            ledger::Status::Integrated,
+            "premise: lane 3 wins past lane 2's broken merge"
+        );
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let entry = events
+            .iter()
+            .find(|e| the_compensation(e))
+            .expect("premise: the run drains the compensation")
+            .position;
+        let keyed: Vec<&str> = events
+            .iter()
+            .filter(|e| e.type_ == ledger::TYPE_UNIT_FAILED)
+            .filter_map(|e| e.meta.get(META_REPLAY_KEY).map(String::as_str))
+            .collect();
+        assert_eq!(keyed, [format!("s/speculation-break#{entry}#2")]);
     }
 
     /// A group's lanes lost in different ways are all told: the gathered failure keeps every
