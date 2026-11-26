@@ -56,7 +56,7 @@ use rigger_domain::code_facts::{
 use rigger_domain::code_graph::CodeGraph;
 use rigger_domain::code_view::{
     Cluster, CodeView, DefRef, FileRef, Groupings, MentionRef, Proofs, Settled, SettledHalf,
-    ViewFilter,
+    SETTLED_FILTER,
 };
 use rigger_domain::composed::{HalfRows, Indexed};
 use rigger_domain::contextgraph::{Edge, Graph, Node};
@@ -490,7 +490,7 @@ fn width_of(kind: u16) -> usize {
 
 /// The bytes of `view`'s snapshot with `groupings`: a pure function of the two.
 pub fn encode(view: &dyn CodeView, groupings: &Groupings) -> Result<Vec<u8>, String> {
-    let graph = CodeGraph::new(view, ViewFilter::default());
+    let graph = CodeGraph::new(view, SETTLED_FILTER);
     let half = Indexed::resolved(&graph, groupings);
     encode_with(view, &graph, groupings, &half.half_rows())
 }
@@ -498,7 +498,7 @@ pub fn encode(view: &dyn CodeView, groupings: &Groupings) -> Result<Vec<u8>, Str
 /// The bytes of `view`'s snapshot with no groupings and an empty code half: an entry of the facts
 /// memo, which nothing reads but its files' facts.
 pub(crate) fn encode_without_half(view: &dyn CodeView) -> Result<Vec<u8>, String> {
-    let graph = CodeGraph::new(view, ViewFilter::default());
+    let graph = CodeGraph::new(view, SETTLED_FILTER);
     let none = Indexed::new(Graph::default(), Vec::new());
     encode_with(view, &graph, &Groupings::default(), &none.half_rows())
 }
