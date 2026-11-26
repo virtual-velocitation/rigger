@@ -2275,8 +2275,9 @@ mod tests {
     #[test]
     fn parse_agent_reads_the_work_key_and_the_effort_pin_refusing_any_other_work_value() {
         let refused = || {
-            Err(String::from(
-                "config: agent \"critic\": work must be one of judging, writing, reading",
+            Err(format!(
+                "config: {}",
+                crate::test_support::work_refusal("critic")
             ))
         };
         for (frontmatter, parsed) in [
