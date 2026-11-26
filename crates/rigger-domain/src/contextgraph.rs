@@ -592,6 +592,21 @@ pub struct EntitySite {
 /// surface prints a list one way.
 pub const LIST_SEP: &str = ", ";
 
+/// The first `cap` of `items`, each as `text` writes it, joined by `sep`, then ` (+N more)` for
+/// the `N` left out: the one spelling of a capped list a surface prints.
+pub fn capped<T>(items: &[T], cap: usize, sep: &str, text: impl Fn(&T) -> String) -> String {
+    let shown = items.len().min(cap);
+    let mut listed = items[..shown]
+        .iter()
+        .map(text)
+        .collect::<Vec<_>>()
+        .join(sep);
+    if items.len() > shown {
+        listed.push_str(&format!(" (+{} more)", items.len() - shown));
+    }
+    listed
+}
+
 /// The attrs [`site_fields`] gives after the site entries, in their order: the closed list a show
 /// surface prints (`title` and `doc` a knowledge node's, `by`, `unit` and `summary` a finding's,
 /// `partial` a degraded parse's; the MCP `around` drops `summary`); an attr outside it is never
@@ -631,12 +646,12 @@ pub fn entity_site(node: &Node, degree: usize) -> EntitySite {
 /// `unresolved` and one `referenced by <label>` entry per [`REFERRER_LABELS`] label in its order
 /// (spec 117) - `line` and `degree` JSON numbers, `unresolved` the site's unresolved leaves joined
 /// by [`LIST_SEP`], a `referenced by` entry the label's first [`REFERRERS_SHOWN`] referrers as the
-/// lookup lists them, joined by [`LIST_SEP`], then `(+N more)` for the rest, and every other entry
-/// its recorded value verbatim. A node with no `file` has no `line` entry either; `kind` and
-/// `degree` are always given; an attr whose value is empty, an absent or empty doc, an empty
-/// unresolved list and a label no referrer is under give no entry. The CLI prints it (its live
-/// healed line and a value's newlines collapsed at print only), the MCP `show` carries it as keys
-/// beside the node's `id`, and the MCP `around` the same less its `summary` entry.
+/// lookup lists them, joined by [`LIST_SEP`], then `(+N more)` for the rest ([`capped`]), and
+/// every other entry its recorded value verbatim. A node with no `file` has no `line` entry
+/// either; `kind` and `degree` are always given; an attr whose value is empty, an absent or empty
+/// doc, an empty unresolved list and a label no referrer is under give no entry. The CLI prints it
+/// (its live healed line and a value's newlines collapsed at print only), the MCP `show` carries
+/// it as keys beside the node's `id`, and the MCP `around` the same less its `summary` entry.
 pub fn site_fields(site: &EntitySite) -> Vec<(&'static str, serde_json::Value)> {
     let located = site.file.iter().flat_map(|file| {
         [
@@ -669,14 +684,7 @@ pub fn site_fields(site: &EntitySite) -> Vec<(&'static str, serde_json::Value)> 
             if listed.is_empty() {
                 return None;
             }
-            let shown = listed.len().min(REFERRERS_SHOWN);
-            let mut text = (listed[..shown].iter())
-                .map(|r| referrer_text(r))
-                .collect::<Vec<_>>()
-                .join(LIST_SEP);
-            if listed.len() > shown {
-                text.push_str(&format!(" (+{} more)", listed.len() - shown));
-            }
+            let text = capped(&listed, REFERRERS_SHOWN, LIST_SEP, |r| referrer_text(r));
             Some((key, text.into()))
         });
     located

@@ -6,6 +6,7 @@
 use std::fmt::Write as _;
 
 use rigger_domain::code_view::tests_hidden_line;
+use rigger_domain::contextgraph::capped;
 
 use super::graph::{Answered, Entity, ReferrerSite, Site, TermGraph};
 use super::prose::Ranked;
@@ -156,29 +157,23 @@ fn entity_block(entity: &Entity) -> String {
     block
 }
 
-/// `  <label>: <item>; <item> (+N more)` when `items` holds any, each item as `line` writes it.
+/// `  <label>: <item>; <item> (+N more)` when `items` holds any, each item as `line` writes it,
+/// the first [`EDGES_SHOWN`] listed ([`capped`]).
 fn edge_line<T>(block: &mut String, label: &str, items: &[T], line: fn(&T) -> String) {
     if items.is_empty() {
         return;
     }
-    let shown = items.len().min(EDGES_SHOWN);
-    let listed: Vec<String> = items[..shown].iter().map(line).collect();
-    let _ = write!(block, "  {label}: {}", listed.join("; "));
-    more(block, items.len() - shown);
+    let _ = writeln!(
+        block,
+        "  {label}: {}",
+        capped(items, EDGES_SHOWN, "; ", line)
+    );
 }
 
 /// A referrer's site line, and ` ?` after it when its mention gave the entity no single edge.
 fn referrer_line(referrer: &ReferrerSite) -> String {
     let mark = if referrer.ambiguous { " ?" } else { "" };
     format!("{}{mark}", site_line(&referrer.site))
-}
-
-/// ` (+N more)` when `dropped` is non-zero, and the line's end.
-fn more(block: &mut String, dropped: usize) {
-    if dropped > 0 {
-        let _ = write!(block, " (+{dropped} more)");
-    }
-    block.push('\n');
 }
 
 /// `file:line id (kind)`, the line left out when unknown and the file when there is none, and
