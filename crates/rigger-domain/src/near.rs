@@ -23,7 +23,7 @@ use crate::composed::{
     binds_leaf, cluster_files, id_binds_leaf, ordered, provers_of, CodeHalf, Indexed,
 };
 use crate::contextgraph::query::{
-    entity_id, leaf_of, member_file, path_leaf, placeholder_id, split_id,
+    entity_id, leaf_of, member_file, path_leaf, placeholder_cut, placeholder_id, split_id,
 };
 use crate::contextgraph::{
     holds_attachment, Edge, Error, Graph, Neighbors, Node, Referrer, KIND_ARTIFACT,
@@ -436,10 +436,7 @@ impl<'v> State<'v> {
                 for id in fragment.touching.keys() {
                     at.entry(id.clone()).or_default().push(place as u32);
                     if let Some(rest) = split_id(id).1 {
-                        for leaf in [Some(rest), rest.strip_prefix(PLACEHOLDER_SIGIL)]
-                            .into_iter()
-                            .flatten()
-                        {
+                        for leaf in [Some(rest), leaf_of(id)].into_iter().flatten() {
                             let held = leaves.entry(leaf.to_string()).or_default();
                             held.insert(id.clone());
                         }
@@ -620,9 +617,8 @@ impl<'v> State<'v> {
     fn resolve(&mut self, id: &str, sources: &[(u32, Part)], leaves: &[String]) -> Resolved {
         let mut named: Vec<&str> = leaves.iter().map(String::as_str).collect();
         // A placeholder is asserted by the calls to the leaf of the name it is keyed by.
-        let placeholder = leaf_of(id);
-        named.extend(placeholder);
-        named.extend(placeholder.map(path_leaf));
+        named.extend(leaf_of(id));
+        named.extend(placeholder_cut(id).map(|(_, leaf)| leaf));
         let mut b = Builder::default();
         for &(place, part) in sources {
             match part {

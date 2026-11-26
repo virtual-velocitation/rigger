@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::code_facts::{FileFacts, Half, Mention};
 use crate::code_view::{CodeView, Tests, ViewFilter};
-use crate::contextgraph::query::{leaf_of, split_path, CANDIDATES_ATTR};
+use crate::contextgraph::query::{leaf_of, placeholder_cut, CANDIDATES_ATTR};
 use crate::contextgraph::{
     Edge, Graph, Node, Referrer, KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_FILE, TIER_EXTRACTED,
 };
@@ -332,7 +332,7 @@ impl<'v> CodeGraph<'v> {
     /// candidate reaches a product caller that [`Resolver::callers`], reading a product call's
     /// down-hop in the product pool alone, does not list.
     pub fn down_hop(&self, id: &str) -> Option<Vec<String>> {
-        split_path(leaf_of(id)?).0?;
+        placeholder_cut(id)?.0?;
         let kept = |pool| self.resolver.down_hop(id, pool).map(Hop::into_vec);
         let mut ids: BTreeSet<String> = kept(Pool::Product)?.into_iter().map(|c| c.id).collect();
         if self.filter.tests.admits(true) {

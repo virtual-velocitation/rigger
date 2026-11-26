@@ -21,14 +21,14 @@ use crate::code_view::{CodeView, Compared, Extract, Groupings, SourceLines, Test
 use crate::community::DEFAULT_RESOLUTION;
 use crate::contextgraph::query::{
     attrs_name, entity_id, kept_of, leaf_of, member_file, node_file, node_leaf, node_name,
-    path_leaf, split_id,
+    path_leaf, placeholder_cut, split_id,
 };
 use crate::contextgraph::{
     entity_site, holds_attachment, is_call_target, CallEdge, CallGraph, CallNode, Candidate,
     ContextGraph, Direction, Edge, EntitySite, Error, Graph, Located, Neighbors, Node, Referrer,
-    Rows, KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, KIND_FILE,
-    PLACEHOLDER_SIGIL, REL_CALLS, REL_GOVERNS, REL_IN_COMMUNITY, REL_REALIZES, REL_REFERENCES,
-    TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED,
+    Rows, KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, KIND_FILE, REL_CALLS,
+    REL_GOVERNS, REL_IN_COMMUNITY, REL_REALIZES, REL_REFERENCES, TIER_AMBIGUOUS, TIER_EXTRACTED,
+    TIER_INFERRED,
 };
 use crate::groupings::computed_at;
 use crate::resolve::{ProofCall, INTENT_KINDS};
@@ -142,15 +142,13 @@ pub(crate) fn binds_leaf(node: &Node, leaf: &str) -> bool {
 }
 
 /// Whether the text of `id` after its first `::` is `leaf`, or a name behind the
-/// [`PLACEHOLDER_SIGIL`] that is `leaf` or whose leaf, the text after its last `::` or `.`, is:
-/// a placeholder keyed by a qualified name binds its leaf.
+/// [`crate::contextgraph::PLACEHOLDER_SIGIL`] that is `leaf` ([`leaf_of`]) or whose leaf, the
+/// text after its last `::` or `.`, is ([`placeholder_cut`]): a placeholder keyed by a qualified
+/// name binds its leaf.
 pub(crate) fn id_binds_leaf(id: &str, leaf: &str) -> bool {
-    split_id(id).1.is_some_and(|rest| {
-        rest == leaf
-            || rest
-                .strip_prefix(PLACEHOLDER_SIGIL)
-                .is_some_and(|name| name == leaf || path_leaf(name) == leaf)
-    })
+    split_id(id).1 == Some(leaf)
+        || leaf_of(id) == Some(leaf)
+        || placeholder_cut(id).is_some_and(|(_, at)| at == leaf)
 }
 
 /// The edges sorted by ends then relation, one per (from, to, relation), the first kept.
@@ -293,9 +291,8 @@ impl Indexed {
                 ix.kinds.entry(n.kind.clone()).or_default().push(at);
             }
             for (at, n) in self.nodes.iter().enumerate() {
-                let rest = split_id(&n.id).1;
-                let placeholder = rest.and_then(|r| r.strip_prefix(PLACEHOLDER_SIGIL));
-                let leaves = [node_name(n), rest, placeholder, placeholder.map(path_leaf)];
+                let placeholder = placeholder_cut(&n.id).map(|(_, leaf)| leaf);
+                let leaves = [node_name(n), split_id(&n.id).1, leaf_of(&n.id), placeholder];
                 for leaf in leaves.into_iter().flatten() {
                     let held = ix.leaves.entry(leaf.to_string()).or_default();
                     if held.last() != Some(&at) {

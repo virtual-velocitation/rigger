@@ -231,6 +231,14 @@ pub fn leaf_of(id: &str) -> Option<&str> {
     split_id(id).1?.strip_prefix(PLACEHOLDER_SIGIL)
 }
 
+/// The name a placeholder `id` is keyed by ([`leaf_of`]) cut into its qualifier and its leaf
+/// ([`split_path`]): `<file>::%T.x` gives `T` and `x`, `<file>::%x` gives none and `x`; `None`
+/// for an id that is no placeholder. The one home of a placeholder's leaf and of whether a
+/// qualified name keys it (spec 117, RESOLVER AT READ).
+pub(crate) fn placeholder_cut(id: &str) -> Option<(Option<&str>, &str)> {
+    leaf_of(id).map(split_path)
+}
+
 /// The leaf a path query names (spec 119, A BARE SHOW FINDS A LEAF OR PATH): [`split_path`]'s
 /// leaf, the text after its last `::` or `.`, the whole text when it holds neither (`T::new` and
 /// `a.rs::T::new` give `new`, `S.field` gives `field`). The show lookup's path form, the
@@ -332,12 +340,12 @@ pub fn node_name(node: &Node) -> Option<&str> {
 
 /// A node's leaf (spec 119): its non-empty `name` attr whatever it holds ([`node_name`]: `new` for
 /// `a.rs::T::new`, `A.B`, `a::b`, a C# `operator %`'s `%`, so a named node is never read as a
-/// placeholder), else the [`path_leaf`] of [`leaf_of`] its id, the text after the last `::` or
+/// placeholder), else the leaf of [`placeholder_cut`] its id, the text after the last `::` or
 /// `.` of the name a placeholder is keyed by (spec 117: `<file>::%T.x` and `<file>::%x` both give
 /// `x`). The store's pinned twin is the adapter's `node_leaf_sql()`, NULL exactly where this
 /// reads the id.
 pub fn node_leaf(node: &Node) -> Option<&str> {
-    node_name(node).or_else(|| leaf_of(&node.id).map(path_leaf))
+    node_name(node).or_else(|| Some(placeholder_cut(&node.id)?.1))
 }
 
 /// The attribute a placeholder keyed by a qualified name carries (spec 117, RESOLVER AT READ):

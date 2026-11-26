@@ -31,7 +31,8 @@ use std::sync::Arc;
 use crate::code_facts::{Def, FileFacts, Half, Mention, MentionKind, ModuleDecl, Scope};
 use crate::code_view::{CodeView, DefRef, MentionRef, Proofs, Settled};
 use crate::contextgraph::query::{
-    entity_id, file_of, is_path_qualified, leaf_of, placeholder_id, split_id, split_path,
+    entity_id, file_of, is_path_qualified, leaf_of, placeholder_cut, placeholder_id, split_id,
+    split_path,
 };
 use crate::contextgraph::{
     definition_precedence, is_call_target, reference_candidate_kinds, referrer_label, Referrer,
@@ -1416,7 +1417,7 @@ impl<'v> Resolver<'v> {
     /// a name a qualifier writes, the ones that qualifier keeps ([`Self::kept`]); none when `id`
     /// is no placeholder.
     pub fn down_hop(&self, id: &str, pool: Pool) -> Option<Hop<Candidate<'v>>> {
-        let (qualifier, leaf) = split_path(leaf_of(id)?);
+        let (qualifier, leaf) = placeholder_cut(id)?;
         let targets = self.call_targets(leaf, pool);
         Some(match qualifier {
             None => hop(targets),
