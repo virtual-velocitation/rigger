@@ -31,7 +31,7 @@ use crate::contextgraph::{
     REL_REALIZES, REL_TESTS, TIER_INFERRED,
 };
 use crate::resolve::{
-    def_leaves, local_leaves, qualifier, IntentLink, IntentNode, ProofCall, INTENT_KINDS,
+    def_leaves, local_leaves, IntentLink, IntentNode, ProofCall, Resolver, INTENT_KINDS,
 };
 use crate::test_view::TESTS_ATTR;
 
@@ -573,16 +573,14 @@ impl<'v> State<'v> {
     /// The places of the code files whose mentions of one of `leaves`, the leaves of `id`, can land
     /// on a definition in another file: those holding a tagged reference to one or a qualified
     /// call of one (`Q::leaf`, `Q.leaf`, which lands on the one candidate its qualifier keeps in
-    /// whatever file defines it), and, with tests shown, a test call of one the proof rule credits
-    /// to `id`, the one definition such a call lands on in another file
-    /// ([`crate::resolve::Resolver::proving_calls`]).
+    /// whatever file defines it, [`Resolver::lands_elsewhere`]), and, with tests shown, a test
+    /// call of one the proof rule credits to `id`, the one definition such a call lands on in
+    /// another file ([`Resolver::proving_calls`]).
     fn landing(&self, id: &str, leaves: &[String]) -> Vec<u32> {
         let mut places = Vec::new();
         for leaf in leaves {
             for m in self.view.mentions_named(leaf) {
-                let lands =
-                    matches!(m.kind, MentionKind::Tagged(_)) || qualifier(m.name, m.leaf).is_some();
-                if m.file.half == Half::Code && lands {
+                if m.file.half == Half::Code && Resolver::lands_elsewhere(&m) {
                     places.extend(self.code_place(m.file.path));
                 }
             }

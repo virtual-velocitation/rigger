@@ -1289,6 +1289,15 @@ impl<'v> Resolver<'v> {
         proof_order(calls)
     }
 
+    /// Whether the mention `m` may land on a definition in a file other than its own: a tagged
+    /// reference, whose rule takes a candidate in any file ([`Self::tagged`]), or a call written
+    /// qualified ([`qualifier`]), which lands on the one candidate its qualifier keeps wherever
+    /// that is defined ([`Self::call`]); an unqualified call lands in its own file or on a
+    /// placeholder.
+    pub(crate) fn lands_elsewhere(m: &MentionRef) -> bool {
+        matches!(m.kind, MentionKind::Tagged(_)) || qualifier(m.name, m.leaf).is_some()
+    }
+
     /// The test calls to `leaf` in code files that the proof rule credits to `id`, read from the
     /// mentions of `leaf` alone. The rule credits a call by its file and its name as written, so
     /// each pair is asked once.
