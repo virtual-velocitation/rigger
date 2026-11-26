@@ -2103,7 +2103,8 @@ pub(crate) mod tests {
     /// test module beside one of them); it keeps none but names a type (`Gauge::read`), so the
     /// unqualified rule takes the call; or it keeps none and names nothing (`AtomicU64::new`,
     /// called from a test module beside a `new`, `Reader::new`, `Valve::shut`), so the call
-    /// proves none.
+    /// proves none. Beside them, a product `const` read of the variant `Mode::RO` gives the
+    /// settled golden a read a `const` reaches only through its variant kind.
     fn qualified_proof_fixture() -> FactsView {
         let fn_def = |name: &str| vec![def(name, "function", 1, None, true)];
         FactsView::new(
@@ -2186,6 +2187,23 @@ pub(crate) mod tests {
                         def("Seal::shut", "method", 3, Some(1), false),
                     ],
                     vec![tagged("impl", "Seal", Some(1), 2)],
+                ),
+                code(
+                    "src/mode.rs",
+                    "rust",
+                    Scope::Product,
+                    vec![
+                        def("Mode", "type", 1, None, false),
+                        def("Mode::RO", "variant", 2, Some(0), false),
+                        def("open", "function", 4, None, false),
+                    ],
+                    vec![qualified(
+                        MentionKind::Tagged("const".into()),
+                        "Mode::RO",
+                        Some(2),
+                        5,
+                        false,
+                    )],
                 ),
                 code(
                     "tests/bell.rs",
@@ -2570,7 +2588,8 @@ pub(crate) mod tests {
 
     /// A CHANGE TO WHAT A STORE SETTLES SHIPS WITH A BUMP: the test files and proof calls of
     /// [`fixture`], of [`qualified_proof_fixture`], whose qualified test calls take each outcome
-    /// of the narrowed match in [`Resolver::proof`], and of [`module_root_fixture`], whose
+    /// of the narrowed match in [`Resolver::proof`] and whose `const` read lands on a variant, and
+    /// of [`module_root_fixture`], whose
     /// test-only declaration reaches a file through the list its declaring file's place picks,
     /// and the code half each settles whole ([`Indexed::resolved`]), are pinned by digest beside
     /// the generation the store's fingerprint folds in, so a change that moves the rows these
@@ -2578,7 +2597,7 @@ pub(crate) mod tests {
     /// re-pinned.
     #[test]
     fn a_change_to_the_settled_rows_ships_with_a_generation_bump() {
-        const PINNED: (u64, &str) = (6, "72794276be57982d");
+        const PINNED: (u64, &str) = (6, "9c9bc19fab925ebb");
         let (test_files, proofs) = settled_rows(&fixture());
         assert!(
             !proofs.is_empty() && test_files.iter().any(|p| !p.starts_with("tests/")),
