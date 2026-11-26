@@ -1791,13 +1791,14 @@ impl UseLeaf<'_> {
 /// in an uppercase identifier stages that identifier in place of `Name`, unless `Name` is a
 /// variant. A VARIANT is the final identifier of a whole expression or pattern path that is no
 /// call's head ([`is_call_head`]: `InstallOutcome::AlreadyCurrent`, `Located::Many(c) =>`), or the
-/// name of such a struct literal or pattern (`Kind::RejectRecurrence { n } =>`), that
+/// name of such a struct literal or pattern (`Kind::RejectRecurrence { n } =>`), a turbofish on
+/// its path or on its name among them (`Kind::<u8>::Many { n }`, `Kind::Many::<u8> { n }`), that
 /// [`variant_qualifier`] gives a qualifier, staged with that qualifier: a path's beside its path's
-/// type row, a struct literal's or pattern's in place of it. A USE is each imported
-/// leaf of a `use` ([`use_leaves`]). An IMPL HEADER stages an `impl` row of its trait, when it
-/// has one, then one of its self type, each by its base name ([`base_type_identifier`]: path,
-/// generics, a reference and a pointer stripped; a tuple, slice, array, `dyn` or function type
-/// none, the types inside it staging as type references) with the root of that name's path
+/// type row, a struct literal's or pattern's in place of it ([`literal_variant`]). A USE is each
+/// imported leaf of a `use` ([`use_leaves`]). An IMPL HEADER stages an `impl` row of its trait,
+/// when it has one, then one of its self type, each by its base name ([`base_type_identifier`]:
+/// path, generics, a reference and a pointer stripped; a tuple, slice, array, `dyn` or function
+/// type none, the types inside it staging as type references) with the root of that name's path
 /// ([`type_root`]), carrying the impl's range; a `Box<T>` self type is `Box`, which [`excluded`]
 /// holds. An attribute, a `macro_rules!` body and a visibility path stage nothing, a macro's
 /// token tree stages what its re-parse reads ([`reparse_invocations`]), and no name [`excluded`]
@@ -1869,40 +1870,42 @@ fn rust_references(structure: &StructuralNodes, source: &[u8], scope: &Scope) ->
                 }
                 match parent.filter(|p| p.kind() == "scoped_type_identifier") {
                     Some(scoped) => {
-                        let path = scoped.child_by_field_name("path");
                         let root_seg = type_root(node, source);
-                        let literal = scoped.parent().is_some_and(|q| {
-                            matches!(q.kind(), "struct_expression" | "struct_pattern")
-                        });
                         let root_seg = root_seg.as_deref();
-                        match path.and_then(final_identifier) {
-                            Some(last)
-                                if literal && begins(last, source, char::is_ascii_uppercase) =>
-                            {
-                                match variant_qualifier(node, source, scope) {
-                                    Some(q) => stage(
-                                        node,
-                                        node.byte_range(),
-                                        REF_KIND_VARIANT,
-                                        None,
-                                        None,
-                                        Some(q),
-                                    ),
-                                    None => stage(
-                                        last,
-                                        last.byte_range(),
-                                        REF_KIND_TYPE,
-                                        root_seg,
-                                        None,
-                                        None,
-                                    ),
-                                }
+                        let last = scoped
+                            .child_by_field_name("path")
+                            .and_then(final_identifier)
+                            .filter(|last| {
+                                is_literal_name(scoped)
+                                    && begins(*last, source, char::is_ascii_uppercase)
+                            });
+                        match (literal_variant(scoped, source, scope), last) {
+                            (Some(q), _) => stage(
+                                node,
+                                node.byte_range(),
+                                REF_KIND_VARIANT,
+                                None,
+                                None,
+                                Some(q),
+                            ),
+                            (None, Some(last)) => {
+                                stage(last, last.byte_range(), REF_KIND_TYPE, root_seg, None, None)
                             }
-                            _ => {
+                            (None, None) => {
                                 stage(node, node.byte_range(), REF_KIND_TYPE, root_seg, None, None)
                             }
                         }
                     }
+                    // A literal's generic path segment (`Kind` of `Kind::<u8>::Many { n }`) gives
+                    // way to the variant its name stages.
+                    None if parent
+                        .filter(|g| g.kind() == "generic_type")
+                        .and_then(|g| {
+                            g.parent()
+                                .filter(|s| s.child_by_field_name("path") == Some(g))
+                        })
+                        .and_then(|scoped| literal_variant(scoped, source, scope))
+                        .is_some() => {}
                     None => stage(node, node.byte_range(), REF_KIND_TYPE, None, None, None),
                 }
             }
@@ -1911,7 +1914,9 @@ fn rust_references(structure: &StructuralNodes, source: &[u8], scope: &Scope) ->
                 let root_seg = path.and_then(|p| root_segment(p, source));
                 let root_seg = root_seg.as_deref();
                 if let Some(last) = path.and_then(final_identifier) {
-                    if begins(last, source, char::is_ascii_uppercase) {
+                    if begins(last, source, char::is_ascii_uppercase)
+                        && literal_variant(node, source, scope).is_none()
+                    {
                         stage(last, last.byte_range(), REF_KIND_TYPE, root_seg, None, None);
                     }
                 }
@@ -2496,6 +2501,27 @@ fn variant_qualifier(leaf: tree_sitter::Node, source: &[u8], scope: &Scope) -> O
         return None;
     }
     rust_staged(leaf, source, scope).flatten()
+}
+
+/// The qualifier of the variant the scoped name `name` (a `scoped_type_identifier` or
+/// `scoped_identifier`) stages as a struct literal's or pattern's name ([`is_literal_name`]),
+/// its leaf read by [`variant_qualifier`]; `None` for a name that is no literal's or names no
+/// variant. A literal's variant row stands in place of its path's type row.
+fn literal_variant(name: tree_sitter::Node, source: &[u8], scope: &Scope) -> Option<Qualifier> {
+    if !is_literal_name(name) {
+        return None;
+    }
+    variant_qualifier(name.child_by_field_name("name")?, source, scope)
+}
+
+/// Whether the Rust path `name` names a struct literal or pattern, written with a turbofish
+/// (`Kind::Many::<u8> { n }`) or without.
+fn is_literal_name(name: tree_sitter::Node) -> bool {
+    name.parent()
+        .filter(|p| p.kind() == "generic_type_with_turbofish")
+        .unwrap_or(name)
+        .parent()
+        .is_some_and(|q| matches!(q.kind(), "struct_expression" | "struct_pattern"))
 }
 
 /// The field of its parent `node` sits under, `None` for an unnamed child.
