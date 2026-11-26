@@ -40,6 +40,7 @@ mod canary_model_drift_periphery;
 mod canary_progress_hook_periphery;
 mod canary_tolerant_attribution_periphery;
 mod canary_unattributed_rejects_periphery;
+mod capability_resolve_periphery;
 mod capability_table_periphery;
 mod cause_wire_periphery;
 #[cfg(feature = "symbols")]
