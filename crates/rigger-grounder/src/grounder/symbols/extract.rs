@@ -2119,7 +2119,7 @@ fn bindings_at<'t>(node: tree_sitter::Node<'t>, source: &[u8]) -> Vec<String> {
             "match_arm" => patterns.extend(
                 named(field("pattern"))
                     .into_iter()
-                    .filter(|p| field_of(*p) != Some("condition")),
+                    .filter(|p| !is_match_guard(*p)),
             ),
             "for_expression" => patterns.extend(field("pattern")),
             "if_expression" | "while_expression" => {
@@ -2354,13 +2354,20 @@ fn is_read(node: tree_sitter::Node) -> bool {
     node.parent().is_some_and(|parent| {
         let field = field_of(node);
         let pattern = match parent.kind() {
-            "match_pattern" => field != Some("condition"),
+            "match_pattern" => !is_match_guard(node),
             kind => {
                 is_pattern_kind(kind) || matches!(kind, "closure_parameters" | "lifetime" | "label")
             }
         };
         !pattern && !field.is_some_and(|f| NON_READ_FIELDS.contains(&f))
     })
+}
+
+/// Whether `node` is a match arm's guard: its `match_pattern`'s `condition`, an expression read
+/// and never a pattern.
+fn is_match_guard(node: tree_sitter::Node) -> bool {
+    node.parent().is_some_and(|p| p.kind() == "match_pattern")
+        && field_of(node) == Some("condition")
 }
 
 /// THE CONST READ (spec 117): whether `node`, an `identifier` or a whole `scoped_identifier` whose
