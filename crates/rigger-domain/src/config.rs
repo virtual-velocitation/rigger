@@ -1046,8 +1046,11 @@ pub struct CapabilityTable {
 impl CapabilityTable {
     /// The row of `work`.
     pub fn row(&self, work: Work) -> &CapabilityRow {
-        let _ = work;
-        &self.judging
+        match work {
+            Work::Judging => &self.judging,
+            Work::Writing => &self.writing,
+            Work::Reading => &self.reading,
+        }
     }
 
     /// The judging floor: the `judging` row's `routine` cell names the same `model` as its
@@ -1262,6 +1265,24 @@ impl AgentDef {
         }
         let last = self.model_ladder.len() - 1;
         self.model_ladder[(attempt as usize).min(last)].clone()
+    }
+
+    /// The field this agent pins its model by, the one [`model_for_attempt`](Self::model_for_attempt)
+    /// reads: `model_ladder` when a ladder is declared, even one whose rung is empty, else `model`
+    /// when it names one; `None` when the agent pins no model.
+    pub fn model_pin(&self) -> Option<&'static str> {
+        if !self.model_ladder.is_empty() {
+            Some("model_ladder")
+        } else if !self.model.is_empty() {
+            Some("model")
+        } else {
+            None
+        }
+    }
+
+    /// The field this agent pins its effort by: `effort` when it names one, `None` otherwise.
+    pub fn effort_pin(&self) -> Option<&'static str> {
+        (!self.effort.is_empty()).then_some("effort")
     }
 
     /// Whether this agent's session runs without the host's advisor: it declared

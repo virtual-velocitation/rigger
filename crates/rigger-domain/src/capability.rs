@@ -3,7 +3,7 @@
 //! the unit's planned complexity step, its raise and the spawn's attempt, and never interprets a
 //! model or effort string.
 
-use crate::config::{AgentDef, CapabilityTable, Complexity};
+use crate::config::{AgentDef, CapabilityTable, Complexity, Work};
 
 /// What one spawn runs at, as [`resolve`] chose it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -42,14 +42,48 @@ pub fn resolve(
     raise: u32,
     attempt: u32,
 ) -> Capability {
-    let _ = (agent, table, complexity, raise, attempt);
+    let planned = complexity.unwrap_or(Complexity::Involved);
+    let step = Complexity::ALL
+        .into_iter()
+        .filter(|&s| s >= planned)
+        .nth(raise as usize)
+        .unwrap_or(Complexity::Hard);
+    let cell = table
+        .zip(agent.work)
+        .map(|(t, work)| (work, t.row(work).cell(step)));
+    let helper = table.map(|t| t.row(Work::Reading).cell(step));
+    let model_pin = agent.model_pin();
+    let effort_pin = agent.effort_pin();
+    let model = match model_pin {
+        Some(_) => agent.model_for_attempt(attempt),
+        None => cell.map(|(_, c)| c.model.clone()).unwrap_or_default(),
+    };
+    let effort = match effort_pin {
+        Some(_) => agent.effort.clone(),
+        None => cell.map(|(_, c)| c.effort.clone()).unwrap_or_default(),
+    };
+    let from_table = cell.is_some() && (model_pin.is_none() || effort_pin.is_none());
+    let mut why = Vec::new();
+    if let Some((work, _)) = cell.filter(|_| from_table) {
+        why.push(format!("{}/{}", work.name(), step.name()));
+        if raise > 0 {
+            why.push(format!("raised {raise}"));
+        }
+        if complexity.is_none() {
+            why.push("unassessed".to_string());
+        }
+    }
+    let pinned: Vec<&str> = [model_pin, effort_pin].into_iter().flatten().collect();
+    if !pinned.is_empty() {
+        why.push(format!("pinned {}", pinned.join(",")));
+    }
     Capability {
-        model: String::new(),
-        effort: String::new(),
-        helper_model: String::new(),
-        helper_effort: String::new(),
-        why: String::new(),
-        from_table: false,
+        model,
+        effort,
+        helper_model: helper.map(|c| c.model.clone()).unwrap_or_default(),
+        helper_effort: helper.map(|c| c.effort.clone()).unwrap_or_default(),
+        why: why.join(" "),
+        from_table,
     }
 }
 
