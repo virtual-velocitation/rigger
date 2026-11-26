@@ -222,11 +222,9 @@ impl<'v> Sight<'v> {
             .filter(move |m| self.serves(&m.file))
     }
 
-    /// The served call references to `leaf`: no tagged reference (spec 117, CAPTURES) counts or
-    /// ranks.
+    /// The served call references to `leaf`, those that count ([`ranks`]).
     fn calls_named(&self, leaf: &str) -> impl Iterator<Item = MentionRef<'v>> + '_ {
-        self.mentions_named(leaf)
-            .filter(|m| m.kind == MentionKind::Call)
+        self.mentions_named(leaf).filter(|m| ranks(&m.kind))
     }
 
     /// How many definitions named `name` the served files of `lang` hold, and with `count_refs`
@@ -566,8 +564,14 @@ impl ScoredHit {
 /// The [`ScoredHit::tier`] of a hit whose name equals a query term.
 const EXACT_TIER: u8 = 2;
 
+/// Whether a reference of `kind` counts or ranks: a call does, no tagged reference does (spec
+/// 117, CAPTURES). The one filter [`Sight::calls_named`] and [`scored_hits`] read.
+fn ranks(kind: &MentionKind) -> bool {
+    *kind == MentionKind::Call
+}
+
 /// Score every (file, line) definition/call-reference location of the served files against
-/// `terms` (a tagged reference, spec 117, never a location), ranked by [`ScoredHit::rank`] - the
+/// `terms` (a tagged reference, [`ranks`], never a location), ranked by [`ScoredHit::rank`] - the
 /// ONE scored, sorted pass both [`Symbols::ground`] and [`Symbols::ground_ranked`] consume, so the
 /// two views can never disagree on ranking. A location that matches more than one term (or both an
 /// EXACT and a CONTAINS candidate) keeps its BEST tier - commonness is a property of the matched
@@ -645,11 +649,7 @@ fn scored_hits(sight: &Sight<'_>, terms: &[&str]) -> Vec<ScoredHit> {
         for d in &facts.defs {
             score_one(&d.leaf, d.line, HitKind::Def, 3, d.test);
         }
-        for m in facts
-            .mentions
-            .iter()
-            .filter(|m| m.kind == MentionKind::Call)
-        {
+        for m in facts.mentions.iter().filter(|m| ranks(&m.kind)) {
             score_one(&m.leaf, m.line, HitKind::Ref, 2, m.test);
         }
     }
