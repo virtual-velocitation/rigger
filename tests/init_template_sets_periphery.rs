@@ -725,6 +725,15 @@ fn agents_after_import(imported: &[(&str, &str)], displaced: Option<&str>) -> Ve
     listing
 }
 
+/// Each [`persona_coherence`] persona `config::coherence` refuses under a workflow declaring no
+/// `defaults.capability` table, beside that exact refusal.
+fn refused_without_a_table() -> impl Iterator<Item = (String, String)> {
+    persona_coherence()
+        .into_iter()
+        .filter(|(_, table, _)| table == "~")
+        .filter_map(|(persona, _, verdict)| Some((persona, verdict.err()?)))
+}
+
 /// A row of [`setup_agents_imports_a_collections_agent_in_the_place_of_the_seed_of_its_id`]'s
 /// table, whose fields that test names.
 type ImportRow<'a> = (
@@ -927,11 +936,7 @@ fn setup_agents_imports_a_persona_only_when_it_is_coherent_with_the_projects_wor
 /// is made.
 #[test]
 fn setup_agents_refuses_an_incoherent_collection_in_a_fresh_project_before_any_write() {
-    let refused = persona_coherence()
-        .into_iter()
-        .filter(|(_, table, _)| table == "~")
-        .filter_map(|(persona, _, verdict)| Some((persona, verdict.err()?)));
-    for (persona, refusal) in refused {
+    for (persona, refusal) in refused_without_a_table() {
         for id in ["implementer", "worker"] {
             let dir = temp_project();
             let root = dir.path();
@@ -1069,18 +1074,12 @@ fn an_argument_or_a_set_the_command_refuses_writes_nothing() {
                 overlong_name_refusal(scaffolded_env_line())
             ),
         )])
-        .chain(
-            persona_coherence()
-                .into_iter()
-                .filter(|(_, table, _)| table == "~")
-                .filter_map(|(persona, _, verdict)| {
-                    let refusal = verdict.err()?;
-                    Some((
-                        operator_template_root_holding(&demo_set(&persona)),
-                        format!("gate template set demo: implementer: {refusal}"),
-                    ))
-                }),
-        )
+        .chain(refused_without_a_table().map(|(persona, refusal)| {
+            (
+                operator_template_root_holding(&demo_set(&persona)),
+                format!("gate template set demo: implementer: {refusal}"),
+            )
+        }))
         .collect();
     let set_rows: Vec<([&str; 3], &str)> = declaring
         .iter()
