@@ -140,33 +140,39 @@ fn init_project(
     sets: &[TemplateSet],
 ) -> Result<ScaffoldReport, Box<dyn std::error::Error>> {
     let parsed = parse_template_sets(sets)?;
-    scaffold_project(root, &parsed, &defined_agent_ids(root, &parsed)?, &[])
+    scaffold_project(root, &parsed, &defined_agent_ids(root, &parsed, &[])?, &[])
 }
 
 /// The ids the agent files in `root`'s `.rigger/agents/` define, whatever their file names, read
 /// through the loader's one directory read ([`config_store::read_agents_dir`]); none when that
 /// directory is absent. It fails naming an agent file there that does not parse, and refuses an
-/// agent [`config::refuse_incoherent`] finds incoherent with the workflow [`scaffold_project`]
-/// leaves in place from `parsed`: the project's own `.rigger/workflow.yml` when there is one,
-/// else the [`scaffold_workflow`] rendering of the set [`matched_set`] finds. It writes nothing,
-/// so a command reads it before its first write and either refusal leaves the project untouched.
+/// agent there, or an agent `incoming` stages ([`stage_import`]), that
+/// [`config::refuse_incoherent`] finds incoherent with the workflow [`scaffold_project`] leaves
+/// in place from `parsed`: the project's own `.rigger/workflow.yml` when there is one, else the
+/// [`scaffold_workflow`] rendering of the set [`matched_set`] finds. It writes nothing, so a
+/// command reads it before its first write and either refusal leaves the project untouched.
 fn defined_agent_ids(
     root: &Path,
     parsed: &[(&TemplateSet, SetSpec)],
+    incoming: &[IncomingAgent],
 ) -> Result<std::collections::HashSet<String>, Box<dyn std::error::Error>> {
     let agents_dir = project_agents_dir(root);
-    if !agents_dir.exists() {
-        return Ok(std::collections::HashSet::new());
-    }
-    let agents = config_store::read_agents_dir(&agents_dir)?;
+    let agents = if agents_dir.exists() {
+        config_store::read_agents_dir(&agents_dir)?
+    } else {
+        Vec::new()
+    };
     let workflow = match config_store::load_project_workflow(root)? {
         Some(workflow) => workflow,
         None => config_store::parse_workflow(&scaffold_workflow(
             matched_set(root, parsed).map(|(_, spec)| spec),
         ))?,
     };
+    let staged = incoming
+        .iter()
+        .filter_map(|agent| agent.staged.as_ref().map(|(_, agent)| agent));
     config::refuse_incoherent(
-        agents.iter().map(|(_, agent)| agent),
+        agents.iter().map(|(_, agent)| agent).chain(staged),
         workflow.defaults.capability.as_ref(),
     )?;
     Ok(agents.into_iter().map(|(_, agent)| agent.id).collect())
@@ -924,15 +930,17 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
     let site = Site::here();
     // The directory setup scaffolds: the one it runs in, as the resolver read it.
     let root = site.located()?;
-    // Read before the store is resolved too, so an agent file that does not parse, or a persona
-    // incoherent with the workflow the scaffold leaves in place, leaves the project untouched.
-    let defined = defined_agent_ids(root, &parsed)?;
-    // The --agents collection is read and checked here too, so a collection the import refuses
-    // on its own leaves the project untouched, and the scaffold writes no seed whose id it brings.
+    // The --agents collection is read and checked before the store is resolved too, so a
+    // collection the import refuses on its own leaves the project untouched, and the scaffold
+    // writes no seed whose id it brings.
     let incoming = match &opts.agents_dir {
         Some(src) => stage_import(root, src)?,
         None => Vec::new(),
     };
+    // So are the project's agents, so an agent file that does not parse, or a persona on disk or
+    // in the collection incoherent with the workflow the scaffold leaves in place, leaves the
+    // project untouched.
+    let defined = defined_agent_ids(root, &parsed, &incoming)?;
     // The store setup pays the owed rebuild into ([`store_to_write_in`]): the root's, made there
     // when absent, or from a subdirectory or a linked worktree the one at the project root. It is
     // resolved before setup writes anything, so where that root holds none setup is refused
