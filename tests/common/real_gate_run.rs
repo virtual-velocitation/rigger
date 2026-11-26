@@ -1,5 +1,5 @@
-//! One full `conductor::run` through a REAL gate and a REAL agent, shared by the suites that
-//! observe what environment those two subprocesses actually receive. Included by path
+//! One full `conductor::run` through a REAL gate and a REAL agent, and the agent script such a
+//! run spawns, shared by the suites that drive those subprocesses. Included by path
 //! (`#[path = "common/real_gate_run.rs"] mod real_gate_run;`) alongside
 //! `common/real_driver_spy.rs`, whose `RealDriverSpy` it drives. A suite uses the subset it
 //! needs (hence the module-wide `dead_code` allowance, the same convention

@@ -2500,6 +2500,18 @@ pub fn write_workflow_fixture(root: &Path, fixture: &WorkflowFixture) {
     write_scaffold(root, &[("worker", fixture.worker)], fixture.body);
 }
 
+/// The pin notes `rigger validate` prints on stderr for a project `rigger init` scaffolded (spec
+/// 135, PINS ARE NOTED): one per seed persona, each pinning `model: opus`, in persona id order.
+pub const INIT_PIN_NOTES: [&str; 7] = [
+    r#"note: agent "adjudicator" pins model "opus""#,
+    r#"note: agent "adversary" pins model "opus""#,
+    r#"note: agent "architecture-reviewer" pins model "opus""#,
+    r#"note: agent "implementer" pins model "opus""#,
+    r#"note: agent "planner" pins model "opus""#,
+    r#"note: agent "sdet" pins model "opus""#,
+    r#"note: agent "sdet-author" pins model "opus""#,
+];
+
 /// `rigger validate` over `root` once `rigger init` has scaffolded it and `seed` has planted what
 /// the test examines; asserts both exit 0 (an advisory never fails validate) and returns
 /// validate's (stdout, stderr).
@@ -2822,6 +2834,32 @@ pub fn config_valid_lines(stdout: &str) -> Vec<&str> {
 /// and its four stages.
 pub fn fresh_scaffold_valid_line(gates: usize) -> String {
     format!("config valid: 7 agents, 4 stages, {gates} gates")
+}
+
+/// Scaffold `root` with the one persona `worker` and `workflow` ([`write_scaffold`]), run
+/// `rigger validate` there, and assert its verdict. On `Ok(())` it succeeds and prints the one
+/// `config valid:` line of one agent, no stage and no gate. On `Err(refusal)` it fails, printing
+/// nothing on stdout and only the [`refusal_line`] of `refusal` on stderr.
+pub fn assert_one_worker_validates(
+    root: &Path,
+    worker: &str,
+    workflow: &str,
+    verdict: Result<(), String>,
+) {
+    write_scaffold(root, &[("worker", worker)], workflow);
+    let (out, err, ok) = run_rigger(root, &["validate"]);
+    match verdict {
+        Ok(()) => assert_eq!(
+            (ok, config_valid_lines(&out)),
+            (true, vec!["config valid: 1 agents, 0 stages, 0 gates"]),
+            "{worker}{workflow}stderr:\n{err}"
+        ),
+        Err(refusal) => assert_eq!(
+            (ok, out.as_str(), err),
+            (false, "", format!("{}\n", refusal_line(&refusal))),
+            "{worker}{workflow}"
+        ),
+    }
 }
 
 /// The lines of `text` that `keep` admits, in order: the one picker of the lines a command

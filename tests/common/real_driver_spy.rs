@@ -1,6 +1,7 @@
 //! The real-driver observation point shared by the integration suites that drive a full
 //! `conductor::run` through the REAL `driver::cli::Driver`: included by path
-//! (`#[path = "common/real_driver_spy.rs"] mod real_driver_spy;`) by each suite that needs it.
+//! (`#[path = "common/real_driver_spy.rs"] mod real_driver_spy;`) once at the root of each test
+//! executable that needs it, `tests/all.rs` for the suites that are its modules.
 
 use std::path::Path;
 use std::sync::Mutex;

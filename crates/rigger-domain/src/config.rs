@@ -1044,20 +1044,31 @@ pub struct CapabilityTable {
 }
 
 impl CapabilityTable {
+    /// The row of `work`.
+    pub fn row(&self, work: Work) -> &CapabilityRow {
+        match work {
+            Work::Judging => &self.judging,
+            Work::Writing => &self.writing,
+            Work::Reading => &self.reading,
+        }
+    }
+
     /// The judging floor: the `judging` row's `routine` cell names the same `model` as its
     /// `involved` cell, compared as two strings, while their `effort` may differ.
     pub fn validate(&self) -> Result<(), String> {
         let [routine, involved] = [Complexity::Routine, Complexity::Involved];
-        let (low, mid) = (self.judging.cell(routine), self.judging.cell(involved));
+        let row = self.row(Work::Judging);
+        let (low, mid) = (row.cell(routine), row.cell(involved));
         if low.model == mid.model {
             return Ok(());
         }
         Err(format!(
-            "judging: the {r} cell names model {:?} and the {i} cell {:?}; a judging spawn runs \
-             on one model whether planned {r} or {i}, so the two cells name the same model and \
-             may differ only in effort",
+            "{j}: the {r} cell names model {:?} and the {i} cell {:?}; a {j} spawn runs on one \
+             model whether planned {r} or {i}, so the two cells name the same model and may \
+             differ only in effort",
             low.model,
             mid.model,
+            j = Work::Judging.name(),
             r = routine.name(),
             i = involved.name(),
         ))
@@ -1267,6 +1278,24 @@ impl AgentDef {
         }
         let last = self.model_ladder.len() - 1;
         self.model_ladder[(attempt as usize).min(last)].clone()
+    }
+
+    /// The field this agent pins its model by, the one [`model_for_attempt`](Self::model_for_attempt)
+    /// reads: `model_ladder` when a ladder is declared, even one whose rung is empty, else `model`
+    /// when it names one; `None` when the agent pins no model.
+    pub fn model_pin(&self) -> Option<&'static str> {
+        if !self.model_ladder.is_empty() {
+            Some("model_ladder")
+        } else if !self.model.is_empty() {
+            Some("model")
+        } else {
+            None
+        }
+    }
+
+    /// The field this agent pins its effort by: `effort` when it names one, `None` otherwise.
+    pub fn effort_pin(&self) -> Option<&'static str> {
+        (!self.effort.is_empty()).then_some("effort")
     }
 
     /// Whether this agent's session runs without the host's advisor: it declared
@@ -1581,6 +1610,45 @@ pub fn index_agents(
         map.insert(a.id.clone(), a);
     }
     Ok(map)
+}
+
+/// Whether the persona `id`'s declarations are coherent with the workflow's
+/// `defaults.capability` table, `table` (`None` when the workflow declares none). It refuses a
+/// persona declaring `work` under no table, since no table can resolve it, and a persona
+/// declaring neither `work` nor a model pin (`model` or `model_ladder`) under a table, since it
+/// would run at the host default, naming the two fixes. A persona with no work, no pin and no
+/// table runs at the host default, which is accepted. The refusal is bare, for each caller to
+/// wrap as it wraps its other refusals.
+pub fn coherence(
+    id: &str,
+    agent: &AgentDef,
+    table: Option<&CapabilityTable>,
+) -> Result<(), String> {
+    match (agent.work, table) {
+        (Some(work), None) => Err(format!(
+            "agent {id:?} declares work {}, but the workflow declares no defaults.capability table",
+            work.name()
+        )),
+        (None, Some(_)) if agent.model.is_empty() && agent.model_ladder.is_empty() => Err(format!(
+            "agent {id:?} declares neither work nor a model pin, so under the workflow's \
+             defaults.capability table it would run at the host default; declare work, or pin \
+             model or model_ladder"
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// Refuse the first of `agents` whose declarations [`coherence`] finds incoherent with `table`,
+/// the `defaults.capability` table of the workflow the fleet runs under (`None` when it declares
+/// none), its bare refusal wrapped by [`err`]: the one fleet check `Config::validate`, `rigger
+/// init`, `rigger setup` and the `--agents` import run.
+pub fn refuse_incoherent<'a>(
+    agents: impl IntoIterator<Item = &'a AgentDef>,
+    table: Option<&CapabilityTable>,
+) -> Result<(), Error> {
+    agents
+        .into_iter()
+        .try_for_each(|agent| coherence(&agent.id, agent, table).map_err(err))
 }
 
 /// ParseAgent parses a markdown-with-YAML-frontmatter agent definition: the
@@ -2191,6 +2259,28 @@ mod tests {
         );
     }
 
+    #[test]
+    fn work_names_each_kind_as_the_key_of_its_capability_row() {
+        let keyed: Vec<String> = Work::ALL
+            .iter()
+            .map(|work| {
+                format!(
+                    "{0}: {{ routine: {{ model: {0} }}, involved: {{ model: {0} }}, \
+                     hard: {{ model: {0} }} }}",
+                    work.name()
+                )
+            })
+            .collect();
+        let text = format!("{{ {} }}", keyed.join(", "));
+        let table: CapabilityTable =
+            parse_yaml_naming_unknown_keys(&text).unwrap_or_else(|e| panic!("parse {text}: {e}"));
+        assert_eq!(
+            Work::ALL.map(|work| table.row(work).routine.model.as_str()),
+            ["judging", "writing", "reading"],
+            "{text}"
+        );
+    }
+
     /// THE TABLE: `defaults.capability` parses into [`CapabilityTable`], absent or null as `None`,
     /// a cell's absent or empty `effort` as the empty string and a blank `model` as written; the
     /// parse refuses a missing row, a missing cell, an empty or absent `model` and an unknown key
@@ -2255,6 +2345,27 @@ mod tests {
                 table.validate(),
                 verdict.map_err(str::to_string),
                 "{judging}"
+            );
+        }
+    }
+
+    /// THE DECLARATIONS ARE COHERENT: [`coherence`] refuses a persona declaring `work` under a
+    /// workflow with no `defaults.capability` table, and one declaring neither `work` nor a model
+    /// pin under a table, naming the persona; it accepts a pinned or bare persona with no table and
+    /// a pinned or working persona under one.
+    #[test]
+    fn coherence_weighs_each_personas_declarations_against_the_table_or_its_absence() {
+        use crate::test_support::{persona_coherence, workflow_declaring_capability};
+        for (persona, table, verdict) in persona_coherence() {
+            let agent =
+                parse_agent(persona.as_bytes()).unwrap_or_else(|e| panic!("parse {persona}: {e}"));
+            let workflow = workflow_declaring_capability(&table);
+            let wf: Workflow = parse_yaml_naming_unknown_keys(&workflow)
+                .unwrap_or_else(|e| panic!("parse {workflow}: {e}"));
+            assert_eq!(
+                coherence(&agent.id, &agent, wf.defaults.capability.as_ref()),
+                verdict,
+                "{persona}{workflow}"
             );
         }
     }

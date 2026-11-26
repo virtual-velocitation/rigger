@@ -10,17 +10,21 @@
 //! it, that a fresh scaffold seeds the `sdet-author` test author its workflow declares and writes
 //! no seed whose id an agent of the project already defines, whatever its file name, that a rerun
 //! writes that seed back only for the test author the workflow declares and no agent defines, that
-//! an agent file that does not parse stops every seed until it is fixed, that `rigger setup
-//! --agents <dir>` imports a collection's agent in the place of the seed of its id and refuses a
-//! collection that would define an id twice, that a command naming no template root scaffolds no
-//! gate and keeps what an earlier root scaffolded, and that every argument and template root a
-//! command refuses is refused before any write.
+//! an agent file that does not parse stops every seed until it is fixed, that a persona whose
+//! declarations are incoherent with the workflow the command would leave in place stops every seed
+//! (spec 135), that `rigger setup --agents <dir>` imports a collection's agent in the place of the
+//! seed of its id, refuses a collection that would define an id twice, and imports a persona only
+//! when it is coherent with the project's workflow, refusing an incoherent one before any write,
+//! the scaffold's included, in a fresh project and a scaffolded one alike (spec 135), that a
+//! command naming no template root scaffolds no gate and keeps what an earlier root scaffolded,
+//! and that every argument and template root a command refuses, a set whose implementer declares
+//! `work` under the table-less workflow it scaffolds among them, is refused before any write.
 
 use crate::common;
 use common::cli::{build_report_lines, UNDECLARED_BUILD_REPORT};
 use common::cli::{
-    cargo_project, failure_line, loaded_config, refusal_line, run_rigger, run_rigger_ok,
-    temp_project, wall_clock_advisory_lines,
+    cargo_project, declare_default, failure_line, loaded_config, refusal_line, run_rigger,
+    run_rigger_ok, temp_project, wall_clock_advisory_lines,
 };
 use common::cli::{config_valid_lines, fresh_scaffold_valid_line};
 use common::fixtures::REFUSED_DECLARATIONS;
@@ -32,6 +36,7 @@ use common::fixtures::{build_declaring, RUST_SET_ENV, RUST_SET_ENV_WRITTEN};
 use common::fixtures::{
     env_written_named, overlong_name_refusal, set_env_line_named, LONGEST_PLAIN_KEY,
 };
+use common::fixtures::{persona_coherence, workflow_declaring_capability};
 use common::repo::{collect_files, repo_root};
 use std::path::Path;
 
@@ -620,6 +625,51 @@ fn an_agent_file_that_does_not_parse_stops_every_seed_until_it_is_fixed() {
     }
 }
 
+/// Given a fresh project holding a persona whose declarations `config::coherence` refuses
+/// against the workflow `rigger init` or `rigger setup` would leave in place - the project's own
+/// `.rigger/workflow.yml` declaring a `defaults.capability` table, or, with no workflow, the
+/// scaffold's rendering, which declares none - when the operator runs either command naming no
+/// template root, then it fails before its first write, printing only that refusal, which names
+/// the persona, and leaving the project holding exactly the files it held.
+#[test]
+fn a_persona_incoherent_with_the_workflow_it_would_write_stops_every_seed() {
+    for verb in ["init", "setup"] {
+        for (persona, table, verdict) in persona_coherence() {
+            let Err(refusal) = verdict else { continue };
+            let dir = temp_project();
+            let root = dir.path();
+            let workflow = workflow_declaring_capability(&table);
+            let files = [
+                ("agents/worker.md", persona.as_str()),
+                ("workflow.yml", &workflow),
+            ];
+            write_files(
+                &root.join(".rigger"),
+                &files[..if table == "~" { 1 } else { 2 }],
+            );
+            let snapshot = || {
+                (
+                    project_files(root),
+                    dir_snapshot(root, ""),
+                    dir_snapshot(&root.join(".rigger"), ""),
+                )
+            };
+            let before = snapshot();
+            let (out, err, ok) = run_rigger(root, &[verb]);
+            assert_eq!(
+                (ok, out.as_str(), err, snapshot()),
+                (
+                    false,
+                    "",
+                    format!("{}\n", refusal_line(&format!("config: {refusal}"))),
+                    before
+                ),
+                "{verb} over {persona}under the table {table}"
+            );
+        }
+    }
+}
+
 /// The collection directory, under a project's root, that `rigger setup --agents` imports.
 const COLLECTION: &str = "collection";
 
@@ -638,6 +688,50 @@ fn import_lines(out: &str) -> Vec<&str> {
     out.lines()
         .filter(|l| l.starts_with("imported ") || l.starts_with("kept existing "))
         .collect()
+}
+
+/// The [`import_lines`] `rigger setup --agents` prints importing [`COLLECTION`]: the kept line of
+/// the collection file `kept`, the imported line of each `(file name, id)` of `imported`, then the
+/// closing count.
+fn import_report(imported: &[(&str, &str)], kept: Option<&str>) -> Vec<String> {
+    let mut reported: Vec<String> = kept
+        .map(|file| format!("kept existing .rigger/agents/{file} (import never overwrites)"))
+        .into_iter()
+        .chain(
+            imported
+                .iter()
+                .map(|(file, id)| format!("imported .rigger/agents/{file} (id: {id})")),
+        )
+        .collect();
+    reported.push(format!(
+        "imported {} agent {} from {COLLECTION} into .rigger/agents/ ({} kept - already present)",
+        imported.len(),
+        if imported.len() == 1 { "file" } else { "files" },
+        usize::from(kept.is_some()),
+    ));
+    reported
+}
+
+/// The sorted file names `.rigger/agents/` holds once `rigger setup --agents` wrote each
+/// `(file name, id)` of `imported` beside the seeds a scaffold naming no template root writes, the
+/// seed `displaced` left out.
+fn agents_after_import(imported: &[(&str, &str)], displaced: Option<&str>) -> Vec<String> {
+    let mut listing: Vec<String> = agents_beside("implementer.md")
+        .into_iter()
+        .filter(|file| Some(file.as_str()) != displaced)
+        .chain(imported.iter().map(|(file, _)| file.to_string()))
+        .collect();
+    listing.sort();
+    listing
+}
+
+/// Each [`persona_coherence`] persona `config::coherence` refuses under a workflow declaring no
+/// `defaults.capability` table, beside that exact refusal.
+fn refused_without_a_table() -> impl Iterator<Item = (String, String)> {
+    persona_coherence()
+        .into_iter()
+        .filter(|(_, table, _)| table == "~")
+        .filter_map(|(persona, _, verdict)| Some((persona, verdict.err()?)))
 }
 
 /// A row of [`setup_agents_imports_a_collections_agent_in_the_place_of_the_seed_of_its_id`]'s
@@ -721,28 +815,8 @@ fn setup_agents_imports_a_collections_agent_in_the_place_of_the_seed_of_its_id()
             (false, None) => vec![NO_SET_AGENTS_LINE.to_string()],
             (false, Some(seed)) => vec![NO_SET_AGENTS_LINE.replacen(&format!("{seed}, "), "", 1)],
         };
-        let mut reported: Vec<String> = kept
-            .map(|file| format!("kept existing .rigger/agents/{file} (import never overwrites)"))
-            .into_iter()
-            .chain(
-                imported
-                    .iter()
-                    .map(|(file, id)| format!("imported .rigger/agents/{file} (id: {id})")),
-            )
-            .collect();
-        reported.push(format!(
-            "imported {} agent {} from {COLLECTION} into .rigger/agents/ ({} kept - already \
-             present)",
-            imported.len(),
-            if imported.len() == 1 { "file" } else { "files" },
-            usize::from(kept.is_some()),
-        ));
-        let mut listing: Vec<String> = agents_beside("implementer.md")
-            .into_iter()
-            .filter(|file| Some(file.as_str()) != displaced)
-            .chain(imported.iter().map(|(file, _)| file.to_string()))
-            .collect();
-        listing.sort();
+        let reported = import_report(&imported, kept);
+        let listing = agents_after_import(&imported, displaced);
         let cfg = loaded_config(root);
         assert_eq!(
             (
@@ -804,6 +878,112 @@ fn setup_agents_refuses_a_collection_that_would_define_an_id_twice() {
             ),
             "the collection {collection:?}, after a setup: {rerun}: stdout:\n{out}\nstderr:\n{err}"
         );
+    }
+}
+
+/// Given a project `rigger setup` scaffolded with no template root, whose `sdet-author.md` seed the
+/// operator has since deleted, its workflow then declaring a `defaults.capability` table or still
+/// none, and a collection holding one persona beside a model-pinned agent whose file sorts ahead
+/// of it, when the operator runs `rigger setup --agents <collection>`, then a persona
+/// `config::coherence` accepts against that workflow is imported and reported with the agent
+/// beside it, the seed written back and reported scaffolded, and one it refuses fails the command
+/// on that refusal, which names the persona, before any write: no agent is reported scaffolded or
+/// imported, the one beside it included, the seed is not written back, and the project keeps
+/// exactly the agents it held.
+#[test]
+fn setup_agents_imports_a_persona_only_when_it_is_coherent_with_the_projects_workflow() {
+    let beside = ("helper.md", "helper");
+    let both = [beside, ("worker.md", "worker")];
+    let seed = "sdet-author.md";
+    let seed_line = format!("scaffolded .rigger/agents/{{{seed}}}");
+    for (persona, table, verdict) in persona_coherence() {
+        let dir = temp_project();
+        let root = dir.path();
+        setup_with_no_root(root);
+        std::fs::remove_file(root.join(".rigger/agents").join(seed)).unwrap();
+        if table != "~" {
+            declare_default(root, &format!("capability: {table}"));
+        }
+        write_collection(root, &[beside]);
+        write_files(&root.join(COLLECTION), &[("worker.md", persona.as_str())]);
+
+        let (out, err, ok) = run_rigger(root, &["setup", "--agents", COLLECTION]);
+        // (the failure line, the scaffolded agents line, the import's lines, the agents imported,
+        // the seed left unwritten).
+        let (failure, scaffolded, reported, imported, unwritten): (_, _, _, &[(&str, &str)], _) =
+            match &verdict {
+                Ok(()) => (
+                    None,
+                    vec![seed_line.as_str()],
+                    import_report(&both, None),
+                    &both,
+                    None,
+                ),
+                Err(refusal) => (
+                    Some(refusal_line(&format!("config: {refusal}"))),
+                    Vec::new(),
+                    Vec::new(),
+                    &[],
+                    Some(seed),
+                ),
+            };
+        assert_eq!(
+            (
+                failure_line(ok, &err),
+                agents_lines(&out),
+                import_lines(&out),
+                sorted_dir_names(&root.join(".rigger/agents")),
+            ),
+            (
+                failure,
+                scaffolded,
+                reported.iter().map(String::as_str).collect(),
+                agents_after_import(imported, unwritten),
+            ),
+            "{persona}under the table {table}: stdout:\n{out}\nstderr:\n{err}"
+        );
+    }
+}
+
+/// Given a fresh project, with no `.rigger/`, and a collection holding one persona
+/// `config::coherence` refuses against the workflow the scaffold would write, which declares no
+/// `defaults.capability` table - under a seed's id, whose seed the scaffold skips for it, or under
+/// an id no seed carries - when the operator runs `rigger setup --agents <collection>`, then the
+/// command fails on that refusal, which names the persona, before any write: no agent is reported
+/// imported, the project holds exactly the files and top-level entries it held, and no `.rigger/`
+/// is made.
+#[test]
+fn setup_agents_refuses_an_incoherent_collection_in_a_fresh_project_before_any_write() {
+    for (persona, refusal) in refused_without_a_table() {
+        for id in ["implementer", "worker"] {
+            let dir = temp_project();
+            let root = dir.path();
+            let persona = persona.replacen("id: worker", &format!("id: {id}"), 1);
+            let refusal = refusal.replacen("\"worker\"", &format!("{id:?}"), 1);
+            write_files(
+                &root.join(COLLECTION),
+                &[(&format!("{id}.md"), persona.as_str())],
+            );
+            let snapshot = || (project_files(root), dir_snapshot(root, ""));
+            let before = snapshot();
+
+            let (out, err, ok) = run_rigger(root, &["setup", "--agents", COLLECTION]);
+            assert_eq!(
+                (
+                    failure_line(ok, &err),
+                    import_lines(&out),
+                    root.join(".rigger").exists(),
+                    snapshot(),
+                ),
+                (
+                    Some(refusal_line(&format!("config: {refusal}"))),
+                    Vec::<&str>::new(),
+                    false,
+                    before,
+                ),
+                "{persona}: stdout:\n{out}\nstderr:\n{err}"
+            );
+        }
     }
 }
 
@@ -880,19 +1060,23 @@ fn a_template_root_holding_no_scaffold_dir_is_refused_before_any_write() {
 
 /// Given a command line `rigger init` or `rigger setup` refuses - `--template` with no directory,
 /// `--agents` given to `init`, or a template root whose one set brings an implementer reusing a
-/// scaffold seed's id, declares under `env` an entry the build environment's check refuses, or
-/// declares under `env` a name one character past the longest key YAML reads plain, so the
-/// workflow it scaffolds fails to load - when the operator runs it, then the command fails on the
-/// refusal naming what is wrong - for a set, the set's key, for a refused `env` entry, the check's
-/// own refusal naming the variable after it, and for the overlong name, the load error at the
-/// line a scaffold writes its set's `env` on - before any write: nothing is reported scaffolded
-/// and the project is left as it was, with no directory made.
+/// scaffold seed's id, brings an implementer declaring `work` under the workflow it scaffolds,
+/// which declares no `defaults.capability` table, declares under `env` an entry the build
+/// environment's check refuses, or declares under `env` a name one character past the longest key
+/// YAML reads plain, so the workflow it scaffolds fails to load - when the operator runs it, then
+/// the command fails on the refusal naming what is wrong - for a set, the set's key, for the
+/// implementer declaring `work`, `config::coherence`'s refusal naming it, for a refused `env`
+/// entry, the check's own refusal naming the variable after it, and for the overlong name, the
+/// load error at the line a scaffold writes its set's `env` on - before any write: nothing is
+/// reported scaffolded and the project is left as it was, with no directory made.
 #[test]
 fn an_argument_or_a_set_the_command_refuses_writes_nothing() {
     let seeded = operator_template_root("implementer");
     let seeded = seeded.path().to_str().unwrap();
     let seed_id = "gate template set demo: implementer id implementer is a scaffold seed's id";
-    // Each refused `env`'s template root, kept alive for the rows below, and its refusal.
+    // Each refused set's template root, kept alive for the rows below, and its refusal: a set
+    // declaring a refused `env`, and one whose implementer is a persona `config::coherence`
+    // refuses under the table-less workflow the scaffold renders.
     let declaring: Vec<(tempfile::TempDir, String)> = REFUSED_DECLARATIONS
         .iter()
         .map(|refused| {
@@ -908,8 +1092,14 @@ fn an_argument_or_a_set_the_command_refuses_writes_nothing() {
                 overlong_name_refusal(scaffolded_env_line())
             ),
         )])
+        .chain(refused_without_a_table().map(|(persona, refusal)| {
+            (
+                operator_template_root_holding(&demo_set(&persona)),
+                format!("gate template set demo: implementer: {refusal}"),
+            )
+        }))
         .collect();
-    let env_rows: Vec<([&str; 3], &str)> = declaring
+    let set_rows: Vec<([&str; 3], &str)> = declaring
         .iter()
         .flat_map(|(template, refusal)| {
             let template = template.path().to_str().unwrap();
@@ -932,10 +1122,10 @@ fn an_argument_or_a_set_the_command_refuses_writes_nothing() {
         (&["init", "--template", seeded], seed_id),
         (&["setup", "--template", seeded], seed_id),
     ];
-    let env_rows = env_rows
+    let set_rows = set_rows
         .iter()
         .map(|(args, refusal)| (args.as_slice(), *refusal));
-    for (args, refusal) in rows.into_iter().chain(env_rows) {
+    for (args, refusal) in rows.into_iter().chain(set_rows) {
         assert_refused_before_any_write(args, refusal);
     }
 }
@@ -1241,10 +1431,10 @@ fn demo_implementer(id: &str) -> String {
     format!("---\nid: {id}\n---\nYou build the demo project.\n")
 }
 
-/// The operator's own `scaffold/demo/set.yml`, its implementer carrying `id`: two markers, one
-/// gate running [`DEMO_CHECK`] on both unit stages.
-fn demo_set(id: &str) -> String {
-    let persona: String = demo_implementer(id)
+/// The operator's own `scaffold/demo/set.yml`, its implementer the persona file `implementer`: two
+/// markers, one gate running [`DEMO_CHECK`] on both unit stages.
+fn demo_set(implementer: &str) -> String {
+    let persona: String = implementer
         .lines()
         .map(|line| format!("  {line}\n"))
         .collect();
@@ -1257,7 +1447,7 @@ fn demo_set(id: &str) -> String {
 /// Write under `root` a template root of the operator's own: one set, `demo`, its implementer
 /// carrying `id`, listing [`DEMO_CHECK`], which the root holds.
 fn write_operator_root(root: &Path, id: &str) {
-    let set = demo_set(id);
+    let set = demo_set(&demo_implementer(id));
     let listed = format!("{DEMO_CHECK}\n");
     write_files(
         root,
@@ -1276,13 +1466,22 @@ fn operator_template_root(id: &str) -> tempfile::TempDir {
     dir
 }
 
-/// A fresh template root of the operator's own ([`operator_template_root`], its implementer
-/// [`DEMO_IMPLEMENTER_ID`]) whose one set's `set.yml` ends with `env_line`, its `env:` line.
-fn operator_template_root_declaring(env_line: &str) -> tempfile::TempDir {
+/// A fresh template root of the operator's own ([`operator_template_root`]) whose one set's
+/// `set.yml` is `set`, in the place of the one that root writes.
+fn operator_template_root_holding(set: &str) -> tempfile::TempDir {
     let dir = operator_template_root(DEMO_IMPLEMENTER_ID);
-    let set = format!("{}{env_line}", demo_set(DEMO_IMPLEMENTER_ID));
-    write_files(dir.path(), &[("scaffold/demo/set.yml", set.as_str())]);
+    write_files(dir.path(), &[("scaffold/demo/set.yml", set)]);
     dir
+}
+
+/// A fresh template root of the operator's own ([`operator_template_root_holding`]) whose one
+/// set, its implementer [`DEMO_IMPLEMENTER_ID`], has a `set.yml` ending with `env_line`, its
+/// `env:` line.
+fn operator_template_root_declaring(env_line: &str) -> tempfile::TempDir {
+    operator_template_root_holding(&format!(
+        "{}{env_line}",
+        demo_set(&demo_implementer(DEMO_IMPLEMENTER_ID))
+    ))
 }
 
 /// The line, counted from 1, that a scaffold writes its set's `env` on: where the workflow a fresh

@@ -259,6 +259,16 @@ pub(crate) fn cmd_validate(args: &[String]) -> Res {
     for advisory in instructions::shadow_advisories(&cfg.instructions) {
         eprintln!("{advisory}");
     }
+    // Pin notes (spec 135, PINS): one note per field a persona pins, in persona id order, read
+    // from the loaded config, beside the model-drift advisory the store advisories print. A pin is
+    // a project's explicit choice, so this is advisory and never a refusal.
+    for note in cfg
+        .agents
+        .values()
+        .flat_map(rigger_domain::capability::pin_notes)
+    {
+        eprintln!("{note}");
+    }
     // The store advisories read the run store every reader reads ([`store_to_read_in`]); below a
     // root that holds no `.rigger/` there is none to read, and the configuration alone is judged.
     if let Some((loc, selection)) = if_any(store_to_read_in(&site))? {
@@ -1051,10 +1061,11 @@ fn docs_drift_failure(root: &Path) -> Option<String> {
 }
 
 /// `rigger instructions` - print the instruction layers every spawned agent is held to: each
-/// built-in (the law, the working discipline and the communication discipline) with its state -
-/// in force, replaced or switched off by a same-named operator file - then the other operator
-/// files in the governing project's `.rigger/instructions/`, read at that project even from a
-/// subdirectory, a nested worktree or a gate's store fence ([`project_instruction_layer`]).
+/// built-in (the law, the working discipline, the communication discipline and the complexity
+/// considerations) with its state - in force, replaced or switched off by a same-named operator
+/// file - then the other operator files in the governing project's `.rigger/instructions/`, read
+/// at that project even from a subdirectory, a nested worktree or a gate's store fence
+/// ([`project_instruction_layer`]).
 pub(crate) fn cmd_instructions(_args: &[String]) -> Res {
     let ops = project_instruction_layer()?;
     print!("{}", instructions::render(&ops));

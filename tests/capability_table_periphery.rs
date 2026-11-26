@@ -12,11 +12,8 @@
 
 use crate::common;
 
-use common::cli::config_valid_lines;
-use common::cli::refusal_line;
-use common::cli::run_rigger;
+use common::cli::assert_one_worker_validates;
 use common::cli::temp_project;
-use common::cli::write_scaffold;
 use common::cli::UNISOLATED_WORKER;
 use common::fixtures::capability_shape_refusals;
 use common::fixtures::capability_table;
@@ -40,19 +37,6 @@ fn rigger_validate_holds_the_capability_table_to_its_shape_and_its_judging_floor
         .map(|(workflow, refusal)| (workflow, Err(format!("config: parse workflow: {refusal}"))));
     let null = (workflow_declaring_capability("~"), Ok(()));
     for (workflow, verdict) in [null].into_iter().chain(floor).chain(shape) {
-        write_scaffold(project.path(), &[("worker", UNISOLATED_WORKER)], &workflow);
-        let (out, err, ok) = run_rigger(project.path(), &["validate"]);
-        match verdict {
-            Ok(()) => assert_eq!(
-                (ok, config_valid_lines(&out)),
-                (true, vec!["config valid: 1 agents, 0 stages, 0 gates"]),
-                "{workflow}stderr:\n{err}"
-            ),
-            Err(refusal) => assert_eq!(
-                (ok, out.as_str(), err),
-                (false, "", format!("{}\n", refusal_line(&refusal))),
-                "{workflow}"
-            ),
-        }
+        assert_one_worker_validates(project.path(), UNISOLATED_WORKER, &workflow, verdict);
     }
 }

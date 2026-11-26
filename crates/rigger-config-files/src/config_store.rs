@@ -17,8 +17,8 @@ use serde::Deserialize;
 
 use crate::config::{
     check_agent_id, err, find_cycle, index_agents, parse_agent, parse_yaml_naming_unknown_keys,
-    resolve_wall_clocks, AgentDef, Config, Defaults, Error, StoreConfig, Workflow,
-    INSTRUCTIONS_DIR, RIGGER_DIR, WORKFLOW_FILE,
+    refuse_incoherent, resolve_wall_clocks, AgentDef, Config, Defaults, Error, StoreConfig,
+    Workflow, INSTRUCTIONS_DIR, RIGGER_DIR, WORKFLOW_FILE,
 };
 use crate::gate::GateRequirements;
 use crate::instructions::Instruction;
@@ -401,9 +401,10 @@ pub fn read_scratch_defaults(rigger_dir: &Path) -> Result<Defaults, Error> {
 
 impl Config {
     /// Validate checks that every agent id, review step sequence and declared extractor is well
-    /// formed, every reference resolves, a declared capability table holds the judging floor and
-    /// the stage graph is acyclic, then, last, resolves every declared gate's `requires` on
-    /// `PATH` and answers that resolution.
+    /// formed, every reference resolves, a declared capability table holds the judging floor,
+    /// every persona's declarations are coherent with that table or its absence
+    /// (`config::refuse_incoherent`) and the stage graph is acyclic, then, last, resolves every
+    /// declared gate's `requires` on `PATH` and answers that resolution.
     pub fn validate(&self) -> Result<Vec<GateRequirements>, Error> {
         let wf = &self.workflow;
         // The declared build environment: a `build.env` entry the one check refuses (a bad
@@ -483,6 +484,7 @@ impl Config {
                 .validate()
                 .map_err(|m| err(format!("defaults.capability.{m}")))?;
         }
+        refuse_incoherent(self.agents.values(), wf.defaults.capability.as_ref())?;
         for (name, st) in &wf.stages {
             for need in &st.needs {
                 if !wf.stages.contains_key(need) {
@@ -1476,69 +1478,6 @@ mod tests {
     }
 
     #[test]
-    fn model_for_attempt_advances_one_rung_per_attempt_and_clamps_at_the_last() {
-        // A unit's first attempt resolves the first rung and each remediation attempt advances
-        // one rung, CLAMPED at the last once exhausted (spec 10 unit 4).
-        let a = AgentDef {
-            id: "worker".into(),
-            model_ladder: vec!["haiku".into(), "sonnet".into(), "opus".into()],
-            ..Default::default()
-        };
-        assert_eq!(a.model_for_attempt(0), "haiku", "attempt 0 -> rung 0");
-        assert_eq!(a.model_for_attempt(1), "sonnet", "attempt 1 -> rung 1");
-        assert_eq!(a.model_for_attempt(2), "opus", "attempt 2 -> rung 2 (last)");
-        assert_eq!(
-            a.model_for_attempt(3),
-            "opus",
-            "past the end clamps at the last rung"
-        );
-        assert_eq!(
-            a.model_for_attempt(99),
-            "opus",
-            "far past the end still clamps"
-        );
-    }
-
-    #[test]
-    fn a_single_model_is_a_one_rung_ladder_used_on_every_attempt() {
-        // With no ladder, the single `model` alias is returned on every attempt - so an agent
-        // that only sets `model` behaves EXACTLY as before the cascade existed (back-compat).
-        let one = AgentDef {
-            id: "worker".into(),
-            model: "sonnet".into(),
-            ..Default::default()
-        };
-        for attempt in [0, 1, 5, 42] {
-            assert_eq!(
-                one.model_for_attempt(attempt),
-                "sonnet",
-                "a lone model: does not ladder - attempt {attempt} still resolves it"
-            );
-        }
-        // Neither declared: empty (the driver's default model is inherited), on every attempt.
-        let none = AgentDef {
-            id: "worker".into(),
-            ..Default::default()
-        };
-        assert_eq!(none.model_for_attempt(0), "");
-        assert_eq!(none.model_for_attempt(3), "");
-    }
-
-    #[test]
-    fn a_declared_ladder_takes_precedence_over_a_lone_model() {
-        // When both are set the ladder is authority and `model` is ignored, so the resolved
-        // rung is never silently overridden by the shorthand field.
-        let a = AgentDef {
-            id: "worker".into(),
-            model: "haiku".into(),
-            model_ladder: vec!["sonnet".into(), "opus".into()],
-            ..Default::default()
-        };
-        assert_eq!(a.model_for_attempt(0), "sonnet");
-        assert_eq!(a.model_for_attempt(1), "opus");
-    }
-
-    #[test]
     fn parses_agent_max_wall_clock_and_defaults_to_none_when_absent() {
         let with = parse_agent(b"---\nid: slow\nmax_wall_clock: 1800\n---\nbody\n").unwrap();
         assert_eq!(
@@ -2271,15 +2210,31 @@ agent: worker\n";
         }
     }
 
+    /// A config of the one persona `agent` whose workflow is `body`, parsed and not yet validated.
+    fn config_of_persona(agent: AgentDef, body: &str) -> Config {
+        let mut cfg = Config::default();
+        cfg.agents.insert(agent.id.clone(), agent);
+        cfg.workflow = parse_workflow(body).unwrap_or_else(|e| panic!("parse {body}: {e}"));
+        cfg
+    }
+
     /// `Config::validate` holds THE FLOOR through `CapabilityTable::validate`, accepting a
     /// workflow with no table and refusing each judging row the floor refuses under
     /// `defaults.capability`, while [`read_scratch_defaults`], which passes no
-    /// `Config::validate`, reads each of those tables as written.
+    /// `Config::validate`, reads each of those tables as written. Its one persona pins its model,
+    /// so the coherence of its declarations holds under every table.
     #[test]
     fn validate_holds_the_judging_floor_that_read_scratch_defaults_does_not() {
         use crate::config::CapabilityTable;
-        use crate::test_support::{capability_table, workflow_declaring_capability, JUDGING_FLOOR};
-        let validated = |workflow: &str| config_of(workflow).validate().map_err(|e| e.0);
+        use crate::test_support::{
+            agent_with_its_own_alias, capability_table, workflow_declaring_capability,
+            JUDGING_FLOOR,
+        };
+        let validated = |workflow: &str| {
+            config_of_persona(agent_with_its_own_alias("a"), workflow)
+                .validate()
+                .map_err(|e| e.0)
+        };
         assert_eq!(validated("defaults: {}\n"), Ok(Vec::new()), "no table");
         let tmp = tempfile::tempdir().expect("tempdir");
         let rigger_dir = tmp.path().join(".rigger");
@@ -2303,6 +2258,26 @@ agent: worker\n";
                     .map_err(|e| e.0),
                 Ok(Some(written)),
                 "{judging}"
+            );
+        }
+    }
+
+    /// THE DECLARATIONS ARE COHERENT: `Config::validate` refuses each persona whose declarations
+    /// `config::coherence` refuses against its workflow's `defaults.capability` table or its
+    /// absence, with that exact refusal, and accepts each it accepts.
+    #[test]
+    fn validate_refuses_each_persona_incoherent_with_the_workflows_table() {
+        use crate::test_support::{persona_coherence, workflow_declaring_capability};
+        for (persona, table, verdict) in persona_coherence() {
+            let agent = crate::config::parse_agent(persona.as_bytes())
+                .unwrap_or_else(|e| panic!("parse {persona}: {e}"));
+            let workflow = workflow_declaring_capability(&table);
+            assert_eq!(
+                config_of_persona(agent, &workflow)
+                    .validate()
+                    .map_err(|e| e.0),
+                verdict.map(|()| Vec::new()),
+                "{persona}{workflow}"
             );
         }
     }

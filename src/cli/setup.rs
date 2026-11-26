@@ -129,34 +129,65 @@ impl ScaffoldReport {
 /// Scaffold the project at `root` from `sets` (handed in key order: in production, what
 /// [`load_template_sets`] read from the template root `--template <dir>` names, and none when no
 /// root was given): every set is parsed ([`parse_template_sets`]) and the project's agents are
-/// read ([`defined_agent_ids`]) before [`scaffold_project`]'s first write, so a set that fails
-/// [`parse_template_set`] refuses naming its key, an agent file that does not parse refuses
-/// naming that file, and either refusal writes nothing. It imports no agent collection, so every
-/// seed is weighed against the project's own agents alone.
+/// read and weighed against the workflow the scaffold leaves in place ([`defined_agent_ids`])
+/// before [`scaffold_project`]'s first write, so a set that fails [`parse_template_set`] refuses
+/// naming its key, an agent file that does not parse refuses naming that file, a persona
+/// incoherent with that workflow refuses naming the persona and its fixes, and each refusal
+/// writes nothing. It imports no agent collection, so every seed is weighed against the
+/// project's own agents alone.
 fn init_project(
     root: &Path,
     sets: &[TemplateSet],
 ) -> Result<ScaffoldReport, Box<dyn std::error::Error>> {
     let parsed = parse_template_sets(sets)?;
-    scaffold_project(root, &parsed, &defined_agent_ids(root)?, &[])
+    scaffold_project(root, &parsed, &defined_agent_ids(root, &parsed, &[])?, &[])
 }
 
 /// The ids the agent files in `root`'s `.rigger/agents/` define, whatever their file names, read
 /// through the loader's one directory read ([`config_store::read_agents_dir`]); none when that
-/// directory is absent. It fails naming an agent file there that does not parse, and it writes
-/// nothing, so a command reads it before its first write and that refusal leaves the project
-/// untouched.
+/// directory is absent. It fails naming an agent file there that does not parse, fails on the
+/// project's own `.rigger/workflow.yml` when that cannot be read or does not parse, and refuses an
+/// agent there, or an agent `incoming` stages ([`stage_import`]), that
+/// [`config::refuse_incoherent`] finds incoherent with the workflow [`scaffold_project`] leaves
+/// in place from `parsed`: that `.rigger/workflow.yml` when there is one, else the
+/// [`scaffold_workflow`] rendering of the set [`matched_set`] finds. It writes nothing, so a
+/// command reads it before its first write and each refusal leaves the project untouched.
 fn defined_agent_ids(
     root: &Path,
+    parsed: &[(&TemplateSet, SetSpec)],
+    incoming: &[IncomingAgent],
 ) -> Result<std::collections::HashSet<String>, Box<dyn std::error::Error>> {
     let agents_dir = project_agents_dir(root);
-    if !agents_dir.exists() {
-        return Ok(std::collections::HashSet::new());
-    }
-    Ok(config_store::read_agents_dir(&agents_dir)?
-        .into_iter()
-        .map(|(_, agent)| agent.id)
-        .collect())
+    let agents = if agents_dir.exists() {
+        config_store::read_agents_dir(&agents_dir)?
+    } else {
+        Vec::new()
+    };
+    let workflow = match config_store::load_project_workflow(root)? {
+        Some(workflow) => workflow,
+        None => config_store::parse_workflow(&scaffold_workflow(
+            matched_set(root, parsed).map(|(_, spec)| spec),
+        ))?,
+    };
+    let staged = incoming
+        .iter()
+        .filter_map(|agent| agent.staged.as_ref().map(|(_, agent)| agent));
+    config::refuse_incoherent(
+        agents.iter().map(|(_, agent)| agent).chain(staged),
+        workflow.defaults.capability.as_ref(),
+    )?;
+    Ok(agents.into_iter().map(|(_, agent)| agent.id).collect())
+}
+
+/// The first of `parsed` any of whose `detect` markers is a file at `root`, the set
+/// [`scaffold_project`] scaffolds from; none when no set's marker is there.
+fn matched_set<'p, 's>(
+    root: &Path,
+    parsed: &'p [(&'s TemplateSet, SetSpec)],
+) -> Option<&'p (&'s TemplateSet, SetSpec)> {
+    parsed
+        .iter()
+        .find(|(_, spec)| spec.detect.iter().any(|marker| root.join(marker).is_file()))
 }
 
 /// Each of `sets` beside the [`SetSpec`] [`parse_template_set`] reads from it, in the order
@@ -174,11 +205,11 @@ fn parse_template_sets(sets: &[TemplateSet]) -> Result<Vec<(&TemplateSet, SetSpe
 /// `changed: false`.
 ///
 /// The workflow's gates, its implementer and its `build.env` come from the first of `parsed` any
-/// of whose `detect` markers is a file at `root`, whose `implementer` persona is seeded beside
-/// the role seeds; with none, the workflow declares no gates and no build variable and names the
-/// language-neutral `implementer` seed. An existing workflow or agent file is kept, and no seed
-/// is written whose id is among `defined`, the ids the project's agents define
-/// ([`defined_agent_ids`], read before this first write), or whose id `incoming`, the agent
+/// of whose `detect` markers is a file at `root` ([`matched_set`]), whose `implementer` persona
+/// is seeded beside the role seeds; with none, the workflow declares no gates and no build
+/// variable and names the language-neutral `implementer` seed. An existing workflow or agent
+/// file is kept, and no seed is written whose id is among `defined`, the ids the project's agents
+/// define ([`defined_agent_ids`], read before this first write), or whose id `incoming`, the agent
 /// collection `rigger setup --agents` imports after this ([`stage_import`]), brings in its place
 /// ([`write_seed_agents`]).
 fn scaffold_project(
@@ -191,9 +222,7 @@ fn scaffold_project(
         .iter()
         .map(|(set, spec)| (set.key.clone(), spec.detect.clone()))
         .collect();
-    let matched = parsed
-        .iter()
-        .find(|(_, spec)| spec.detect.iter().any(|marker| root.join(marker).is_file()));
+    let matched = matched_set(root, parsed);
 
     // 1. Scaffold .rigger/.
     let rigger_dir = root.join(RIGGER_DIR);
@@ -902,15 +931,17 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
     let site = Site::here();
     // The directory setup scaffolds: the one it runs in, as the resolver read it.
     let root = site.located()?;
-    // Read before the store is resolved too, so an agent file that does not parse leaves the
-    // project untouched.
-    let defined = defined_agent_ids(root)?;
-    // The --agents collection is read and checked here too, so a collection the import refuses
-    // on its own leaves the project untouched, and the scaffold writes no seed whose id it brings.
+    // The --agents collection is read and checked before the store is resolved too, so a
+    // collection the import refuses on its own leaves the project untouched, and the scaffold
+    // writes no seed whose id it brings.
     let incoming = match &opts.agents_dir {
         Some(src) => stage_import(root, src)?,
         None => Vec::new(),
     };
+    // So are the project's agents, so an agent file that does not parse, or a persona on disk or
+    // in the collection incoherent with the workflow the scaffold leaves in place, leaves the
+    // project untouched.
+    let defined = defined_agent_ids(root, &parsed, &incoming)?;
     // The store setup pays the owed rebuild into ([`store_to_write_in`]): the root's, made there
     // when absent, or from a subdirectory or a linked worktree the one at the project root. It is
     // resolved before setup writes anything, so where that root holds none setup is refused
@@ -1856,9 +1887,13 @@ fn stage_import(root: &Path, src: &Path) -> Result<Vec<IncomingAgent>, Box<dyn s
 /// staged file under its own name. A file whose name `.rigger/agents/` holds by now - before the
 /// collection was read, or a seed [`scaffold_project`] wrote since - is KEPT untouched (import
 /// never overwrites, so a re-run - or importing over the scaffolded fleet - is safe) and counted
-/// as skipped. The result is validated by the SAME `config::load` `rigger validate` runs, so an
-/// import that breaks the project fails loudly. Rooted at `root` so it is testable against a
-/// temp dir.
+/// as skipped. Before a byte is written, the prospective fleet (the agents on disk with the
+/// staged ones) is refused when an agent has no id or two share one ([`config::index_agents`]),
+/// or when a persona is incoherent with the workflow [`scaffold_project`] left in place
+/// ([`config::refuse_incoherent`]): one declaring `work` under a workflow with no
+/// `defaults.capability` table, or one declaring neither `work` nor a model pin under a table.
+/// The result is validated by the SAME `config::load` `rigger validate` runs, so an import that
+/// breaks the project fails loudly. Rooted at `root` so it is testable against a temp dir.
 fn import_agents(
     root: &Path,
     incoming: Vec<IncomingAgent>,
@@ -1891,13 +1926,21 @@ fn import_agents(
         }
     }
 
-    // Validate the prospective fleet by the SAME rule `config::load` enforces - a
-    // non-empty, unique id per agent - before a single byte is written, so a colliding id
-    // fails the import loudly and leaves `.rigger/agents/` untouched.
+    // Validate the prospective fleet by the SAME rules `config::load` enforces - a
+    // non-empty, unique id per agent, and every persona coherent with the workflow's
+    // `defaults.capability` table or its absence - before a single byte is written, so a
+    // colliding id or an incoherent persona fails the import loudly and leaves
+    // `.rigger/agents/` untouched.
     let staged = to_write
         .iter()
         .map(|(name, _, agent)| (name.clone(), agent.clone()));
-    config::index_agents(fleet.into_iter().chain(staged))?;
+    let prospective = config::index_agents(fleet.into_iter().chain(staged))?;
+    config::refuse_incoherent(
+        prospective.values(),
+        config_store::load_project_workflow(root)?
+            .as_ref()
+            .and_then(|workflow| workflow.defaults.capability.as_ref()),
+    )?;
 
     // Pass 2: every staged file validated - commit the writes.
     for (name, content, agent) in &to_write {
@@ -1998,6 +2041,7 @@ in the order they are injected, each named by the file that overrides it:
 - `engineering-principles.md`
 - `working-discipline.md`
 - `communication.md`
+- `complexity.md`
 
 A file in this directory named exactly as a built-in (case-sensitive, nothing trimmed) replaces
 that built-in: its body is injected in the built-in's place. A same-named file whose body is
@@ -2254,9 +2298,12 @@ struct SetSpec {
 /// comes back empty. Refuses, naming the set key, a `set.yml` or `gates` text that fails to
 /// parse, a stage list naming a gate id the `gates` text does not declare, an `implementer`
 /// persona that fails to parse, one whose `id` is a [`SCAFFOLD_AGENTS`] seed's, an `env` that
-/// [`BuildEnv::declared`], the one check of a workflow's `build.env`, refuses, and a set whose
+/// [`BuildEnv::declared`], the one check of a workflow's `build.env`, refuses, a set whose
 /// [`scaffold_workflow`] rendering fails to load, so a set `init` would write a workflow from
-/// that no command can read is refused before the first write.
+/// that no command can read is refused before the first write, and an `implementer` persona
+/// [`config::coherence`] finds incoherent with that rendering: one declaring `work` while the
+/// rendering declares no `defaults.capability` table, or one declaring neither `work` nor a
+/// model pin under a table.
 fn parse_template_set(set: &TemplateSet) -> Result<SetSpec, String> {
     let refuse = |why: String| set_refusal(&set.key, why);
     let mut spec: SetSpec = serde_yaml::from_str(&set.set).map_err(|e| refuse(e.to_string()))?;
@@ -2270,9 +2317,9 @@ fn parse_template_set(set: &TemplateSet) -> Result<SetSpec, String> {
             )));
         }
     }
-    let id = config::parse_agent(spec.implementer.as_bytes())
-        .map_err(|e| refuse(format!("implementer: {e}")))?
-        .id;
+    let implementer = config::parse_agent(spec.implementer.as_bytes())
+        .map_err(|e| refuse(format!("implementer: {e}")))?;
+    let id = implementer.id.clone();
     if SCAFFOLD_AGENTS
         .iter()
         .any(|(_, seed)| seed_id(seed).as_ref() == Some(&id))
@@ -2290,8 +2337,14 @@ fn parse_template_set(set: &TemplateSet) -> Result<SetSpec, String> {
     if declared.is_empty() {
         spec.gates.clear();
     }
-    config_store::parse_workflow(&scaffold_workflow(Some(&spec)))
+    let workflow = config_store::parse_workflow(&scaffold_workflow(Some(&spec)))
         .map_err(|e| refuse(format!("the workflow it scaffolds fails to load: {e}")))?;
+    config::coherence(
+        &implementer.id,
+        &implementer,
+        workflow.defaults.capability.as_ref(),
+    )
+    .map_err(|m| refuse(format!("implementer: {m}")))?;
     Ok(spec)
 }
 
@@ -3485,8 +3538,10 @@ mod tests {
     /// lacks its `implementer`, a `gates` text that fails to parse, a stage list naming a gate
     /// the `gates` text does not declare, an implementer persona that fails to parse, one
     /// whose `id` is a scaffold seed's, an `env` declaring each entry the build environment's
-    /// one check refuses, with that check's refusal, and an `env` name of 1025 characters, one
-    /// past the longest key YAML reads plain, with the load error of the workflow it scaffolds.
+    /// one check refuses, with that check's refusal, an `env` name of 1025 characters, one
+    /// past the longest key YAML reads plain, with the load error of the workflow it scaffolds,
+    /// and an implementer declaring `work` under that workflow, which declares no
+    /// `defaults.capability` table, with `config::coherence`'s refusal.
     #[test]
     fn parse_template_set_refuses_naming_the_set_key() {
         let refusal = |set: &str| parse_template_set(&synthetic(set)).map(|_| ()).unwrap_err();
@@ -3567,7 +3622,16 @@ mod tests {
                     overlong_name_refusal(line)
                 ),
             )
-        }]) {
+        }])
+        .chain([(
+            "detect: []\ngates: \"\"\nimplement: []\ncheckin: []\n\
+             implementer: \"---\\nid: maker\\nwork: writing\\n---\\nBuild.\\n\"\n"
+                .to_string(),
+            format!(
+                "gate template set synthetic: implementer: {}",
+                crate::test_support::work_without_a_table("maker", "writing")
+            ),
+        )]) {
             assert_eq!(refusal(set.as_str()), want, "{set}");
         }
     }
@@ -5049,6 +5113,107 @@ mod tests {
         );
     }
 
+    /// THE DECLARATIONS ARE COHERENT at the import: over a project [`init_project`] scaffolded,
+    /// whose workflow then declares each `persona_coherence` row's `defaults.capability` table
+    /// (none for `~`), [`import_agents`] refuses the row's persona with `config::coherence`'s exact
+    /// refusal before it writes any file, leaving `.rigger/agents/` as it was, and imports it when
+    /// coherence accepts it. An agent already on disk that the table refuses refuses the import of
+    /// a coherent persona the same way.
+    #[test]
+    fn import_agents_refuses_a_fleet_incoherent_with_the_workflow_before_it_writes() {
+        use crate::test_support::{
+            capability_table, persona_coherence, unpinned_under_a_table, JUDGING_FLOOR,
+        };
+        let on_disk_offender = (
+            Some("---\nid: onfile\n---\nOn file.\n"),
+            "---\nid: worker\nmodel: m\n---\nDo the work.\n".to_string(),
+            capability_table(JUDGING_FLOOR[0].0),
+            Err(unpinned_under_a_table("onfile")),
+        );
+        let rows = persona_coherence()
+            .into_iter()
+            .map(|(persona, table, verdict)| (None, persona, table, verdict))
+            .chain([on_disk_offender]);
+        for (on_disk, persona, table, verdict) in rows {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path();
+            init_project(root, &repo_sets()).unwrap();
+            let wf_path = root.join(RIGGER_DIR).join("workflow.yml");
+            let wf = std::fs::read_to_string(&wf_path).unwrap();
+            let declared = format!("\ndefaults:\n  capability: {table}\n");
+            std::fs::write(&wf_path, wf.replacen("\ndefaults:\n", &declared, 1)).unwrap();
+            let agents = root.join(RIGGER_DIR).join("agents");
+            if let Some(text) = on_disk {
+                std::fs::write(agents.join("onfile.md"), text).unwrap();
+            }
+            let src = root.join("collection");
+            std::fs::create_dir_all(&src).unwrap();
+            std::fs::write(src.join("worker.md"), &persona).unwrap();
+            let before = sorted_dir_names(&agents);
+            let mut imported = before.clone();
+            imported.push("worker.md".to_string());
+            imported.sort();
+            let left = if verdict.is_ok() { imported } else { before };
+            assert_eq!(
+                (
+                    import(root, &src).map_err(|e| e.to_string()),
+                    sorted_dir_names(&agents)
+                ),
+                (
+                    verdict
+                        .map(|()| ImportSummary {
+                            imported: 1,
+                            skipped: 0
+                        })
+                        .map_err(|m| format!("config: {m}")),
+                    left
+                ),
+                "{persona}under the table {table}, beside {on_disk:?}"
+            );
+        }
+    }
+
+    /// Ruling 2-1, THE DECLARATIONS ARE COHERENT at `rigger init`: over a project whose
+    /// `.rigger/agents/` holds each `persona_coherence` row's persona and whose
+    /// `.rigger/workflow.yml` declares the row's `defaults.capability` table - or, for `~`, holds
+    /// no workflow, so the one [`init_project`] would write is the scaffold's rendering, which
+    /// declares none - `init_project` refuses with `config::coherence`'s exact refusal before its
+    /// first write when coherence refuses the persona, leaving the project as it was, and
+    /// initializes the project when coherence accepts it.
+    #[test]
+    fn init_project_refuses_a_persona_incoherent_with_the_workflow_it_would_leave() {
+        use crate::test_support::{dir_snapshot, persona_coherence, workflow_declaring_capability};
+        for (persona, table, verdict) in persona_coherence() {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path();
+            let rigger = root.join(RIGGER_DIR);
+            std::fs::create_dir_all(rigger.join("agents")).unwrap();
+            std::fs::write(rigger.join("agents").join("worker.md"), &persona).unwrap();
+            if table != "~" {
+                let workflow = workflow_declaring_capability(&table);
+                std::fs::write(rigger.join("workflow.yml"), workflow).unwrap();
+            }
+            let snapshot = || {
+                (
+                    dir_snapshot(root, ""),
+                    dir_snapshot(&rigger, ""),
+                    dir_snapshot(&rigger.join("agents"), ""),
+                )
+            };
+            let before = snapshot();
+            assert_eq!(
+                init_project(root, &repo_sets())
+                    .map(|_| ())
+                    .map_err(|e| e.to_string()),
+                verdict.clone().map_err(|m| format!("config: {m}")),
+                "{persona}under the table {table}"
+            );
+            if verdict.is_err() {
+                assert_eq!(snapshot(), before, "{persona}under the table {table}");
+            }
+        }
+    }
+
     /// The scaffolded workflow (`rigger init`/`setup` on a NEW project) carries neither retired
     /// `build` key (spec 125 criterion 4): `rigger validate` refuses a `build.wrapper` or
     /// `build.cache_dir` value, so no rendering writes a `wrapper:` or `cache_dir:` line and
@@ -5839,9 +6004,10 @@ mod tests {
         );
     }
 
-    /// Spec 120's THE BUILT-IN LAYER NAMES NO LANGUAGE: every `BUILTIN` body and the reviewer
-    /// discipline with its build-cache sentence on both review-tier surfaces, read through the
-    /// shipped-text helper, spell no marker of the MARKERS rule.
+    /// Spec 120's THE BUILT-IN LAYER NAMES NO LANGUAGE: every `BUILTIN` body, the complexity
+    /// considerations among them, and the reviewer discipline with its build-cache sentence on
+    /// both review-tier surfaces, read through the shipped-text helper, spell no marker of the
+    /// MARKERS rule.
     #[test]
     fn the_built_in_layer_and_the_reviewer_discipline_name_no_language() {
         let reviewer = [
@@ -5855,10 +6021,18 @@ mod tests {
             .filter(|(at, _)| at.starts_with("BUILTIN ") || reviewer.contains(&at.as_str()))
             .collect();
         assert_eq!(
-            texts.len(),
-            instructions::BUILTIN.len() + reviewer.len(),
-            "every built-in body, and the reviewer discipline and its build-cache sentence on \
-             each review-tier surface, are read"
+            texts.iter().map(|(at, _)| at.as_str()).collect::<Vec<_>>(),
+            reviewer
+                .into_iter()
+                .chain([
+                    "BUILTIN engineering-principles",
+                    "BUILTIN working-discipline",
+                    "BUILTIN communication",
+                    "BUILTIN complexity",
+                ])
+                .collect::<Vec<_>>(),
+            "every built-in body, the complexity considerations among them, and the reviewer \
+             discipline and its build-cache sentence on each review-tier surface, are read"
         );
         assert_eq!(
             texts_hit_by(&texts, language_marker_hits),

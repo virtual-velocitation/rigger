@@ -8,6 +8,10 @@ mod common;
 mod audit_record;
 #[path = "common/layer_cli.rs"]
 mod layer_cli;
+#[path = "common/real_driver_spy.rs"]
+mod real_driver_spy;
+#[path = "common/real_gate_run.rs"]
+mod real_gate_run;
 #[path = "common/retired_feature.rs"]
 mod retired_feature;
 #[path = "common/served_asset.rs"]
@@ -40,6 +44,7 @@ mod canary_model_drift_periphery;
 mod canary_progress_hook_periphery;
 mod canary_tolerant_attribution_periphery;
 mod canary_unattributed_rejects_periphery;
+mod capability_resolve_periphery;
 mod capability_table_periphery;
 mod cause_wire_periphery;
 #[cfg(feature = "symbols")]
@@ -185,7 +190,9 @@ mod os_home_boundary;
 mod os_process_boundary;
 mod os_shell_boundary;
 mod parallel_ordered_emit;
+mod persona_coherence_periphery;
 mod persona_work_key_periphery;
+mod pin_notes_periphery;
 mod plan_critique_spec_defect_stop_periphery;
 mod plan_stage_commit_landing_periphery;
 mod planner_complexity_periphery;
@@ -253,6 +260,7 @@ mod spawn_scratch_reap_authorized_root_periphery;
 mod spawn_timing_periphery;
 mod spec_critique_periphery;
 mod spec_lint;
+mod speculation_record_keys_periphery;
 mod statusline_command_periphery;
 mod stderr_whole_line_audit;
 mod step_sheds_the_freshen;

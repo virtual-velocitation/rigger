@@ -424,7 +424,7 @@ pub fn house_and_team_operator_layer() -> Vec<rigger::instructions::Instruction>
 /// The named-entry fixture the instruction reporters are read over, in filename order as the
 /// loader returns it: `30-style`, which shadows no built-in; `communication`, replacing that
 /// built-in; and an empty `working-discipline`, switching that built-in off. The
-/// `engineering-principles` built-in stays in force.
+/// `engineering-principles` and `complexity` built-ins stay in force.
 pub fn shadowing_operator_layer() -> Vec<rigger::instructions::Instruction> {
     [
         ("30-style", Some(UNSHADOWING_STYLE_BODY)),
@@ -481,37 +481,75 @@ pub fn rendered_near_named_layer(near: &str) -> String {
 /// What `rigger instructions` prints over a layer holding [`shadowing_operator_layer`]'s
 /// `30-style` and empty `working-discipline` files: the engineering-principles built-in in force,
 /// the working-discipline one switched off, then `communication` - the communication built-in's
-/// section as printed - then the operator heading, `30-style`, and `tail`, the operator files
-/// printed after it.
+/// section as printed - then the complexity built-in in force, then the operator heading,
+/// `30-style`, and `tail`, the operator files printed after it.
 fn rendered_beside_the_shadowing_entries(communication: &str, tail: &str) -> String {
     format!(
         "{}\n\nBuilt-in:\n\n## engineering-principles (built-in)\n{}\n\n## working-discipline \
          (switched off by .rigger/instructions/working-discipline.md)\n{communication}\
+         \n## complexity (built-in)\n{}\n\
          {RENDERED_OPERATOR_HEADING}\n## 30-style\n{UNSHADOWING_STYLE_BODY}\n{tail}",
         rigger_domain::prompt_surface::INSTRUCTIONS_HEADING,
-        builtin_body("engineering-principles").trim_end()
+        builtin_body("engineering-principles").trim_end(),
+        builtin_body("complexity").trim_end()
     )
 }
 
 /// What `rigger instructions` prints when no operator file is read, spelled without calling
 /// `render`: every built-in in force, in `BUILTIN` order, then `(none)` under the operator heading.
 pub fn rendered_built_ins_only_layer() -> String {
-    let sections = [
+    rendered_layer_closing_with_complexity(&rendered_in_force_section("complexity"), "(none)\n")
+}
+
+/// What `rigger instructions` prints over a layer that shadows no built-in but, at most, the
+/// complexity one, spelled without calling `render`: the other three built-ins in force, in
+/// `BUILTIN` order, then `complexity` - the complexity built-in's section as printed - then the
+/// operator heading and `operator`, what is printed under it.
+pub fn rendered_layer_closing_with_complexity(complexity: &str, operator: &str) -> String {
+    let in_force = [
         "engineering-principles",
         "working-discipline",
         "communication",
     ]
-    .map(|name| {
-        format!(
-            "\n## {name} (built-in)\n{}\n",
-            builtin_body(name).trim_end()
-        )
-    })
+    .map(rendered_in_force_section)
     .concat();
     format!(
-        "{}\n\nBuilt-in:\n{sections}{RENDERED_OPERATOR_HEADING}(none)\n",
+        "{}\n\nBuilt-in:\n{in_force}{complexity}{RENDERED_OPERATOR_HEADING}{operator}",
         rigger_domain::prompt_surface::INSTRUCTIONS_HEADING
     )
+}
+
+/// The section `rigger instructions` prints for the built-in `name` in force: its heading labelled
+/// `(built-in)`, then its shipped body.
+fn rendered_in_force_section(name: &str) -> String {
+    format!(
+        "\n## {name} (built-in)\n{}\n",
+        builtin_body(name).trim_end()
+    )
+}
+
+/// The file `rigger instructions` and `rigger validate` name when `complexity.md` shadows the
+/// complexity built-in.
+pub const COMPLEXITY_FILE: &str = ".rigger/instructions/complexity.md";
+
+/// The rows the `complexity.md` override is proved over, by the domain's `resolve_layers` table
+/// and the root's reporters-and-spawn table: a replacing body, then the empty body and each of
+/// [`NON_EMPTY_BLANK_BODIES`], each with the verb its state is reported by and the body it leaves
+/// in force in the complexity built-in's place, none for a blank body.
+pub fn complexity_file_rows(
+) -> impl Iterator<Item = (&'static str, &'static str, Option<&'static str>)> {
+    const REPLACING: &str = "Weigh what a wrong answer costs first.";
+    std::iter::once((REPLACING, "replaced", Some(REPLACING))).chain(
+        std::iter::once("")
+            .chain(NON_EMPTY_BLANK_BODIES)
+            .map(|body| (body, "switched off", None)),
+    )
+}
+
+/// The advisory `rigger validate` prints when `complexity.md` leaves the complexity built-in
+/// `verb`: replaced or switched off.
+pub fn complexity_advisory(verb: &str) -> String {
+    format!("warning: built-in instruction complexity is {verb} by {COMPLEXITY_FILE}")
 }
 
 /// The advisories `rigger validate` prints over [`shadowing_operator_layer`], in `BUILTIN` order.
@@ -525,12 +563,13 @@ pub const SHADOWING_LAYER_ADVISORIES: [&str; 2] = [
 /// The first line `rigger prime` prints when no operator file is read: every built-in in force
 /// and no operator file count.
 pub const BUILT_INS_ONLY_IN_FORCE_LINE: &str = "# Rigger instructions in force: \
-     engineering-principles, working-discipline, communication - see rigger instructions";
+     engineering-principles, working-discipline, communication, complexity - see rigger \
+     instructions";
 
 /// The first line `rigger prime` prints over [`shadowing_operator_layer`].
 pub const SHADOWING_LAYER_IN_FORCE_LINE: &str = "# Rigger instructions in force: \
-     engineering-principles, communication (replaced) (+1 operator files) - see rigger \
-     instructions";
+     engineering-principles, communication (replaced), complexity (+1 operator files) - see \
+     rigger instructions";
 
 /// The built-in layer of `out`, what `rigger instructions` printed: every line before the
 /// operator layer opens.
