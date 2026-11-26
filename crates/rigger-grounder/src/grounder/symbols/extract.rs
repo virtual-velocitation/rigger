@@ -265,27 +265,47 @@ fn def_of(
     }
 }
 
-/// Record one definition the tag pass or a read-off found, `tagged` the kind it names and
-/// `node` its own node, into `defs` and `def_ranges` at one index. THE NAME FILTER runs first: a
-/// definition whose leaf names nothing in `lang` ([`is_nameless`]) enters neither, so its range
-/// is no caller range, and is returned instead, for [`test_regions`] to read when it is test
-/// attributed; every other takes its kind lowered over its node ([`lowered_kind`]) and returns
-/// `None`.
+/// The definitions [`extract`] records over a file's reads, index-parallel: each [`Def`]; its
+/// byte range (the whole construct, body included - the tag's node range, see
+/// [`enclosing_defs`]) with its name and kind; and the read it came from.
+#[derive(Default)]
+struct RecordedDefs {
+    defs: Vec<Def>,
+    ranges: Vec<(std::ops::Range<usize>, String, Kind)>,
+    reads: Vec<usize>,
+}
+
+impl RecordedDefs {
+    /// Record `def` with its `range`, name and kind, read off the read `at_read`: the one writer
+    /// of the three lists, so each holds the definition at the same index.
+    fn push(&mut self, def: Def, range: (std::ops::Range<usize>, String, Kind), at_read: usize) {
+        self.defs.push(def);
+        self.ranges.push(range);
+        self.reads.push(at_read);
+    }
+}
+
+/// Record one definition the tag pass or a read-off found in the read `at_read`, `tagged` the
+/// kind it names and `node` its own node, into `recorded`. THE NAME FILTER runs first: a
+/// definition whose leaf names nothing in `lang` ([`is_nameless`]) is not recorded, so its range
+/// is no caller range, and is returned instead with `at_read`, for [`test_regions`] to read when
+/// it is test attributed; every other takes its kind lowered over its node ([`lowered_kind`])
+/// and returns `None`.
 fn record_def(
     lang: Lang,
     source: &Source,
     node: Option<tree_sitter::Node>,
     tagged: Kind,
     (range, name, line): ReadOff,
-    defs: &mut Vec<Def>,
-    def_ranges: &mut Vec<(std::ops::Range<usize>, String, Kind)>,
-) -> Option<std::ops::Range<usize>> {
+    at_read: usize,
+    recorded: &mut RecordedDefs,
+) -> Option<(std::ops::Range<usize>, usize)> {
     if is_nameless(lang, &name) {
-        return Some(range);
+        return Some((range, at_read));
     }
     let kind = lowered_kind(lang, tagged, node, source.text.as_bytes());
-    defs.push(def_of(source, range.clone(), kind, name.clone(), line));
-    def_ranges.push((range, name, kind));
+    let def = def_of(source, range.clone(), kind, name.clone(), line);
+    recorded.push(def, (range, name, kind), at_read);
     None
 }
 
@@ -760,18 +780,14 @@ pub fn extract(source: &str, lang: Lang, tags: &CompiledTags) -> Result<FileSymb
             }
         }))
         .collect();
-    let mut defs = Vec::new();
+    let mut recorded = RecordedDefs::default();
     let mut refs = Vec::new();
-    // Each definition's byte range (the whole construct, body included - the tag's node range,
-    // see `enclosing_defs`) with its name and kind, and each reference's byte position. Collected
-    // in the tag pass over every read; the enclosing definition is resolved below so the reference
-    // order the emit pass depends on stays untouched.
-    let mut def_ranges: Vec<(std::ops::Range<usize>, String, Kind)> = Vec::new();
-    // The read each definition of `def_ranges` came from, at its index.
-    let mut def_reads: Vec<usize> = Vec::new();
-    // The range of each definition THE NAME FILTER drops (`record_def`), in neither `defs` nor
-    // `def_ranges`, with the read it came from, kept for `test_regions` alone.
+    // The range of each definition THE NAME FILTER drops (`record_def`), not `recorded`, with the
+    // read it came from, kept for `test_regions` alone.
     let mut dropped: Vec<(std::ops::Range<usize>, usize)> = Vec::new();
+    // Each reference's byte position, collected in the tag pass over every read with the
+    // definitions; the enclosing definition is resolved below so the reference order the emit
+    // pass depends on stays untouched.
     let mut ref_positions: Vec<usize> = Vec::new();
     let mut file_doc = None;
     for (at_read, read) in reads.iter().enumerate() {
@@ -794,23 +810,20 @@ pub fn extract(source: &str, lang: Lang, tags: &CompiledTags) -> Result<FileSymb
                     let node = read
                         .root
                         .descendant_for_byte_range(tag.range.start, tag.range.end);
-                    let at = defs.len();
-                    dropped.extend(
-                        record_def(
-                            lang,
-                            &text,
-                            node,
-                            kind,
-                            (tag.range.clone(), def_leaf(node, name), line),
-                            &mut defs,
-                            &mut def_ranges,
-                        )
-                        .map(|range| (range, at_read)),
-                    );
+                    let at = recorded.defs.len();
+                    dropped.extend(record_def(
+                        lang,
+                        &text,
+                        node,
+                        kind,
+                        (tag.range.clone(), def_leaf(node, name), line),
+                        at_read,
+                        &mut recorded,
+                    ));
                     // Spec 117 (DOC FACTS): the `@doc` capture gives the definition just recorded
                     // its span; a definition the name filter drops was not recorded, so its
                     // capture gives none.
-                    if let Some(def) = defs.get_mut(at) {
+                    if let Some(def) = recorded.defs.get_mut(at) {
                         def.doc = tag.doc.map(|doc| text.span(&doc));
                     }
                 }
@@ -869,23 +882,21 @@ pub fn extract(source: &str, lang: Lang, tags: &CompiledTags) -> Result<FileSymb
                 },
             );
         }
-        def_reads.resize(def_ranges.len(), at_read);
     }
     // Every impl block is a definition of its own (gap 104), named by its header; the mentions its
     // header makes are Rust's tagged references below, and a reference inside one of its methods
     // still attributes to the method, the innermost function.
     for (at_read, read) in reads.iter().enumerate() {
         for block in impl_blocks(&read.structure.impls, bytes) {
-            defs.push(def_of(
+            let def = def_of(
                 &text,
                 block.range.clone(),
                 Kind::Impl,
                 block.name.clone(),
                 block.line,
-            ));
-            def_ranges.push((block.range, block.name, Kind::Impl));
+            );
+            recorded.push(def, (block.range, block.name, Kind::Impl), at_read);
         }
-        def_reads.resize(def_ranges.len(), at_read);
     }
     // Spec 117 (RUST REFERENCES): Rust's tagged references, read off the parsed trees after every
     // call reference, so each follows the untagged one of its name and site and the attribution
@@ -950,14 +961,23 @@ pub fn extract(source: &str, lang: Lang, tags: &CompiledTags) -> Result<FileSymb
         for (kind, found) in read_offs {
             for found in found.into_iter().filter(|found| kept(read.keep, &found.0)) {
                 let node = root.descendant_for_byte_range(found.0.start, found.0.end);
-                dropped.extend(
-                    record_def(lang, &text, node, kind, found, &mut defs, &mut def_ranges)
-                        .map(|range| (range, at_read)),
-                );
+                dropped.extend(record_def(
+                    lang,
+                    &text,
+                    node,
+                    kind,
+                    found,
+                    at_read,
+                    &mut recorded,
+                ));
             }
         }
-        def_reads.resize(def_ranges.len(), at_read);
     }
+    let RecordedDefs {
+        mut defs,
+        ranges: def_ranges,
+        reads: def_reads,
+    } = recorded;
     // The root of the tree each definition came from, at its index.
     let def_roots: Vec<tree_sitter::Node> = def_reads.iter().map(|&at| reads[at].root).collect();
     // Spec 117 (DOC FACTS): the file takes the span of the first match that tags nothing and holds
