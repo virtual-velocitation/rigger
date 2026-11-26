@@ -2267,8 +2267,8 @@ mod tests {
 
     /// THE WORK KEY PARSES: `parse_agent` reads `work:` into [`AgentDef::work`] and `effort:` into
     /// [`AgentDef::effort`] as written, an absent or null key reading as none, and refuses every
-    /// other `work` value naming the persona and the three values, though `work:` comes before the
-    /// persona's `id:`.
+    /// other `work` value, or a `work:` declared twice, naming the persona and the three values,
+    /// though `work:` comes before the persona's `id:`.
     #[test]
     fn parse_agent_reads_the_work_key_and_the_effort_pin_refusing_any_other_work_value() {
         let refused = || {
@@ -2301,6 +2301,9 @@ mod tests {
             ("work: [judging]\n", refused()),
             ("work: {judging: x}\n", refused()),
             ("work: deciding\neffort: high\n", refused()),
+            ("work: {a: 1, a: 2}\n", refused()),
+            ("work: judging\nwork: writing\n", refused()),
+            ("work: judging\nwork: judging\n", refused()),
         ] {
             let doc = format!("---\n{frontmatter}id: critic\n---\nJudge the diff.\n");
             let got = parse_agent(doc.as_bytes())
