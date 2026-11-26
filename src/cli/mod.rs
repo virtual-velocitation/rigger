@@ -2181,17 +2181,8 @@ impl OpenGraph for ReadGraph<'_> {
     ) -> Result<(), contextgraph::Error> {
         let head = self.head().map_err(contextgraph::Error)?;
         let lines = rigger_store::code::WorktreeLines::new(&head.worktree);
-        let docs = (head.extract.as_deref()).map(|extract| rigger_domain::composed::DocReader {
-            lines: &lines,
-            extract,
-        });
-        let composed = rigger_domain::composed::Composed::near(
-            self.records,
-            &*head.view,
-            filter,
-            rigger_domain::composed::Honesty::of(&head),
-            docs,
-        )?;
+        let composed =
+            rigger_domain::composed::Composed::near_head(self.records, &head, filter, &lines)?;
         ask(&composed)
     }
 }

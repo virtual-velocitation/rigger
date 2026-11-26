@@ -1085,6 +1085,19 @@ impl<'r> Composed<'r> {
         let composed = Composed::over(records, code, &view.stamp().tip, honesty, filter.tests)?;
         Ok(Composed { docs, ..composed })
     }
+
+    /// [`Self::near`] over `head`'s view, labelled by what its reader knows of it
+    /// ([`Honesty::of`]), a node's doc read from `lines`, its worktree's lines, as the extractor
+    /// the store was opened with gives their text; no doc when `head` carries no extractor.
+    pub fn near_head(
+        records: &'r dyn Neighbors,
+        head: &'r Head,
+        filter: ViewFilter,
+        lines: &'r dyn SourceLines,
+    ) -> Result<impl ContextGraph + 'r, Error> {
+        let docs = (head.extract.as_deref()).map(|extract| DocReader { lines, extract });
+        Self::near(records, &*head.view, filter, Honesty::of(head), docs)
+    }
 }
 
 /// An open of the whole graph that answers only the whole graph ([`Composed::whole_at`]): it
