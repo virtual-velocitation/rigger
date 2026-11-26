@@ -205,8 +205,8 @@ mod tests {
         );
         assert_eq!(
             instructions_in_force_line(&shadowing_operator_layer()[1..]),
-            "# Rigger instructions in force: engineering-principles, communication (replaced) - \
-             see rigger instructions",
+            "# Rigger instructions in force: engineering-principles, communication (replaced), \
+             complexity - see rigger instructions",
             "a file that shadows a built-in is never counted as an operator file"
         );
     }
@@ -219,6 +219,7 @@ mod tests {
         assert_eq!(
             instructions_in_force_line(&[
                 off("communication"),
+                off("complexity"),
                 off("engineering-principles"),
                 off("working-discipline"),
             ]),

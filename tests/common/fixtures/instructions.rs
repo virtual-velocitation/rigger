@@ -424,7 +424,7 @@ pub fn house_and_team_operator_layer() -> Vec<rigger::instructions::Instruction>
 /// The named-entry fixture the instruction reporters are read over, in filename order as the
 /// loader returns it: `30-style`, which shadows no built-in; `communication`, replacing that
 /// built-in; and an empty `working-discipline`, switching that built-in off. The
-/// `engineering-principles` built-in stays in force.
+/// `engineering-principles` and `complexity` built-ins stay in force.
 pub fn shadowing_operator_layer() -> Vec<rigger::instructions::Instruction> {
     [
         ("30-style", Some(UNSHADOWING_STYLE_BODY)),
@@ -481,15 +481,17 @@ pub fn rendered_near_named_layer(near: &str) -> String {
 /// What `rigger instructions` prints over a layer holding [`shadowing_operator_layer`]'s
 /// `30-style` and empty `working-discipline` files: the engineering-principles built-in in force,
 /// the working-discipline one switched off, then `communication` - the communication built-in's
-/// section as printed - then the operator heading, `30-style`, and `tail`, the operator files
-/// printed after it.
+/// section as printed - then the complexity built-in in force, then the operator heading,
+/// `30-style`, and `tail`, the operator files printed after it.
 fn rendered_beside_the_shadowing_entries(communication: &str, tail: &str) -> String {
     format!(
         "{}\n\nBuilt-in:\n\n## engineering-principles (built-in)\n{}\n\n## working-discipline \
          (switched off by .rigger/instructions/working-discipline.md)\n{communication}\
+         \n## complexity (built-in)\n{}\n\
          {RENDERED_OPERATOR_HEADING}\n## 30-style\n{UNSHADOWING_STYLE_BODY}\n{tail}",
         rigger_domain::prompt_surface::INSTRUCTIONS_HEADING,
-        builtin_body("engineering-principles").trim_end()
+        builtin_body("engineering-principles").trim_end(),
+        builtin_body("complexity").trim_end()
     )
 }
 
@@ -500,6 +502,7 @@ pub fn rendered_built_ins_only_layer() -> String {
         "engineering-principles",
         "working-discipline",
         "communication",
+        "complexity",
     ]
     .map(|name| {
         format!(
@@ -525,12 +528,13 @@ pub const SHADOWING_LAYER_ADVISORIES: [&str; 2] = [
 /// The first line `rigger prime` prints when no operator file is read: every built-in in force
 /// and no operator file count.
 pub const BUILT_INS_ONLY_IN_FORCE_LINE: &str = "# Rigger instructions in force: \
-     engineering-principles, working-discipline, communication - see rigger instructions";
+     engineering-principles, working-discipline, communication, complexity - see rigger \
+     instructions";
 
 /// The first line `rigger prime` prints over [`shadowing_operator_layer`].
 pub const SHADOWING_LAYER_IN_FORCE_LINE: &str = "# Rigger instructions in force: \
-     engineering-principles, communication (replaced) (+1 operator files) - see rigger \
-     instructions";
+     engineering-principles, communication (replaced), complexity (+1 operator files) - see \
+     rigger instructions";
 
 /// The built-in layer of `out`, what `rigger instructions` printed: every line before the
 /// operator layer opens.

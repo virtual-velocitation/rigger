@@ -31536,26 +31536,29 @@ fn instructions_prints_a_table_check_that_asks_no_gate_run() {
     }
 }
 
-/// Spec 120's THE COMMUNICATION DISCIPLINE IS A SHADOWABLE BUILT-IN, operator-facing: given a
-/// fresh project, when the operator runs `rigger instructions`, then the built-in layer it prints
-/// closes with the `communication` section carrying its checked-in source's text, the section
-/// appears once, and the heading the conductor once appended appears nowhere.
+/// Spec 120's THE COMMUNICATION DISCIPLINE IS A SHADOWABLE BUILT-IN and spec 135's THE
+/// CONSIDERATIONS ARE BUILT IN, operator-facing: given a fresh project, when the operator runs
+/// `rigger instructions`, then the built-in layer it prints closes with the `communication`
+/// section and then the `complexity` section, each carrying its checked-in source's text, the
+/// communication section appears once, and the heading the conductor once appended appears
+/// nowhere.
 #[test]
-fn instructions_prints_the_communication_discipline_as_the_last_built_in() {
+fn instructions_prints_the_communication_discipline_then_the_complexity_considerations_last() {
     use common::fixtures::{
         assert_communication_section_once, builtin_instruction_source, printed_built_in_layer,
         RENDERED_COMMUNICATION_SECTION,
     };
     let proj = temp_project();
     let out = run_rigger_ok(proj.path(), &["instructions"]);
-    let communication = format!(
-        "{RENDERED_COMMUNICATION_SECTION}{}\n",
-        repo_text(&builtin_instruction_source("communication")).trim_end()
+    let closing = format!(
+        "{RENDERED_COMMUNICATION_SECTION}{}\n\n## complexity (built-in)\n{}\n",
+        repo_text(&builtin_instruction_source("communication")).trim_end(),
+        repo_text(&builtin_instruction_source("complexity")).trim_end()
     );
     assert!(
-        printed_built_in_layer(&out).ends_with(&communication),
-        "the built-in layer closes with the communication section and its source's text; \
-         got:\n{out}"
+        printed_built_in_layer(&out).ends_with(&closing),
+        "the built-in layer closes with the communication section, then the complexity \
+         section, each with its source's text; got:\n{out}"
     );
     assert_communication_section_once(&out, RENDERED_COMMUNICATION_SECTION);
 }
@@ -31654,6 +31657,7 @@ fn run_spawns_the_worker_with_a_same_named_operator_file_in_place_of_its_built_i
                 builtin_section("engineering-principles"),
                 builtin_section("working-discipline"),
                 ("communication", house),
+                builtin_section("complexity"),
                 (COMMUNICATION_NEAR_NAME, near),
             ]
         ),
@@ -31665,7 +31669,7 @@ fn run_spawns_the_worker_with_a_same_named_operator_file_in_place_of_its_built_i
 /// Spec 120's AN EMPTY SAME-NAMED OPERATOR FILE SWITCHES A BUILT-IN OFF, end to end: given a
 /// project whose `.rigger/instructions/` holds an empty `working-discipline.md`, when the
 /// operator runs `rigger run`, then the worker's system prompt carries no section for the
-/// working-discipline built-in or for the file, and the other two built-ins stand unchanged in
+/// working-discipline built-in or for the file, and the other three built-ins stand unchanged in
 /// their order under the bare heading.
 #[cfg(unix)]
 #[test]
@@ -31684,6 +31688,7 @@ fn run_spawns_the_worker_with_no_section_for_a_built_in_an_empty_same_named_file
             &[
                 builtin_section("engineering-principles"),
                 builtin_section("communication"),
+                builtin_section("complexity"),
             ]
         ),
         "the empty file switches the working-discipline built-in off and is not appended; \
@@ -31718,7 +31723,7 @@ fn prime_first_line_names_the_instructions_in_force_on_the_recent_decisions_path
         lines.next(),
         Some(
             "# Rigger instructions in force: engineering-principles, working-discipline, \
-             communication (+2 operator files) - see rigger instructions"
+             communication, complexity (+2 operator files) - see rigger instructions"
         ),
         "got:\n{out}"
     );
@@ -31829,8 +31834,8 @@ fn instructions_validate_and_prime_report_a_built_in_in_force_beside_a_near_name
         assert_eq!(
             common::cli::prime_first_line(root, &[]).as_deref(),
             Some(
-                "# Rigger instructions in force: engineering-principles, communication (+2 \
-                 operator files) - see rigger instructions"
+                "# Rigger instructions in force: engineering-principles, communication, \
+                 complexity (+2 operator files) - see rigger instructions"
             ),
             "the near name {near:?} leaves the communication built-in in force and is counted"
         );
