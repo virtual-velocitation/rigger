@@ -2122,7 +2122,8 @@ impl ReadGraph<'_> {
     ) -> Result<rigger_domain::composed::WholeOpen<'_>, contextgraph::Error> {
         use rigger_domain::composed::Composed;
         let head = self.head().map_err(contextgraph::Error)?;
-        let (view, honesty) = (&*head.view, Self::honesty(&head));
+        let honesty = rigger_domain::composed::Honesty::of(&head);
+        let view = &*head.view;
         match held {
             Some(held) => {
                 Composed::whole_held_at(self.records, view, filter, honesty, resolution, held)
@@ -2143,19 +2144,9 @@ impl ReadGraph<'_> {
             self.records,
             &*head.view,
             filter,
-            Self::honesty(head),
+            rigger_domain::composed::Honesty::of(head),
             resolution,
         )
-    }
-
-    /// How the worktree `head` was opened for compares with it, as the composed graph's label
-    /// states it.
-    fn honesty(head: &rigger_domain::code_view::Head) -> rigger_domain::composed::Honesty {
-        rigger_domain::composed::Honesty {
-            worktree: head.worktree.display().to_string(),
-            compared: head.compared,
-            behind: head.behind.clone(),
-        }
     }
 }
 
@@ -2198,7 +2189,7 @@ impl OpenGraph for ReadGraph<'_> {
             self.records,
             &*head.view,
             filter,
-            Self::honesty(&head),
+            rigger_domain::composed::Honesty::of(&head),
             docs,
         )?;
         ask(&composed)

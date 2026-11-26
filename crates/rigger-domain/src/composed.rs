@@ -17,7 +17,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::code_facts::{Recorded, Tip};
 use crate::code_graph::{CodeGraph, DOC_ATTR};
-use crate::code_view::{CodeView, Compared, Extract, Groupings, SourceLines, Tests, ViewFilter};
+use crate::code_view::{
+    CodeView, Compared, Extract, Groupings, Head, SourceLines, Tests, ViewFilter,
+};
 use crate::community::DEFAULT_RESOLUTION;
 use crate::contextgraph::query::{
     attrs_name, entity_id, kept_of, leaf_of, member_file, node_file, node_leaf, node_name,
@@ -133,6 +135,19 @@ pub struct Honesty {
     pub compared: Compared,
     /// Why the view is behind the tree it was opened for, when it is.
     pub behind: Option<String>,
+}
+
+impl Honesty {
+    /// What a reader in `head`'s worktree knows of it, as the composed graph's label states it:
+    /// the worktree as its path displays, how the head's view compares with it and why the view
+    /// is behind, when it is.
+    pub fn of(head: &Head) -> Honesty {
+        Honesty {
+            worktree: head.worktree.display().to_string(),
+            compared: head.compared,
+            behind: head.behind.clone(),
+        }
+    }
 }
 
 /// Whether `node` is bound by `leaf`: its [`node_name`] is `leaf`, or its id is
