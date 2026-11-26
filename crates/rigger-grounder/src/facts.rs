@@ -1731,6 +1731,9 @@ pub(crate) mod tests {
                 "fn whole() { helper(); }\nfn broken( {\n",
                 true,
             ),
+            // A token tree neither re-parse reads whole leaves its file whole: the file tree alone
+            // decides.
+            ("src/lib.rs", "fn f() { json!({\"k\": f(x)}); }\n", false),
             ("web/app.ts", "function broken( {\n", true),
             ("docs/a-design.md", "# Design\n", false),
         ];

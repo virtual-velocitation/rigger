@@ -257,14 +257,15 @@ fn csharp_stages_its_row() {
             vec![("K", None, ""), ("M", None, "")],
         ),
         (
-            "a positional pattern after `is`, under `not`, in a switch case and arm and in parentheses, and `nameof` after `is`",
-            "class K {\n    int M(object p, string s) {\n        var a = p is Pt(0, 0);\n        var b = p is not PtN(0, 0);\n        switch (p) { case PtD(0, 0): break; }\n        var c = p switch { PtA(0, 0) => 1, _ => 0 };\n        var d = p is (PtP(0, 0));\n        return s is nameof(Foo) ? 1 : 0;\n    }\n}\n",
+            "a positional pattern after `is`, under `not`, in a switch case and arm and in parentheses, a qualified one after `is`, which stays a call, and `nameof` after `is`",
+            "class K {\n    int M(object p, string s) {\n        var a = p is Pt(0, 0);\n        var b = p is not PtN(0, 0);\n        switch (p) { case PtD(0, 0): break; }\n        var c = p switch { PtA(0, 0) => 1, _ => 0 };\n        var d = p is (PtP(0, 0));\n        var e = p is Ns.QPt(0, 0);\n        return s is nameof(Foo) ? 1 : 0;\n    }\n}\n",
             vec![
                 leaf_in(1, "Pt", Some(REF_KIND_TYPE), 3),
                 leaf_in(1, "PtN", Some(REF_KIND_TYPE), 4),
                 leaf_in(1, "PtD", Some(REF_KIND_TYPE), 5),
                 leaf_in(1, "PtA", Some(REF_KIND_TYPE), 6),
                 leaf_in(1, "PtP", Some(REF_KIND_TYPE), 7),
+                in_def(1, "Ns.QPt", "QPt", None, 8),
             ],
             vec![("K", None, ""), ("M", None, "")],
         ),
