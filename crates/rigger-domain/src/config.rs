@@ -1044,6 +1044,12 @@ pub struct CapabilityTable {
 }
 
 impl CapabilityTable {
+    /// The row of `work`.
+    pub fn row(&self, work: Work) -> &CapabilityRow {
+        let _ = work;
+        &self.judging
+    }
+
     /// The judging floor: the `judging` row's `routine` cell names the same `model` as its
     /// `involved` cell, compared as two strings, while their `effort` may differ.
     pub fn validate(&self) -> Result<(), String> {
@@ -2176,6 +2182,28 @@ mod tests {
         assert_eq!(
             Complexity::ALL.map(|step| row.cell(step).model.as_str()),
             ["routine", "involved", "hard"],
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn work_names_each_kind_as_the_key_of_its_capability_row() {
+        let keyed: Vec<String> = Work::ALL
+            .iter()
+            .map(|work| {
+                format!(
+                    "{0}: {{ routine: {{ model: {0} }}, involved: {{ model: {0} }}, \
+                     hard: {{ model: {0} }} }}",
+                    work.name()
+                )
+            })
+            .collect();
+        let text = format!("{{ {} }}", keyed.join(", "));
+        let table: CapabilityTable =
+            parse_yaml_naming_unknown_keys(&text).unwrap_or_else(|e| panic!("parse {text}: {e}"));
+        assert_eq!(
+            Work::ALL.map(|work| table.row(work).routine.model.as_str()),
+            ["judging", "writing", "reading"],
             "{text}"
         );
     }

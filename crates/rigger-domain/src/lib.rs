@@ -8,6 +8,7 @@
 pub mod agent;
 pub mod blocker;
 pub mod canary;
+pub mod capability;
 pub mod code_facts;
 pub mod code_graph;
 pub mod code_view;

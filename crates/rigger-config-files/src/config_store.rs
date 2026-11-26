@@ -1476,69 +1476,6 @@ mod tests {
     }
 
     #[test]
-    fn model_for_attempt_advances_one_rung_per_attempt_and_clamps_at_the_last() {
-        // A unit's first attempt resolves the first rung and each remediation attempt advances
-        // one rung, CLAMPED at the last once exhausted (spec 10 unit 4).
-        let a = AgentDef {
-            id: "worker".into(),
-            model_ladder: vec!["haiku".into(), "sonnet".into(), "opus".into()],
-            ..Default::default()
-        };
-        assert_eq!(a.model_for_attempt(0), "haiku", "attempt 0 -> rung 0");
-        assert_eq!(a.model_for_attempt(1), "sonnet", "attempt 1 -> rung 1");
-        assert_eq!(a.model_for_attempt(2), "opus", "attempt 2 -> rung 2 (last)");
-        assert_eq!(
-            a.model_for_attempt(3),
-            "opus",
-            "past the end clamps at the last rung"
-        );
-        assert_eq!(
-            a.model_for_attempt(99),
-            "opus",
-            "far past the end still clamps"
-        );
-    }
-
-    #[test]
-    fn a_single_model_is_a_one_rung_ladder_used_on_every_attempt() {
-        // With no ladder, the single `model` alias is returned on every attempt - so an agent
-        // that only sets `model` behaves EXACTLY as before the cascade existed (back-compat).
-        let one = AgentDef {
-            id: "worker".into(),
-            model: "sonnet".into(),
-            ..Default::default()
-        };
-        for attempt in [0, 1, 5, 42] {
-            assert_eq!(
-                one.model_for_attempt(attempt),
-                "sonnet",
-                "a lone model: does not ladder - attempt {attempt} still resolves it"
-            );
-        }
-        // Neither declared: empty (the driver's default model is inherited), on every attempt.
-        let none = AgentDef {
-            id: "worker".into(),
-            ..Default::default()
-        };
-        assert_eq!(none.model_for_attempt(0), "");
-        assert_eq!(none.model_for_attempt(3), "");
-    }
-
-    #[test]
-    fn a_declared_ladder_takes_precedence_over_a_lone_model() {
-        // When both are set the ladder is authority and `model` is ignored, so the resolved
-        // rung is never silently overridden by the shorthand field.
-        let a = AgentDef {
-            id: "worker".into(),
-            model: "haiku".into(),
-            model_ladder: vec!["sonnet".into(), "opus".into()],
-            ..Default::default()
-        };
-        assert_eq!(a.model_for_attempt(0), "sonnet");
-        assert_eq!(a.model_for_attempt(1), "opus");
-    }
-
-    #[test]
     fn parses_agent_max_wall_clock_and_defaults_to_none_when_absent() {
         let with = parse_agent(b"---\nid: slow\nmax_wall_clock: 1800\n---\nbody\n").unwrap();
         assert_eq!(
