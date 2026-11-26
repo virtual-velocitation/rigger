@@ -43,9 +43,9 @@ pub(crate) struct Entity {
     /// Its doc comment, when the graph reads one ([`ContextGraph::doc`]).
     pub doc: Option<String>,
     /// Its referrers the lookup's tests mode shows ([`ContextGraph::referrers`]) under each label,
-    /// in label order: each a referrer's enclosing site at the mention's own line, in path then
-    /// mention order (the order a file's extraction lists its mentions, which need not be line
-    /// order).
+    /// in label order: each a referrer's enclosing site at the mention's own line, with whether
+    /// its mention gave the entity no single edge ([`ReferrerSite`]), in path then mention order
+    /// (the order a file's extraction lists its mentions, which need not be line order).
     pub referrers: Vec<(&'static str, Vec<ReferrerSite>)>,
     /// Its direct callees' definition sites.
     pub callees: Vec<Site>,

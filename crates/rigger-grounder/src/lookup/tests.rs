@@ -12,13 +12,13 @@ use super::normalise;
 use super::prose::{ProseHit, ProseIndex, Ranked};
 use super::text::{self, TermText, TextHit};
 use super::{words, Lookup, TreeLookup};
-#[cfg(feature = "symbols")]
-use crate::contextgraph::{
-    referrer_label, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_DESIGN_DOC, KIND_FILE, REFERRER_LABELS,
-};
 use crate::contextgraph::{
     CallGraph, CallNode, Candidate, ContextGraph, Direction, Error, Graph, Located, Node, Referrer,
     KIND_DECISION, REBUILD_OWED,
+};
+#[cfg(feature = "symbols")]
+use crate::contextgraph::{
+    KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_DESIGN_DOC, KIND_FILE, REFERRER_LABELS,
 };
 use rigger_domain::code_view::{Compared, Tests};
 use rigger_domain::composed::Label;
@@ -196,6 +196,16 @@ fn section<'a>(reply: &'a str, section: &str) -> &'a str {
         .unwrap_or_else(|| panic!("no {section} section in:\n{reply}"));
     let body = &reply[start + section.len() + 4..];
     body.find("\n## ").map_or(body, |end| &body[..end])
+}
+
+/// The graph [`section`] of a reply to the one term `term`, which matched one entity exactly under
+/// [`held_label`]: its block the site line `site`, then `tail`.
+fn one_entity_section(term: &str, site: &str, tail: &str) -> String {
+    format!(
+        "{}\n{}\n\n### {term}\nexact match: 1 entity\n- {site}\n{tail}",
+        held_label(),
+        budget::GRAPH_FILTERED
+    )
 }
 
 // --- the word rule -------------------------------------------------------------------------
@@ -1588,40 +1598,34 @@ fn a_located_term_is_answered_with_its_doc_referrers_and_callees() {
         },
     );
     let reply = TreeLookup::new(dir.path())
-        .lookup(&terms(&["the-alias"]), Ok(&graph), Tests::Exclude)
+        .lookup(&terms(&["the-alias"]), Ok(&graph), Tests::Include)
         .unwrap();
-    let expected = format!(
-        "{}\n{}\n\n### the-alias\nexact match: 1 entity\n- a.rs:1 a.rs::target (function)\n  \
-         Aims.\n  called by: b.rs:2 b.rs::caller (function); b.rs:6 b.rs::checks (function) \
+    let expected = one_entity_section(
+        "the-alias",
+        "a.rs:1 a.rs::target (function)",
+        "  Aims.\n  called by: b.rs:2 b.rs::caller (function); b.rs:6 b.rs::checks (function) \
          [test] ?\n  reads: b.rs:4 b.rs::reader (function); b.rs:9 b.rs (file) ?\n  calls: c.rs:1 \
          c.rs::callee (function)\n",
-        held_label(),
-        budget::GRAPH_FILTERED
     );
     assert_eq!(section(&reply, "graph"), expected);
 }
 
-/// Every tag has its label (spec 117, READERS): an entity whose referrers are mentions of one tag
-/// of the label table lists them on one line under that tag's label, and one with more referrers
+/// Every tag has its label (spec 117, READERS): an entity whose referrers the graph lists under one
+/// label of the label table lists them on one line under that label, and one with more referrers
 /// under a label than the cap lists the first ten and then `(+N more)`.
 #[cfg(feature = "symbols")]
 #[test]
 fn every_tag_has_its_label() {
-    use rigger_domain::code_facts::MentionKind;
-
-    let kind =
-        |tag: Option<&str>| tag.map_or(MentionKind::Call, |tag| MentionKind::Tagged(tag.into()));
     let one = "b.rs:7 b.rs::r0 (function)";
     let ten = listed("b.rs:7 b.rs::r", " (function)", 10, "; ");
-    // (the referrers' mention tag, how many there are, the line the entity lists them on)
+    // (the referrers' label, how many there are, the line the entity lists them on)
     let rows = (REFERRER_LABELS.iter())
-        .map(|&(tag, label)| (tag, 1, format!("  {label}: {one}\n")))
+        .map(|&(_, label)| (label, 1, format!("  {label}: {one}\n")))
         .chain([
-            (None, 10, format!("  called by: {ten}\n")),
-            (None, 11, format!("  called by: {ten} (+1 more)\n")),
+            ("called by", 10, format!("  called by: {ten}\n")),
+            ("called by", 11, format!("  called by: {ten} (+1 more)\n")),
         ]);
-    for (tag, n, printed) in rows {
-        let label = referrer_label(&kind(tag)).expect("the table labels each of its tags");
+    for (label, n, printed) in rows {
         let site = |i| referrer(&format!("b.rs::r{i}"), "function", label, 7, false, false);
         let graph = Held {
             nodes: vec![entity("a.rs", "target", 1)],
@@ -1631,12 +1635,8 @@ fn every_tag_has_its_label() {
         };
         let answered = super::graph::answer(&["target"], &graph, Tests::Exclude);
         let reply = budget::reply(&["target"], answered, Err("x".into()), Err("x".into()));
-        let expected = format!(
-            "{}\n{}\n\n### target\nexact match: 1 entity\n- a.rs:1 a.rs::target (function)\n{printed}",
-            held_label(),
-            budget::GRAPH_FILTERED
-        );
-        assert_eq!(section(&reply, "graph"), expected, "{tag:?}, {n} referrers");
+        let expected = one_entity_section("target", "a.rs:1 a.rs::target (function)", &printed);
+        assert_eq!(section(&reply, "graph"), expected, "{label}, {n} referrers");
     }
 }
 
@@ -1666,11 +1666,7 @@ fn doc_line_shown(doc: Option<&str>, shown: &str) {
         Err("x".into()),
         Err("x".into()),
     );
-    let expected = format!(
-        "{}\n{}\n\n### hit\nexact match: 1 entity\n- a.rs:3 a.rs::hit (function)\n{shown}",
-        held_label(),
-        budget::GRAPH_FILTERED
-    );
+    let expected = one_entity_section("hit", "a.rs:3 a.rs::hit (function)", shown);
     assert_eq!(section(&reply, "graph"), expected, "{doc:?}");
 }
 
