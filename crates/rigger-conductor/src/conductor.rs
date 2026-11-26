@@ -18,7 +18,7 @@ use crate::config_store;
 use crate::contextgraph::{self, Graph, OpenGraph, RecordFold};
 #[cfg(test)]
 use crate::eventstore::Direction;
-use crate::eventstore::{Appended, Event, EventStore};
+use crate::eventstore::{Appended, Event, EventStore, Position};
 use crate::failure::{self, Signal};
 use crate::gate::{self, Gate};
 use crate::grounder::{BlastRadius, Grounder, StampedRadius};
@@ -1944,26 +1944,49 @@ impl LaneError {
     }
 }
 
-/// The attempt a speculation group of `unit` numbers its lane 0 at, read from the run slice
-/// `events` at the group's start. The group's RE-ENTRY BOUNDARY is the
-/// later in log order of the unit's latest `UnitResumed` (an operator's grant after its
-/// escalation) and its latest compensating `UnitFailed` ([`META_COMPENSATED`]). With no boundary
-/// the base is 0; past one it is one past the highest attempt over the spawn ids of the unit the
-/// run requested before it, so a re-entered lane never asks for an id a host would answer from
-/// the log, and a crash-resume of a parked group, which adds no boundary, keeps its ids. A
-/// crashed lane's request counts.
-fn speculation_lane_base(events: &[Event], unit: &str) -> u32 {
+/// The index in the run slice `events` of `unit`'s RE-ENTRY BOUNDARY, the later in log order of
+/// its latest `UnitResumed` (an operator's grant after its escalation) and its latest
+/// compensating `UnitFailed` ([`META_COMPENSATED`]), or `None` when the slice holds neither.
+/// These are the only two re-entries of a speculation group after its winner, and each adds one,
+/// so the boundary tells one group of the unit from the next: [`speculation_lane_base`] numbers
+/// a re-entered group's lanes past it, and [`speculation_key`] keys the group's records by it.
+fn re_entry_boundary(events: &[Event], unit: &str) -> Option<usize> {
     let names = |e: &Event, field: &str| {
         serde_json::from_slice::<Value>(&e.data)
             .is_ok_and(|v| v.get(field).and_then(Value::as_str) == Some(unit))
     };
-    let boundary = events.iter().rposition(|e| {
+    events.iter().rposition(|e| {
         (e.type_ == ledger::TYPE_UNIT_RESUMED && names(e, "unit"))
             || (e.type_ == ledger::TYPE_UNIT_FAILED
                 && e.meta.contains_key(META_COMPENSATED)
                 && names(e, "id"))
-    });
-    let Some(boundary) = boundary else {
+    })
+}
+
+/// The record a speculation group writes when none of its lanes wins, keyed at its lane base.
+const SPECULATION_LOST: &str = "speculation-lost";
+/// The record a winning speculation group writes for each earlier lane whose merge broke
+/// post-merge, keyed at that lane's attempt.
+const SPECULATION_BREAK: &str = "speculation-break";
+
+/// The replay key of `unit`'s speculation `record` ([`SPECULATION_LOST`] or
+/// [`SPECULATION_BREAK`]) at `n`, for the group entered at `entry`: the log position of the
+/// unit's [`re_entry_boundary`] when the group opened, `none` when there was none. The attempt
+/// alone repeats across groups under a driver that records no spawn request, whose lanes number
+/// from 0 again past a boundary; the entry does not, so a crash-resume of one group, which adds
+/// no boundary, records once, and a later group records its own.
+fn speculation_key(unit: &str, record: &str, entry: Option<Position>, n: u32) -> String {
+    let entry = entry.map_or_else(|| "none".to_string(), |at| at.to_string());
+    format!("{unit}/{record}#{entry}#{n}")
+}
+
+/// The attempt a speculation group of `unit` numbers its lane 0 at, read from the run slice
+/// `events` at the group's start. With no [`re_entry_boundary`] the base is 0; past one it is
+/// one past the highest attempt over the spawn ids of the unit the run requested before it, so
+/// a re-entered lane never asks for an id a host would answer from the log, and a crash-resume
+/// of a parked group, which adds no boundary, keeps its ids. A crashed lane's request counts.
+fn speculation_lane_base(events: &[Event], unit: &str) -> u32 {
+    let Some(boundary) = re_entry_boundary(events, unit) else {
         return 0;
     };
     spawn::recorded_lenient(&events[..boundary])
@@ -8585,8 +8608,11 @@ impl RunCtx<'_> {
         // A re-entered group numbers its lanes past every attempt its
         // run recorded before the re-entry, so a grant or a compensation re-drives the lanes
         // instead of answering the first entry's ids from the log. Lane `n` runs at attempt
-        // `base + n`; its worktree and branch stay keyed by `n`.
-        let base = speculation_lane_base(&self.read_current_run()?, &st.name);
+        // `base + n`; its worktree and branch stay keyed by `n`. The group's records are keyed
+        // by its entry, the position of the boundary it re-entered past ([`speculation_key`]).
+        let run = self.read_current_run()?;
+        let base = speculation_lane_base(&run, &st.name);
+        let entry = re_entry_boundary(&run, &st.name).map(|at| run[at].position);
 
         // PHASE A: park/spawn every candidate. Lane worktree dirs are kept ALIVE across a
         // park (removed only at a terminal outcome below), so the out-of-process worker
@@ -8880,7 +8906,7 @@ impl RunCtx<'_> {
                 // winner, but no code lands. Record the winner's deferred green/verified/reviewed
                 // (the verified-but-unmerged checkpoint - the group is terminal here, so no later
                 // lane is in flight), cancel the other candidates, and stop.
-                self.record_lane_breaks(st, &lost)?;
+                self.record_lane_breaks(st, entry, &lost)?;
                 self.emit_speculation_winner_status(
                     st,
                     attempt,
@@ -8941,7 +8967,7 @@ impl RunCtx<'_> {
             // green/verified/reviewed lifecycle, then the group / winner / losers on the existing
             // UnitIntegrated (no new event type), then cancel every displaced candidate. An
             // earlier lane whose merge broke post-merge records its failure first.
-            self.record_lane_breaks(st, &lost)?;
+            self.record_lane_breaks(st, entry, &lost)?;
             self.emit_speculation_winner_status(
                 st,
                 attempt,
@@ -8995,7 +9021,8 @@ impl RunCtx<'_> {
         // Record why the group lost as the unit's failure, one past its
         // last lane, so an operator's grant re-drives every lane told it, as a single lane
         // re-entering after its own failure is told, and teach it as the escalation's lesson. Keyed
-        // by the entry's lane base, so a relaunch replaying this entry records it once. A group
+        // by the group's entry and lane base ([`speculation_key`]), so a relaunch replaying this
+        // entry records it once and a later group past a boundary records its own. A group
         // whose every lane crashed or lost to infrastructure records and teaches neither: an
         // outage is no feedback for the author.
         // A lane whose merge broke post-merge is part of this one record, which names that
@@ -9007,8 +9034,16 @@ impl RunCtx<'_> {
             if let Some(sha) = &break_sha {
                 meta.push((META_WORKTREE_SHA, sha));
             }
+            // A log an older build wrote keys this record with no entry part, read as entry
+            // `none`: a group at no boundary whose record that log holds records nothing more.
+            let older = format!("{}/{SPECULATION_LOST}#{base}", st.name);
+            let key = if entry.is_none() && self.replayed_keys.contains(&older) {
+                older
+            } else {
+                speculation_key(&st.name, SPECULATION_LOST, entry, base)
+            };
             self.emit_keyed_meta(
-                &format!("{}/speculation-lost#{base}", st.name),
+                &key,
                 ledger::TYPE_UNIT_FAILED,
                 failure.failed_body(
                     &st.name,
@@ -9040,14 +9075,22 @@ impl RunCtx<'_> {
     /// Record, once a later lane of `st`'s speculation group won, each earlier lane whose merge
     /// broke post-merge as its own `UnitFailed`: the merge-break evidence (gap 61) at the
     /// lane's attempt, cause `integrate-conflict` (spec 69, criterion 3), and the lane
-    /// worktree's sha. A group with no winner carries these in its one record instead.
-    fn record_lane_breaks(&self, st: &Stage, lost: &LostLanes) -> Result<(), Error> {
+    /// worktree's sha. Each is keyed by the group's `entry` and the lane's attempt
+    /// ([`speculation_key`]), so a resumed winner path over a log that already holds it records
+    /// it once. A group with no winner carries these in its one record instead.
+    fn record_lane_breaks(
+        &self,
+        st: &Stage,
+        entry: Option<Position>,
+        lost: &LostLanes,
+    ) -> Result<(), Error> {
         for lane in &lost.breaks {
             let failure = PriorFailure {
                 gate_evidence: lane.evidence.clone(),
                 ..Default::default()
             };
-            self.emit_meta(
+            self.emit_keyed_meta(
+                &speculation_key(&st.name, SPECULATION_BREAK, entry, lane.attempt),
                 ledger::TYPE_UNIT_FAILED,
                 failure.failed_body(
                     &st.name,
