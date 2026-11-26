@@ -49,9 +49,10 @@
 //!    beside their enum's `type` mention, `Kind::RejectRecurrence { n } =>` as the `variant`
 //!    mention `Kind::RejectRecurrence` and the `field` mention `RejectRecurrence::n` with no `type`
 //!    mention, as `Kind::<u8>::Many { n: 1 }` and `Kind::Many::<u8> { n: 1 }` are `Kind::Many`
-//!    and `Many::n`, `Hop::Frontier(cs)` as a call and `-> Self::Target` as a `type` mention
-//!    alone; each lands `extracted` on the one variant, field, enum or associated type its name
-//!    narrows to, and the call as the call's two edges onto its variant;
+//!    and `Many::n`, `Hop::Frontier(cs)` as a call and `-> Self::Target` and the parameter type
+//!    `Kind<u8>` as a `type` mention alone; each lands `extracted` on the one variant, field, enum
+//!    or associated type its name narrows to, and the call as the call's two edges onto its
+//!    variant;
 //!  - and Rust tags its impl headers: `impl<T> CodeView for FactsView<T>` is stored as the `impl`
 //!    mentions `CodeView` and `FactsView`, and `impl FactsView` as the `impl` mention
 //!    `FactsView`, each enclosed by its impl, a function-local impl's by the impl and never its
@@ -871,10 +872,11 @@ const VARIANT_USES_SOURCE: &str = "enum InstallOutcome { AlreadyCurrent }\nenum 
 
 /// A Rust file holding a generic enum's struct variant built with a turbofish beside that enum:
 /// `Kind<T>` with the struct variant `Many { n }` (line 1), a `fn w` writing
-/// `Kind::<u8>::Many { n: 1 }`, the turbofish on the enum (line 2), and a `fn v` writing
-/// `Kind::Many::<u8> { n: 1 }`, the turbofish on the variant (line 3).
+/// `Kind::<u8>::Many { n: 1 }`, the turbofish on the enum (line 2), a `fn v` writing
+/// `Kind::Many::<u8> { n: 1 }`, the turbofish on the variant (line 3), and a `fn t` taking the
+/// generic type `Kind<u8>` as its parameter's type (line 4).
 #[cfg(feature = "symbols")]
-const GENERIC_VARIANT_USES_SOURCE: &str = "enum Kind<T> { Many { n: T } }\nfn w() { Kind::<u8>::Many { n: 1 }; }\nfn v() { Kind::Many::<u8> { n: 1 }; }\n";
+const GENERIC_VARIANT_USES_SOURCE: &str = "enum Kind<T> { Many { n: T } }\nfn w() { Kind::<u8>::Many { n: 1 }; }\nfn v() { Kind::Many::<u8> { n: 1 }; }\nfn t(_: Kind<u8>) {}\n";
 
 /// A Rust file holding the impl headers RUST TAGS IMPL HEADERS names (spec 117) beside what they
 /// name: a trait `CodeView` with the method `file` (line 1), a struct `FactsView` (line 2), the
@@ -930,6 +932,8 @@ const IMPL_HEADERS_BEHIND_A_POINTER_SOURCE: &str = "use std::fmt;\ntrait Draw {}
 /// turbofish on the enum and on the variant, are each the `variant` mention `Kind::Many` and the
 /// `field` mention `Many::n`, with no `type` mention of `Kind`, as a struct literal written with
 /// no turbofish is; each lands `extracted` from its fn on the variant `Kind::Many` and its `n`.
+/// The parameter type `Kind<u8>`, a generic type no literal's path holds, stays the `type`
+/// mention `Kind`, landing `extracted` from its fn on the enum.
 ///
 /// The impl-header row: `impl<T> CodeView for FactsView<T>` is the `impl` mentions `CodeView` and
 /// `FactsView`, `impl FactsView` the `impl` mention `FactsView` and the fn-local
@@ -1079,12 +1083,13 @@ fn graph_build_lands_each_rust_field_variant_and_impl_header_mention_on_its_defi
         ),
         (
             GENERIC_VARIANT_USES_SOURCE,
-            // `w` is 3 and `v` 4.
+            // `w` is 3, `v` 4 and `t` 5.
             vec![
                 tagged_in(3, "Many::n", "n", REF_KIND_FIELD, 2),
                 tagged_in(4, "Many::n", "n", REF_KIND_FIELD, 3),
                 tagged_in(3, "Kind::Many", "Many", REF_KIND_VARIANT, 2),
                 tagged_in(4, "Kind::Many", "Many", REF_KIND_VARIANT, 3),
+                tagged_in(5, "Kind", "Kind", REF_KIND_TYPE, 4),
             ],
             vec![],
             vec![
@@ -1092,11 +1097,14 @@ fn graph_build_lands_each_rust_field_variant_and_impl_header_mention_on_its_defi
                 ("w", "Kind::Many.n", TIER_EXTRACTED),
                 ("v", "Kind::Many", TIER_EXTRACTED),
                 ("v", "Kind::Many.n", TIER_EXTRACTED),
+                ("t", "Kind", TIER_EXTRACTED),
             ],
-            vec!["Kind", "Kind::Many", "Kind::Many.n", "v", "w"],
+            vec!["Kind", "Kind::Many", "Kind::Many.n", "t", "v", "w"],
             "a struct variant built with a turbofish on its enum or on itself is stored the \
              variant mention named by its enum and the field mention named by the variant, with \
-             no type mention of its enum, each landing extracted on the variant and its field",
+             no type mention of its enum, each landing extracted on the variant and its field, \
+             while the generic type `Kind<u8>` is stored the type mention of its enum, landing \
+             extracted on it",
         ),
         (
             IMPL_HEADERS_SOURCE,
