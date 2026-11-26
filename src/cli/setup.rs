@@ -145,12 +145,13 @@ fn init_project(
 
 /// The ids the agent files in `root`'s `.rigger/agents/` define, whatever their file names, read
 /// through the loader's one directory read ([`config_store::read_agents_dir`]); none when that
-/// directory is absent. It fails naming an agent file there that does not parse, and refuses an
+/// directory is absent. It fails naming an agent file there that does not parse, fails on the
+/// project's own `.rigger/workflow.yml` when that cannot be read or does not parse, and refuses an
 /// agent there, or an agent `incoming` stages ([`stage_import`]), that
 /// [`config::refuse_incoherent`] finds incoherent with the workflow [`scaffold_project`] leaves
-/// in place from `parsed`: the project's own `.rigger/workflow.yml` when there is one, else the
+/// in place from `parsed`: that `.rigger/workflow.yml` when there is one, else the
 /// [`scaffold_workflow`] rendering of the set [`matched_set`] finds. It writes nothing, so a
-/// command reads it before its first write and either refusal leaves the project untouched.
+/// command reads it before its first write and each refusal leaves the project untouched.
 fn defined_agent_ids(
     root: &Path,
     parsed: &[(&TemplateSet, SetSpec)],
