@@ -3461,9 +3461,10 @@ pub(crate) mod tests {
     /// A QUALIFIED CALL NARROWS ITS CANDIDATES (spec 117, RESOLVER AT READ) over the candidates
     /// its rule reads alone. Each qualifier below holds, beside the one target, a definition of
     /// the leaf that rule refuses: a test double's `Config::load` for a product call, the field
-    /// `Point::x` for any call, and a C++ `Limits::MAX` and the field `Limits::MAX` for a Rust
-    /// `const` reference. None is kept, so each mention lands on its target, EXTRACTED, where
-    /// keeping one would leave a call on its placeholder and a reference on no edge.
+    /// `Point::x` for any call, a C++ `Limits::MAX` and the field `Limits::MAX` for a Rust
+    /// `const` reference, and a test double's `Bounds::MAX` for a product one. None is kept, so
+    /// each mention lands on its target, EXTRACTED, where keeping one would leave a call on its
+    /// placeholder and a reference on no edge.
     #[test]
     fn a_qualified_mention_narrows_only_the_candidates_its_rule_reads() {
         let config = code(
@@ -3557,6 +3558,33 @@ pub(crate) mod tests {
             vec![def("cap", "function", 1, None, false)],
             vec![qualified_const("Limits::MAX", 2, false)],
         );
+        let bounds = code(
+            "src/bounds.rs",
+            "rust",
+            Scope::Product,
+            vec![
+                def("Bounds", "type", 1, None, false),
+                def("Bounds::MAX", "constant", 2, Some(0), false),
+            ],
+            vec![],
+        );
+        let fake_bounds = code(
+            "tests/fake_bounds.rs",
+            "rust",
+            Scope::Test,
+            vec![
+                def("Bounds", "type", 1, None, false),
+                def("Bounds::MAX", "constant", 2, Some(0), false),
+            ],
+            vec![],
+        );
+        let clamp = code(
+            "src/clamp.rs",
+            "rust",
+            Scope::Product,
+            vec![def("clamp", "function", 1, None, false)],
+            vec![qualified_const("Bounds::MAX", 2, false)],
+        );
         let view = FactsView::new(
             stamp(),
             vec![
@@ -3570,11 +3598,14 @@ pub(crate) mod tests {
                 consts,
                 limits_hpp,
                 cap,
+                bounds,
+                fake_bounds,
+                clamp,
             ],
         );
         let r = Resolver::new(&view);
         // (what the answer shows, the question, the whole answer)
-        let cases: [(&str, Ask, &[&str]); 3] = [
+        let cases: [(&str, Ask, &[&str]); 4] = [
             (
                 "a product call past a test definition of its leaf under its qualifier",
                 Ask::Links("src/app.cpp", false),
@@ -3599,6 +3630,14 @@ pub(crate) mod tests {
                 &[
                     "src/cap.rs::cap -REFERENCES/extracted-> src/consts.rs::Limits::MAX",
                     "src/cap.rs -CONTAINS/extracted-> src/cap.rs::cap",
+                ],
+            ),
+            (
+                "a product reference past a test definition of its leaf under its qualifier",
+                Ask::Links("src/clamp.rs", false),
+                &[
+                    "src/clamp.rs::clamp -REFERENCES/extracted-> src/bounds.rs::Bounds::MAX",
+                    "src/clamp.rs -CONTAINS/extracted-> src/clamp.rs::clamp",
                 ],
             ),
         ];
