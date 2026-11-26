@@ -84,6 +84,8 @@ mod criteria_delivery_periphery;
 mod criteria_extraction_periphery;
 mod critique_method_persona_periphery;
 mod csharp_definitions_are_nodes_periphery;
+#[cfg(feature = "symbols")]
+mod csharp_staged_mentions_land_periphery;
 mod dash_calls_render_viz;
 mod dash_calls_route_periphery;
 mod dash_cluster_detail_drill;
@@ -105,6 +107,8 @@ mod dedup_seeding_periphery;
 mod derived_append_refusal_periphery;
 mod derived_types_refused_periphery;
 mod design_intent_events;
+#[cfg(feature = "symbols")]
+mod doc_spans_reach_the_code_store_periphery;
 mod edge_side_binds_the_leaf_periphery;
 mod escalation_resume_periphery;
 mod event_classes_are_one_table;
@@ -118,10 +122,13 @@ mod file_half_is_one_read_periphery;
 mod files_lens_directory_hulls_viz;
 mod files_lens_view_periphery;
 mod gate_verb_periphery;
+mod git_command_audit;
 mod gitsemver_derivation;
 mod gitsemver_path_inclusion_accounting_periphery;
 mod gitsemver_worktree_periphery;
 mod go_definitions_are_nodes_periphery;
+#[cfg(feature = "symbols")]
+mod go_field_use_lands_periphery;
 mod graph_additive_indexes_persist;
 mod graph_around_governance_boundaries;
 #[cfg(feature = "symbols")]
@@ -154,6 +161,8 @@ mod init_setup_unknown_key_agent_fleet_periphery;
 mod init_template_sets_periphery;
 mod integrate_conflict_merge_periphery;
 mod js_ts_definitions_are_nodes_periphery;
+#[cfg(feature = "symbols")]
+mod js_ts_staged_mentions_land_periphery;
 mod keep_awake_adapters_cargo_boundary;
 mod kurrentdb_always_available;
 mod kurrentdb_contract_test_surface;
@@ -165,6 +174,7 @@ mod metadata_card_periphery;
 mod model_pinning_periphery;
 mod mutation_runner_pdeathsig_periphery;
 mod name_filter_drops_a_nameless_definition_periphery;
+mod near_folds_qualified_callers_periphery;
 mod new_run_critique_refusal_periphery;
 mod no_os_kill_audit;
 mod no_os_kill_test_helper_periphery;
@@ -186,6 +196,8 @@ mod proof_lands_on_the_card_periphery;
 mod proof_row_renders_on_the_card;
 mod published_content_key_split_periphery;
 mod python_definitions_are_nodes_periphery;
+#[cfg(feature = "symbols")]
+mod python_staged_mentions_land_periphery;
 mod rationale_overlay_data;
 mod rationale_overlay_seam;
 mod readable_graph_adaptive_labels;
@@ -229,6 +241,9 @@ mod rust_definitions_are_nodes_periphery;
 mod scaffold_grounder_resolves;
 mod scratch_workdir_config;
 mod scratch_workdir_isolation_leak_guard_periphery;
+#[cfg(feature = "symbols")]
+mod settled_code_half_periphery;
+mod several_narrowed_candidates_never_prefer_their_file_periphery;
 mod shared_node_takes_one_kind_periphery;
 mod spawn_recorded_lenient_periphery;
 mod spawn_scratch_reap_authorized_root_periphery;
@@ -239,6 +254,7 @@ mod statusline_command_periphery;
 mod stderr_whole_line_audit;
 mod step_sheds_the_freshen;
 mod stop_failure_hook_periphery;
+mod stop_hook_periphery;
 mod store_append_order_periphery;
 mod store_config;
 mod store_content_identity_periphery;

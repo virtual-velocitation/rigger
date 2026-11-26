@@ -10,7 +10,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::eventstore::{Event, Revision};
 use crate::run::{
-    RunHeld, RunReleased, HOLD_BY_OPERATOR, TYPE_RUN_HELD, TYPE_RUN_RELEASED, TYPE_RUN_STARTED,
+    RunHeld, RunReleased, HOLD_BY_CONDUCTOR, HOLD_BY_OPERATOR, TYPE_RUN_HELD, TYPE_RUN_RELEASED,
+    TYPE_RUN_STARTED,
 };
 
 /// Status of a unit of work, over its lifecycle
@@ -77,7 +78,7 @@ pub struct Unit {
     pub commit: String,
     /// The most recent `UnitFailed`'s `cause` (spec 69, criterion 3: the cause wire) -
     /// the conductor's own closed-vocabulary tag (`reject`, `gate:<name>`,
-    /// `integrate-conflict`, `infra:<kind>`) for WHY this attempt failed, stamped at the
+    /// `integrate-conflict`, `git-refused`, `infra:<kind>`) for WHY this attempt failed, stamped at the
     /// branch that failed it, never inferred downstream. Raw passthrough (mirrors
     /// `attempts`: each `UnitFailed` unconditionally overwrites it), so it always
     /// reflects the LATEST failure. Empty on a unit that has never failed, or on a
@@ -99,6 +100,10 @@ pub struct Unit {
     /// step that picks up a mid-remediation unit) is prompted with the failure it must fix.
     /// Raw passthrough like `cause`; empty when that failure was no gate's.
     pub gate_evidence: Vec<String>,
+    /// The most recent `UnitFailed`'s refusal: git's message when git refused a step on the
+    /// unit's own work, which no gate or review judged. Raw passthrough like `cause`; empty when
+    /// that failure was no refusal.
+    pub refusal: String,
     /// The most recent `UnitFailed`'s review reason: the adjudicator's rejection reasoning
     /// (its raw output) when review rejected that attempt, or the conductor's own refusal of
     /// a plan-stage commit. Raw passthrough like `cause`; empty when that failure was no
@@ -131,6 +136,12 @@ pub struct Unit {
     /// leaves it - so it is read through [`Unit::spec_defect_reason`], which holds it only while
     /// the unit stays escalated.
     pub escalation_reason: String,
+    /// Every tree kept aside for this unit ([`Kept`]), as each `UnitFailed` recorded it,
+    /// accumulated across failures in the order recorded, a repeat recorded once: unlike the
+    /// failure's other specifics, a later failure never overwrites it, so the unit's integration
+    /// removes every keep the unit made, one since set aside included, by its commit. Empty on a
+    /// unit that kept nothing, and on a record that predates the field (serde-defaulted).
+    pub keeps: Vec<Kept>,
 }
 
 impl Unit {
@@ -155,6 +166,17 @@ pub struct RequiredItem {
     pub path: String,
     pub correctness: bool,
     pub pattern: String,
+}
+
+/// A tree rigger kept aside for a unit, off its branch: the ref that held it when it was kept,
+/// short form (`rigger/kept/<unit>`, or `rigger/orphaned/<unit>-<12-char sha>` when a worktree had
+/// the kept ref checked out), and the commit. Carried on `UnitFailed` ([`Unit::keeps`]), so the
+/// unit's integration removes exactly the keeps it made, identified by their commits.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Kept {
+    pub reference: String,
+    pub commit: String,
 }
 
 /// The operator identity and grant size of a unit's latest `UnitResumed` (spec 88,
@@ -182,20 +204,9 @@ pub struct RunState {
     /// conductor's DeferredGateFailed event; gates `done` so a
     /// deferred failure can never be reported as a finished run.
     pub deferred_gate_failed: bool,
-    /// The run's live HALT reason, or `None` on a clean fixpoint: the spawn-budget breaker's
-    /// when it stopped this run process with ready work unscheduled (Gap 13) - e.g. `"budget
-    /// exhausted: 200/200 spawns"` - else a plan-critique spec-defect stop's (spec 112,
-    /// criterion 5: `"amend the spec and relaunch: ..."`). Unlike the other fields this is NOT
-    /// set by [`project`]: `conductor::run` stamps it after projecting, the budget half from
-    /// its IN-PROCESS breaker state and the spec-defect half from this fold
-    /// ([`RunState::spec_defect_reason`]), so every step of a stopped run reports the stop.
-    /// Folding the durable `BudgetExhausted` event would falsely re-report a halt the operator
-    /// has since resolved by raising the budget (a resume then schedules the work and never
-    /// trips), so `project` deliberately leaves this `None` and only the live run sets it.
-    pub budget_halt: Option<String>,
     /// Whether THIS run process's conductor pass PARKED a spawn - stopped at a request with
-    /// no result - so it reached no fixpoint. Like [`budget_halt`](RunState::budget_halt) it
-    /// is a fact of the live pass, never folded by [`project`]: a result recorded after the
+    /// no result - so it reached no fixpoint. It is a fact of the live pass, never folded by
+    /// [`project`]: a result recorded after the
     /// pass parked its spawn is in the log read back afterwards, yet the pass never folded it,
     /// so only this says the run still owes the work that result unlocks.
     pub parked: bool,
@@ -232,8 +243,10 @@ pub struct RunState {
 pub struct Hold {
     /// When the hold started: the valid time of its first `RunHeld` in log order.
     pub since: SystemTime,
-    /// Whether this is an operator hold: any of its `RunHeld` events is by the operator.
-    pub operator: bool,
+    /// Whether only `rigger release` ends this hold: any of its `RunHeld` events is by the
+    /// operator, or by the conductor on a fault of its own that ended the run's drive. No probe
+    /// releases it, no sighting moves it and no checking verb relaunches its run.
+    pub manual: bool,
     /// Its latest `RunHeld`, whose cause is the hold's cause.
     pub latest: RunHeld,
     /// The run-stream revision of [`Hold::latest`]: a probe of the hold releases it only while
@@ -248,31 +261,59 @@ impl Hold {
         let latest: RunHeld = serde_json::from_slice(&e.data)?;
         Ok(Hold {
             since: open.as_ref().map_or(e.valid_from, |hold| hold.since),
-            operator: open.is_some_and(|hold| hold.operator) || latest.by == HOLD_BY_OPERATOR,
+            manual: open.is_some_and(|hold| hold.manual)
+                || latest.by == HOLD_BY_OPERATOR
+                || latest.by == HOLD_BY_CONDUCTOR,
             latest,
             revision: e.revision,
         })
     }
 
     /// Whether the host or probe `RunHeld` `body` says anything to the hold `open` (`None` when
-    /// the run is unheld): the one transition rule a sighting and a failed probe append by. On an
-    /// unheld run it holds the run, whatever its cause; on an operator hold, on a hold of its own
-    /// cause and as a cause needing no person it says nothing; otherwise it moves the hold's cause.
-    pub fn moved_by(open: Option<&Hold>, body: &RunHeld) -> bool {
-        open.is_none_or(|hold| {
-            !hold.operator && body.needs_person && hold.latest.cause != body.cause
-        })
+    /// the run is unheld), `asks` saying whether its cause asks someone to act (its row's `asks`:
+    /// it needs a person, or it is for the orchestrator): the one transition rule a sighting and a
+    /// failed probe append by. On an unheld run it holds the run, whatever its cause; on a manual
+    /// hold, on a hold of its own cause and as a cause asking no one it says nothing; otherwise it
+    /// moves the hold's cause.
+    pub fn moved_by(open: Option<&Hold>, body: &RunHeld, asks: bool) -> bool {
+        open.is_none_or(|hold| !hold.manual && asks && hold.latest.cause != body.cause)
     }
 
     /// What the hold reads as to a person, `<cause> - <action>` of its latest `RunHeld`, or its
     /// cause alone when that action is empty, as an operator hold held with an empty reason has:
     /// the one text the HELD line of `rigger status`, the [`ATTENTION_HELD`] entry and the note a relaunched session reads name a hold by.
     pub fn reason(&self) -> String {
+        self.with_action(self.latest.cause.clone())
+    }
+
+    /// The hold as the lines that tell whoever resolves it name it: its cause, then the first line
+    /// of its latest detail ([`RunHeld::first_line`]) after a colon when it has one, then its
+    /// action as [`Hold::reason`] adds it. The driver's line as it ends on a hold and the line of
+    /// a check that leaves a held run's driver stopped name the hold by it.
+    pub fn told(&self) -> String {
         let latest = &self.latest;
-        if latest.action.is_empty() {
-            latest.cause.clone()
+        self.with_action(match latest.first_line() {
+            "" => latest.cause.clone(),
+            first => format!("{}: {first}", latest.cause),
+        })
+    }
+
+    /// Who resolves the hold first, as the lines that tell of it name them (spec 105): `a person`
+    /// when its latest `RunHeld` needs one, else `the orchestrator`, the session that launched the
+    /// run and watches it.
+    pub fn held_for(&self) -> &'static str {
+        if self.latest.needs_person {
+            "a person"
         } else {
-            format!("{} - {}", latest.cause, latest.action)
+            "the orchestrator"
+        }
+    }
+
+    /// `named`, then ` - ` and the latest `RunHeld`'s action when that is not empty.
+    fn with_action(&self, named: String) -> String {
+        match self.latest.action.as_str() {
+            "" => named,
+            action => format!("{named} - {action}"),
         }
     }
 }
@@ -347,7 +388,7 @@ pub fn holds(run_events: &[Event]) -> Vec<HoldSpan> {
 }
 
 /// One of the signals `AttentionEntry::kind` carries: an escalation, a spec-defect stop
-/// ([`ATTENTION_SPEC_DEFECT`], spec 112), a budget halt, a reject recurrence, and a hold and its
+/// ([`ATTENTION_SPEC_DEFECT`], spec 112), a reject recurrence, and a hold and its
 /// release ([`ATTENTION_HELD`], [`ATTENTION_RELEASED`], spec 105). Closed vocabulary (never
 /// inferred downstream) - kept as `&str` constants rather than an enum so the wire value and the
 /// Rust match arm are the same literal, with no separate `as_str`/`parse` translation to drift out
@@ -364,18 +405,16 @@ pub const ATTENTION_RELEASED: &str = "released";
 /// the stopped unit in place of its [`ATTENTION_ESCALATED`] entry, its detail the stop's reason
 /// ([`AttentionEntry::escalation`]).
 pub const ATTENTION_SPEC_DEFECT: &str = "spec-defect";
-pub const ATTENTION_HALTED: &str = "halted";
 pub const ATTENTION_REJECT_RECURRENCE: &str = "reject-recurrence";
 
-/// The canonical kind order: held, escalated, spec-defect, halted, reject-recurrence, released.
+/// The canonical kind order: held, escalated, spec-defect, reject-recurrence, released.
 /// The console's dock sorts its entries by it (a STABLE sort, so entries of the SAME kind keep
 /// their lexical unit order). An unknown kind sorts last rather than panicking.
 pub fn attention_kind_rank(kind: &str) -> usize {
-    const ORDER: [&str; 6] = [
+    const ORDER: [&str; 5] = [
         ATTENTION_HELD,
         ATTENTION_ESCALATED,
         ATTENTION_SPEC_DEFECT,
-        ATTENTION_HALTED,
         ATTENTION_REJECT_RECURRENCE,
         ATTENTION_RELEASED,
     ];
@@ -606,10 +645,12 @@ pub const TYPE_SCOPE_CREEP: &str = "ScopeCreep";
 /// `conductor::TYPE_SPEC_DEFECT`, the single source of the string): an uncovered criterion the
 /// run flagged rather than deviating around (§4.4).
 pub const TYPE_SPEC_DEFECT: &str = "SpecDefect";
-/// The conductor's TaskAborted event (the conductor re-exports this as
-/// `conductor::TYPE_TASK_ABORTED`, the single source of the string): the run aborted, with
-/// un-integrated work dropped and integrated work kept (§4.4).
+/// The TaskAborted event of the retired spawn budget: nothing emits it, and a log written while
+/// the budget existed still carries it, as an episode no fold reads.
 pub const TYPE_TASK_ABORTED: &str = "TaskAborted";
+/// The BudgetExhausted event of the retired spawn budget: nothing emits it, and a log written
+/// while the budget existed still carries it, as an episode no fold reads.
+pub const TYPE_BUDGET_EXHAUSTED: &str = "BudgetExhausted";
 /// The conductor's DeferredGateFailed event (kept in sync with
 /// `conductor::TYPE_DEFERRED_GATE_FAILED`): a deferred gate that failed when it ran
 /// at the run's phase boundary. A deferred failure is surfaced truthfully - it gates
@@ -685,9 +726,15 @@ struct UnitFailed {
     #[serde(default)]
     gate_evidence: Vec<String>,
     #[serde(default)]
+    refusal: String,
+    #[serde(default)]
     review_reason: String,
     #[serde(default)]
     required: Vec<RequiredItem>,
+    /// The trees kept aside for the unit on this failure ([`Unit::keeps`]), additive and
+    /// serde-defaulted like `cause`.
+    #[serde(default)]
+    kept: Vec<Kept>,
 }
 #[derive(Deserialize)]
 struct UnitEscalated {
@@ -770,11 +817,13 @@ impl RunState {
             cause: String::new(),
             max_retries: 0,
             gate_evidence: Vec::new(),
+            refusal: String::new(),
             review_reason: String::new(),
             required: Vec::new(),
             resume_bound: 0,
             resumed: None,
             escalation_reason: String::new(),
+            keeps: Vec::new(),
         })
     }
 
@@ -822,8 +871,14 @@ impl RunState {
                 u.cause = p.cause;
                 u.max_retries = p.max_retries;
                 u.gate_evidence = p.gate_evidence;
+                u.refusal = p.refusal;
                 u.review_reason = p.review_reason;
                 u.required = p.required;
+                for kept in p.kept {
+                    if !u.keeps.contains(&kept) {
+                        u.keeps.push(kept);
+                    }
+                }
             }
             TYPE_UNIT_ESCALATED => {
                 let p: UnitEscalated = serde_json::from_slice(&e.data)?;
@@ -1256,6 +1311,53 @@ mod tests {
         assert_eq!(unstamped.units["u"].max_retries, 0);
     }
 
+    /// A UNIT'S KEEPS ACCUMULATE: each `UnitFailed`'s kept trees fold onto the unit after the
+    /// ones before, a repeat once, and a later failure never clears them; a record that predates
+    /// the field folds none.
+    #[test]
+    fn a_unit_failed_kept_trees_accumulate_on_the_unit() {
+        const ONE: &str = r#"{"reference":"rigger/kept/u","commit":"aaa"}"#;
+        const TWO: &str = r#"{"reference":"rigger/kept/u","commit":"bbb"}"#;
+        let kept = |commit: &str| Kept {
+            reference: "rigger/kept/u".to_string(),
+            commit: commit.to_string(),
+        };
+        // Each row: the `kept` field of each `UnitFailed` in turn (`None` leaves it out), and the
+        // keeps folded.
+        type Row = (&'static str, &'static [Option<&'static str>], Vec<Kept>);
+        let cases: [Row; 5] = [
+            ("a keep recorded", &[Some(ONE)], vec![kept("aaa")]),
+            (
+                "a later keep after it",
+                &[Some(ONE), Some(TWO)],
+                vec![kept("aaa"), kept("bbb")],
+            ),
+            (
+                "a later failure keeping nothing",
+                &[Some(ONE), Some(""), None],
+                vec![kept("aaa")],
+            ),
+            ("a repeat", &[Some(ONE), Some(ONE)], vec![kept("aaa")]),
+            ("a record that predates the field", &[None], vec![]),
+        ];
+        for (row, failures, keeps) in cases {
+            let events: Vec<_> = failures
+                .iter()
+                .enumerate()
+                .map(|(n, kept)| {
+                    let kept = kept
+                        .map(|k| format!(r#","kept":[{k}]"#))
+                        .unwrap_or_default();
+                    ev(
+                        TYPE_UNIT_FAILED,
+                        &format!(r#"{{"id":"u","attempts":{}{kept}}}"#, n + 1),
+                    )
+                })
+                .collect();
+            assert_eq!(project(&events).unwrap().units["u"].keeps, keeps, "{row}");
+        }
+    }
+
     #[test]
     fn a_failing_deferred_gate_gates_done() {
         // A deferred gate that failed at the phase boundary must gate `done`, even when
@@ -1482,8 +1584,8 @@ mod tests {
 
     /// THE EVENTS: a run is held while a `RunHeld` has no later `RunReleased`, over the current
     /// run's slice. The hold starts at its earliest `RunHeld` since the last `RunReleased`, its
-    /// cause and its revision are its latest's, and it is an operator hold when any of its
-    /// `RunHeld` events is by the operator. Each row folds as every production reader does,
+    /// cause and its revision are its latest's, and it is a manual hold when any of its
+    /// `RunHeld` events is by the operator or the conductor. Each row folds as every production reader does,
     /// `project` over the slice, each event at its index's revision.
     #[test]
     fn the_open_hold_folds_from_the_current_run_by_the_rules_of_the_events() {
@@ -1510,6 +1612,14 @@ mod tests {
             by: "operator".to_string(),
             model: String::new(),
         };
+        let conductor = RunHeld {
+            cause: "conductor-fault".to_string(),
+            detail: "worktree: the path already exists".to_string(),
+            action: "worktree: the path already exists".to_string(),
+            needs_person: true,
+            by: "conductor".to_string(),
+            model: String::new(),
+        };
         let held =
             |body: &RunHeld, secs: u64| (TYPE_RUN_HELD, serde_json::to_string(body).unwrap(), secs);
         let released = |secs: u64| {
@@ -1517,10 +1627,10 @@ mod tests {
             (TYPE_RUN_RELEASED, body, secs)
         };
         let started = |secs: u64| (TYPE_RUN_STARTED, r#"{"run":"r2"}"#.to_string(), secs);
-        let open = |secs: u64, operator: bool, latest: &RunHeld, revision: i64| {
+        let open = |secs: u64, manual: bool, latest: &RunHeld, revision: i64| {
             Some(Hold {
                 since: UNIX_EPOCH + Duration::from_secs(secs),
-                operator,
+                manual,
                 latest: latest.clone(),
                 revision,
             })
@@ -1565,6 +1675,11 @@ mod tests {
             (
                 "a host RunHeld after an operator one stays an operator hold",
                 vec![held(&operator, 5), held(&host, 9)],
+                open(5, true, &host, 1),
+            ),
+            (
+                "a conductor RunHeld is a manual hold, and a host one after it leaves it so",
+                vec![held(&conductor, 5), held(&host, 9)],
                 open(5, true, &host, 1),
             ),
             (
@@ -1738,36 +1853,93 @@ mod tests {
     }
 
     /// WHAT A PERSON SEES: a hold reads as `<cause> - <action>` of its latest `RunHeld`, and as its
-    /// cause alone when that action is empty, as an operator hold held with an empty reason is.
+    /// cause alone when that action is empty, as an operator hold held with an empty reason is;
+    /// told to whoever resolves it, the first line of its detail follows the cause after a colon.
+    /// It is for a person exactly when its latest `RunHeld` says it needs one, else for the
+    /// orchestrator: every reader takes the action and the need for a person as the writer
+    /// recorded them, so a hold recorded before the conductor's holds went to the orchestrator
+    /// (a conductor-fault hold whose action is its fault, needing a person) reads as it did.
     #[test]
     fn a_hold_reads_as_its_cause_and_action_or_its_cause_alone() {
-        for (cause, action, want) in [
-            ("auth", "log in again", "auth - log in again"),
-            ("operator", "moving quota", "operator - moving quota"),
-            ("operator", "", "operator"),
-        ] {
+        // (cause, detail, action, needs a person, reason, told, held for)
+        let rows = [
+            (
+                "auth",
+                "",
+                "log in again",
+                true,
+                "auth - log in again",
+                "auth - log in again",
+                "a person",
+            ),
+            (
+                "operator",
+                "",
+                "moving quota",
+                true,
+                "operator - moving quota",
+                "operator - moving quota",
+                "a person",
+            ),
+            ("operator", "", "", true, "operator", "operator", "a person"),
+            (
+                "rate_limit",
+                "429 too many",
+                "none, the run retries by itself",
+                false,
+                "rate_limit - none, the run retries by itself",
+                "rate_limit: 429 too many - none, the run retries by itself",
+                "the orchestrator",
+            ),
+            (
+                "conductor-fault",
+                "git failed\nfatal: locked",
+                "fix it, then run rigger release",
+                false,
+                "conductor-fault - fix it, then run rigger release",
+                "conductor-fault: git failed - fix it, then run rigger release",
+                "the orchestrator",
+            ),
+            (
+                "conductor-fault",
+                "git failed",
+                "git failed",
+                true,
+                "conductor-fault - git failed",
+                "conductor-fault: git failed - git failed",
+                "a person",
+            ),
+        ];
+        for (cause, detail, action, needs_person, reason, told, held_for) in rows {
             let hold = Hold {
                 since: UNIX_EPOCH,
-                operator: cause == "operator",
+                manual: cause == "operator",
                 latest: RunHeld {
                     cause: cause.to_string(),
+                    detail: detail.to_string(),
                     action: action.to_string(),
+                    needs_person,
                     ..RunHeld::default()
                 },
                 revision: 0,
             };
-            assert_eq!(hold.reason(), want, "{cause} with action {action:?}");
+            assert_eq!(
+                (hold.reason(), hold.told(), hold.held_for()),
+                (reason.to_string(), told.to_string(), held_for),
+                "{cause} with detail {detail:?} and action {action:?}"
+            );
         }
     }
 
     /// THE HOLD TRANSITION RULE: a host or probe `RunHeld` holds an unheld run whatever its cause,
-    /// says nothing to an operator hold, to a hold of its own cause or as a cause needing no
-    /// person, and otherwise moves the hold's cause.
+    /// says nothing to an operator hold, to a hold of its own cause or as a cause asking no one,
+    /// and otherwise moves the hold's cause: to a person's cause, or to the orchestrator's from an
+    /// outage hold a probe would never end on it.
     #[test]
-    fn a_held_moves_an_open_hold_only_to_another_person_needing_cause() {
-        let open = |cause: &str, operator: bool| Hold {
+    fn a_held_moves_an_open_hold_only_to_another_cause_asking_someone() {
+        let open = |cause: &str, manual: bool| Hold {
             since: UNIX_EPOCH,
-            operator,
+            manual,
             latest: RunHeld {
                 cause: cause.to_string(),
                 needs_person: true,
@@ -1775,39 +1947,49 @@ mod tests {
             },
             revision: 0,
         };
-        let held = |cause: &str, needs_person: bool| RunHeld {
+        let held = |cause: &str| RunHeld {
             cause: cause.to_string(),
-            needs_person,
             ..RunHeld::default()
         };
-        for (hold, body, moves, case) in [
-            (None, held("rate_limit", false), true, "no hold"),
+        for (hold, body, asks, moves, case) in [
+            (None, held("rate_limit"), false, true, "no hold"),
             (
                 Some(open("operator", true)),
-                held("auth", true),
+                held("auth"),
+                true,
                 false,
                 "an operator hold",
             ),
             (
                 Some(open("auth", false)),
-                held("auth", true),
+                held("auth"),
+                true,
                 false,
                 "the same cause",
             ),
             (
                 Some(open("auth", false)),
-                held("billing", true),
+                held("billing"),
+                true,
                 true,
                 "a differing person-needing cause",
             ),
             (
+                Some(open("rate_limit", false)),
+                held("model_not_found"),
+                true,
+                true,
+                "a differing cause for the orchestrator",
+            ),
+            (
                 Some(open("auth", false)),
-                held("rate_limit", false),
+                held("rate_limit"),
                 false,
-                "a differing cause needing no person",
+                false,
+                "a differing cause asking no one",
             ),
         ] {
-            assert_eq!(Hold::moved_by(hold.as_ref(), &body), moves, "{case}");
+            assert_eq!(Hold::moved_by(hold.as_ref(), &body, asks), moves, "{case}");
         }
     }
 }

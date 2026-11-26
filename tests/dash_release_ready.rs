@@ -60,12 +60,7 @@ fn positioned(pairs: &[(&str, &str)]) -> Vec<Event> {
 /// the parsed JSON body - the exact path the operator's browser hits.
 fn served_state(events: Vec<Event>) -> Value {
     let provider = move |_instance: Option<&str>| -> Result<DashInputs, String> {
-        Ok((
-            events.clone(),
-            Graph::default().into(),
-            Vec::new(),
-            HashMap::new(),
-        ))
+        Ok((events.clone(), Vec::new(), HashMap::new()))
     };
     // A free loopback port this harness OWNS from `bind` through `serve_on`: the listener is handed
     // to the server, never dropped and re-bound. Releasing it first would leave the port free for
@@ -92,6 +87,7 @@ fn served_state(events: Vec<Event>) -> Value {
         let _ = dash::serve_on(
             listener,
             provider,
+            common::served::no_state_graph,
             graph_provider,
             calls_provider,
             instances_provider,

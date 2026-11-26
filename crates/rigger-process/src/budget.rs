@@ -1,8 +1,9 @@
-//! Machine-wide build concurrency budget (spec 65): a flock-based slot directory caps how
+//! Machine-wide build concurrency budget (spec 65): a file-lock slot directory caps how
 //! many actual compiler invocations run concurrently ACROSS every rigger process on the
 //! machine, so N unit worktrees building in parallel never stack N compiler fleets into
 //! memory at once. THE AUTHORITATIVE STATE IS THE SLOT FILES on disk, never any in-process
-//! counter: a fixed set of `slot-<i>.lock` files, each held via an exclusive `flock` for
+//! counter: a fixed set of `slot-<i>.lock` files, each held via std's exclusive file lock
+//! (`flock(2)` on unix, `LockFileEx` on Windows) for
 //! exactly the wrapped build's duration and auto-released by the kernel the instant the
 //! holding process exits - cleanly or crashed. That is deliberate: an in-process counter,
 //! an environment variable, or any state a crash could strand is NOT an implementation of
@@ -14,10 +15,9 @@
 //! ([`crate::gate::ExecRunner::run`]) acquires a slot. A reviewer reading code or querying
 //! the graph never calls into this module at all, so it is never budget-gated.
 
-use fs2::FileExt;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File, OpenOptions, TryLockError};
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// The machine-wide slot directory every rigger process on the machine shares absent
 /// explicit configuration: the OS temp dir, NOT the repo - the budget spans every project
@@ -50,7 +50,7 @@ pub struct BuildBudget {
 
 impl BuildBudget {
     /// Resolve the budget from the workflow's `build.max_concurrent` config (spec 65): `0`
-    /// means unlimited (the same convention `defaults.budget` uses) - every [`acquire`]
+    /// means unlimited - every [`acquire`]
     /// call is admitted immediately and no slot directory is ever created or touched. A
     /// positive N caps concurrent builds at N, machine-wide, under `slot_dir`.
     ///
@@ -62,58 +62,118 @@ impl BuildBudget {
         }
     }
 
+    /// How many builds may run at once, machine-wide: `0` is unlimited.
+    pub fn slots(&self) -> u32 {
+        self.max_concurrent
+    }
+
     /// Acquire one of the `max_concurrent` machine-wide slots, BLOCKING until one is free.
     /// `max_concurrent == 0` (unlimited) returns immediately holding no lock at all - the
     /// unlimited path never touches the filesystem.
     ///
     /// Polls each of the `max_concurrent` numbered slot files in turn with a non-blocking
-    /// [`FileExt::try_lock_exclusive`]; the first free slot wins and its held [`File`]
-    /// becomes the returned [`SlotGuard`], which releases the instant it drops - on a clean
-    /// return, an early `?`, or the process being killed (the kernel releases an `flock` on
-    /// any exit of the holding process). A hung build holding its slot is therefore exactly
-    /// as bounded as the liveness watchdog that eventually kills it; this module adds no
-    /// second reaper and strands nothing on its own crash either.
+    /// [`File::try_lock`]; the first free slot wins and its held [`File`] becomes the returned
+    /// [`SlotGuard`], which releases the instant it drops - on a clean return, an early `?`, or
+    /// the process being killed (the kernel releases the lock on any exit of the holding
+    /// process). A hung build holding its slot is therefore exactly as bounded as the liveness
+    /// watchdog that eventually kills it; this module adds no second reaper and strands nothing
+    /// on its own crash either.
     ///
     /// Best-effort against filesystem trouble unrelated to the build itself: a slot
     /// directory that cannot be created (a read-only or absent temp mount) degrades to
-    /// unlimited for this call rather than wedging the loop.
-    pub fn acquire(&self) -> SlotGuard {
+    /// unlimited for this call rather than wedging the loop, and the guard's
+    /// [`SlotGuard::unenforced`] names the directory and the OS error. A pass in which no slot is held by
+    /// another process, yet none could be opened and locked, is the last slot's error: no
+    /// holder will ever free a slot, so waiting would never end.
+    ///
+    /// The guard's [`SlotGuard::waited`] is how long this call waited for a slot: zero when
+    /// the first pass found one free, else the time from the call to the slot it took.
+    pub fn acquire(&self) -> std::io::Result<SlotGuard> {
         if self.max_concurrent == 0 {
-            return SlotGuard(None);
+            return Ok(SlotGuard::default());
         }
-        if fs::create_dir_all(&self.slot_dir).is_err() {
-            return SlotGuard(None);
+        if let Err(e) = fs::create_dir_all(&self.slot_dir) {
+            return Ok(SlotGuard {
+                held: None,
+                waited: Duration::ZERO,
+                unenforced: format!(
+                    "slot directory {} could not be created: {e}",
+                    self.slot_dir.display()
+                ),
+            });
         }
+        let (started, mut polled) = (Instant::now(), false);
         loop {
+            let (mut held, mut failure) = (false, None);
             for i in 0..self.max_concurrent {
                 let path = self.slot_dir.join(format!("slot-{i}.lock"));
-                if let Ok(f) = OpenOptions::new()
+                let slot = OpenOptions::new()
                     .create(true)
                     .write(true)
                     .truncate(false)
                     .open(&path)
-                {
-                    if f.try_lock_exclusive().is_ok() {
-                        return SlotGuard(Some(f));
+                    .map_err(TryLockError::Error)
+                    .and_then(|f| f.try_lock().map(|()| f));
+                match slot {
+                    Ok(f) => {
+                        return Ok(SlotGuard {
+                            held: Some(f),
+                            waited: if polled {
+                                started.elapsed()
+                            } else {
+                                Duration::ZERO
+                            },
+                            unenforced: String::new(),
+                        });
+                    }
+                    Err(TryLockError::WouldBlock) => held = true,
+                    Err(TryLockError::Error(e)) => {
+                        failure = Some(std::io::Error::new(
+                            e.kind(),
+                            format!("build budget slot {}: {e}", path.display()),
+                        ))
                     }
                 }
             }
+            if let (false, Some(e)) = (held, failure) {
+                return Err(e);
+            }
             std::thread::sleep(POLL_INTERVAL);
+            polled = true;
         }
     }
 }
 
 /// RAII guard for one held budget slot ([`BuildBudget::acquire`]). Dropping it releases the
-/// flock explicitly (the OS would also release it on process exit, including an abnormal
+/// lock explicitly (the OS would also release it on process exit, including an abnormal
 /// one that never runs this `Drop`) so the next waiter's poll finds it free without delay.
 /// Holds no lock at all - `Drop` is then a no-op - on the unlimited / degraded-to-unlimited
-/// path, where the inner `File` is `None`.
-pub struct SlotGuard(Option<File>);
+/// path, where `held` is `None`.
+#[derive(Default)]
+pub struct SlotGuard {
+    held: Option<File>,
+    waited: Duration,
+    unenforced: String,
+}
+
+impl SlotGuard {
+    /// Why the build this guard admits runs outside the budget: the slot directory that could
+    /// not be created and the OS error, or empty when a slot is held or the budget is unlimited.
+    pub fn unenforced(&self) -> &str {
+        &self.unenforced
+    }
+
+    /// How long [`BuildBudget::acquire`] waited for the slot this guard holds: zero when a
+    /// slot was free on its first pass, the budget is unlimited, or it is not enforced.
+    pub fn waited(&self) -> Duration {
+        self.waited
+    }
+}
 
 impl Drop for SlotGuard {
     fn drop(&mut self) {
-        if let Some(f) = &self.0 {
-            let _ = FileExt::unlock(f);
+        if let Some(f) = &self.held {
+            let _ = f.unlock();
         }
     }
 }
@@ -134,9 +194,9 @@ mod tests {
         let slot_dir = dir.path().join("slots");
         let budget = BuildBudget::new(0, slot_dir.clone());
 
-        let _a = budget.acquire();
-        let _b = budget.acquire();
-        let _c = budget.acquire();
+        let _a = budget.acquire().unwrap();
+        let _b = budget.acquire().unwrap();
+        let _c = budget.acquire().unwrap();
 
         assert!(
             !slot_dir.exists(),
@@ -144,24 +204,36 @@ mod tests {
         );
     }
 
+    /// With `max_concurrent: N`, the N+1th concurrent build blocks until a slot frees, then
+    /// proceeds; its guard reports a wait no longer than the call it made, while a build that
+    /// found a slot free reports no wait.
     #[test]
-    fn acquire_blocks_the_n_plus_1th_build_until_a_slot_frees() {
-        // The done-when's central claim: with `max_concurrent: N`, the N+1th concurrent
-        // build blocks until a slot frees, then proceeds.
+    fn acquire_blocks_the_n_plus_1th_build_until_a_slot_frees_and_reports_the_wait() {
         let dir = tempfile::tempdir().unwrap();
         let slot_dir = dir.path().join("slots");
         let budget = BuildBudget::new(1, slot_dir);
 
-        let first = budget.acquire();
+        let first = budget.acquire().unwrap();
+        assert_eq!(
+            first.waited(),
+            Duration::ZERO,
+            "a free slot admits with no wait"
+        );
 
         let budget2 = budget.clone();
         let acquired = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&acquired);
+        let (calling_tx, calling) = std::sync::mpsc::channel();
         let handle = std::thread::spawn(move || {
-            let _second = budget2.acquire();
+            calling_tx.send(()).unwrap();
+            let call = Instant::now();
+            let second = budget2.acquire().unwrap();
+            let call = call.elapsed();
             flag.store(true, Ordering::SeqCst);
+            (second.waited(), call)
         });
 
+        calling.recv().unwrap();
         std::thread::sleep(Duration::from_millis(200));
         assert!(
             !acquired.load(Ordering::SeqCst),
@@ -173,7 +245,59 @@ mod tests {
             wait_until_for(400, || acquired.load(Ordering::SeqCst)),
             "the waiting build must acquire once the held slot is released"
         );
-        handle.join().unwrap();
+        let (waited, call) = handle.join().unwrap();
+        assert!(
+            waited > Duration::ZERO && waited <= call,
+            "the blocked build reports a wait ({waited:?}) within its call ({call:?})"
+        );
+    }
+
+    #[test]
+    fn a_slot_directory_where_no_slot_can_be_locked_is_an_error_not_an_endless_wait() {
+        // No slot file opens (each slot path is a directory), so no holder will ever free one:
+        // the acquire must answer that error rather than poll forever.
+        let dir = tempfile::tempdir().unwrap();
+        let slot_dir = dir.path().join("slots");
+        for i in 0..2 {
+            fs::create_dir_all(slot_dir.join(format!("slot-{i}.lock"))).unwrap();
+        }
+        let budget = BuildBudget::new(2, slot_dir);
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || tx.send(budget.acquire().is_err()));
+        assert_eq!(
+            rx.recv_timeout(Duration::from_secs(5)),
+            Ok(true),
+            "an acquire no slot can satisfy must return its error"
+        );
+    }
+
+    /// A slot directory that cannot be created (it lies under a regular file) admits the build
+    /// outside the budget, and its guard says why the budget was not enforced; an unlimited
+    /// budget and a held slot say nothing.
+    #[test]
+    fn a_slot_directory_that_cannot_be_created_admits_the_build_and_says_why() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("file");
+        fs::write(&file, b"").unwrap();
+        let slot_dir = file.join("slots");
+        let create_error = fs::create_dir_all(&slot_dir).unwrap_err();
+        let unenforced = |budget: BuildBudget| budget.acquire().unwrap().unenforced().to_string();
+        assert_eq!(
+            [
+                unenforced(BuildBudget::new(1, slot_dir.clone())),
+                unenforced(BuildBudget::new(0, slot_dir.clone())),
+                unenforced(BuildBudget::new(1, dir.path().join("slots"))),
+            ],
+            [
+                format!(
+                    "slot directory {} could not be created: {create_error}",
+                    slot_dir.display()
+                ),
+                String::new(),
+                String::new(),
+            ],
+            "only a budget that admitted the build outside its slots says why"
+        );
     }
 
     #[test]
@@ -184,11 +308,11 @@ mod tests {
         let slot_dir = dir.path().join("slots");
         let budget = BuildBudget::new(1, slot_dir);
 
-        let first = budget.acquire();
+        let first = budget.acquire().unwrap();
         drop(first);
-        let second = budget.acquire();
+        let second = budget.acquire().unwrap();
         drop(second);
-        let _third = budget.acquire();
+        let _third = budget.acquire().unwrap();
         // Reaching here without hanging proves the slot is reusable across releases.
     }
 
@@ -261,7 +385,7 @@ mod tests {
         let flag = Arc::clone(&done);
         let budget2 = budget.clone();
         let handle = std::thread::spawn(move || {
-            let _g = budget2.acquire();
+            let _g = budget2.acquire().unwrap();
             flag.store(true, Ordering::SeqCst);
         });
 

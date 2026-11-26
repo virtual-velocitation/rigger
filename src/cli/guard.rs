@@ -1,8 +1,9 @@
 use super::*;
+use rigger::conductor::TreeDuty;
 use rigger::prompt_surface::{
     GUARD_WRITE_DENY, GUARD_WRITE_NO_ROOT, GUARD_WRITE_PAYLOAD_UNREADABLE, GUARD_WRITE_ROOT_EMPTY,
     GUARD_WRITE_ROOT_MISSING, GUARD_WRITE_ROOT_RELATIVE, GUARD_WRITE_STDERR_PREFIX,
-    GUARD_WRITE_UNKNOWN_ARG,
+    GUARD_WRITE_UNKNOWN_ARG, STOP_HOOK_HELD, STOP_HOOK_UNCOMMITTED,
 };
 use rigger_domain::prompt_surface::{debug_escaped, fill};
 
@@ -595,20 +596,33 @@ pub(crate) fn cmd_guard_write(args: &[String]) -> Res {
 }
 
 /// `rigger hook <subcommand>` - the shared namespace for hook commands the per-spawn
-/// `--settings` JSON installs (today, only [`cmd_hook_stop_failure`]; `guard-write` predates
-/// this namespace and keeps its own top-level command name for compatibility).
+/// `--settings` JSON installs ([`cmd_hook_stop_failure`] and [`cmd_hook_stop`]; `guard-write`
+/// predates this namespace and keeps its own top-level command name for compatibility).
 pub(crate) fn cmd_hook(args: &[String]) -> Res {
     match args.first().map(String::as_str) {
         Some("stop-failure") => cmd_hook_stop_failure(&args[1..]),
+        Some("stop") => cmd_hook_stop(&args[1..]),
         Some(other) => Err(format!(
-            "hook: unknown subcommand {other:?}: rigger hook stop-failure --spawn <id> --class <category>"
+            "hook: unknown subcommand {other:?}: rigger hook stop-failure --spawn <id> --class \
+             <category> | rigger hook stop --spawn <id> --dir <dir> (--branch <branch> | \
+             --own-commits <output>)"
         )
         .into()),
         None => Err(
-            "hook: expected a subcommand: rigger hook stop-failure --spawn <id> --class <category>"
+            "hook: expected a subcommand: rigger hook stop-failure --spawn <id> --class \
+             <category> | rigger hook stop --spawn <id> --dir <dir> (--branch <branch> | \
+             --own-commits <output>)"
                 .into(),
         ),
     }
+}
+
+/// The run a hook records under, read from `run_store`: the current run's id, empty when no run
+/// has started. It reads the run's `RunStarted` alone ([`runscope::read::read_current_run_id`]),
+/// never the run's events or the knowledge carried into it, since the stop hook runs at every
+/// stop of every writer under a timeout.
+fn hook_run_id(run_store: &dyn EventStore) -> Result<String, Box<dyn std::error::Error>> {
+    Ok(runscope::read::read_current_run_id(run_store, conductor::STREAM)?.unwrap_or_default())
 }
 
 /// `rigger hook stop-failure --spawn <id> --class <category>`: THE HOOKS' `StopFailure`
@@ -622,7 +636,9 @@ pub(crate) fn cmd_hook(args: &[String]) -> Res {
 /// than silently recording a category [`conductor::AgentFailure::from_category`] would
 /// degrade to `unknown` at classification time anyway. Routed through [`require_store_dir`]
 /// like every other courier ([`cmd_progress`]'s own doc), so a worker running it from a
-/// nested worktree records into the project's real store, never a misfiled one.
+/// nested worktree records into the project's real store, never a misfiled one. It says what it
+/// recorded on stderr, never stdout: the host reads a hook's stdout as JSON, so stdout carries
+/// nothing.
 fn cmd_hook_stop_failure(args: &[String]) -> Res {
     let mut spawn_id: Option<String> = None;
     let mut class: Option<String> = None;
@@ -674,12 +690,7 @@ fn cmd_hook_stop_failure(args: &[String]) -> Res {
 
     let (loc, selection) = require_store_dir()?;
     refresh_registry_entry(&loc, &selection);
-    let (_, run_id) = over_the_run_store_at(&loc, &selection, |run_store| {
-        Ok(runscope::read::read_current_run(
-            run_store,
-            conductor::STREAM,
-        )?)
-    })?;
+    let run_id = over_the_run_store_at(&loc, &selection, hook_run_id)?;
     let prog_backend = Store::open(&loc.file("progress.db"))?;
     let prog_store = Namespaced::new(&prog_backend, &loc.identity()?);
     let pos = rigger::progress_store::record_stop_failure(
@@ -690,8 +701,208 @@ fn cmd_hook_stop_failure(args: &[String]) -> Res {
             class: class.clone(),
         },
     )?;
-    println!("stop-failure recorded for {spawn_id} (class {class}, position {pos})");
+    eprintln!("stop-failure recorded for {spawn_id} (class {class}, position {pos})");
     Ok(())
+}
+
+/// What `rigger hook stop` asks about: the spawn whose session is stopping, its tree, and what the
+/// conductor takes from that tree once the session ends.
+#[derive(Debug, PartialEq, Eq)]
+struct StopCheck {
+    spawn: String,
+    dir: String,
+    duty: TreeDuty,
+}
+
+/// The error of `rigger hook stop` arguments that do not name the spawn, its tree and one duty.
+const STOP_ARGS_REQUIRED: &str = "--spawn and --dir are required, with exactly one of --branch \
+                                  <branch> and --own-commits <output>";
+
+/// `rigger hook stop --spawn <id> --dir <dir> (--branch <branch> | --own-commits <output>)`: a
+/// writing session's `Stop` hook, which Claude Code runs when the session's agent has finished
+/// responding. It asks, read-only, whether the tree is one the conductor's next step on it takes:
+/// with `--branch`, whether committing it onto that branch, or the merge after, would be refused
+/// ([`rigger::worktree::checkpoint_refusals`], the reads the conductor's own commit and merge
+/// refuse on); with `--own-commits`, a producer's tree the conductor lands only the commits of,
+/// whether it holds work of the stage's output, the directory `<output>` names, outside a commit
+/// ([`rigger::worktree::own_commits_refusals`], the plan landing's own scope, which the conductor
+/// asks again once the session has ended; work outside the output never lands, so it holds
+/// nothing up alone). When it is not, the hook holds the session from stopping by
+/// printing Claude Code's `{"decision": "block", "reason": ...}` with the reason
+/// [`stop_hook_reason`] gives, so the session that left the tree so fixes it before it ends. It
+/// changes nothing in the tree: git runs with optional locks off, so not even a status read
+/// rewrites the index.
+///
+/// It is bounded and never wedges a session: it holds a session at most
+/// [`progress::STOP_HOLD_BOUND`] times, counted from its own `stop held` progress lines since the
+/// spawn's latest launch ([`rigger::progress_store::stop_holds`]) - Claude Code's
+/// `stop_hook_active` says only that the session is already continuing after a hold, so the count
+/// is read from the record and `stop_hook_active` is recorded beside it. Past the bound the stop is
+/// allowed and a progress line records that the refusal stands, for the conductor's own handling
+/// to meet: a checkpoint's refusal, or a producer's work of its output outside a commit, which
+/// fails its attempt. Every
+/// other way it can end allows the stop with exit 0: an argument it does not know,
+/// a store or tree it cannot read (each written to stderr, and to a progress line where the store
+/// opened). It writes a `stop check` line before it reads the tree, so a check that ran out of
+/// time is on record too.
+fn cmd_hook_stop(args: &[String]) -> Res {
+    std::env::set_var("GIT_OPTIONAL_LOCKS", "0");
+    let mut input = String::new();
+    let active = std::io::Read::read_to_string(&mut std::io::stdin(), &mut input)
+        .ok()
+        .and_then(|_| serde_json::from_str::<serde_json::Value>(input.trim()).ok())
+        .and_then(|payload| payload["stop_hook_active"].as_bool())
+        .unwrap_or(false);
+    let held = parse_hook_stop_args(args).and_then(|check| hold_the_stop(&check, active));
+    match held {
+        Ok(Some(reason)) => {
+            println!(
+                "{}",
+                serde_json::json!({"decision": "block", "reason": reason})
+            );
+        }
+        Ok(None) => {}
+        Err(e) => eprintln!("rigger hook stop: {e}; the stop is allowed"),
+    }
+    Ok(())
+}
+
+/// `rigger hook stop`'s arguments: `--spawn` and `--dir`, each with a non-empty value, and the
+/// tree's duty, exactly one of `--branch` and `--own-commits`, each with a non-empty value: the
+/// branch the conductor commits the tree onto, or the producer's output.
+fn parse_hook_stop_args(args: &[String]) -> Result<StopCheck, Box<dyn std::error::Error>> {
+    let (mut spawn, mut dir, mut branch, mut output) = (None, None, None, None);
+    let mut rest = args.iter();
+    while let Some(flag) = rest.next() {
+        let slot = match flag.as_str() {
+            "--spawn" => &mut spawn,
+            "--dir" => &mut dir,
+            "--branch" => &mut branch,
+            "--own-commits" => &mut output,
+            other => return Err(format!("unknown argument {other:?}").into()),
+        };
+        match rest.next().filter(|value| !value.trim().is_empty()) {
+            Some(value) => *slot = Some(value.clone()),
+            None => return Err(format!("{flag} expects a non-empty value").into()),
+        }
+    }
+    let duty = match (branch, output) {
+        (Some(branch), None) => TreeDuty::Checkpoint { branch },
+        (None, Some(output)) => TreeDuty::OwnCommits { output },
+        _ => return Err(STOP_ARGS_REQUIRED.into()),
+    };
+    match (spawn, dir) {
+        (Some(spawn), Some(dir)) => Ok(StopCheck { spawn, dir, duty }),
+        _ => Err(STOP_ARGS_REQUIRED.into()),
+    }
+}
+
+/// The reason to hold `check`'s session from stopping, or `None` to allow the stop, each outcome
+/// recorded as a progress line of the spawn (see [`cmd_hook_stop`]); `active` is Claude Code's
+/// `stop_hook_active`. A store that cannot be opened is an error with no line; a tree that cannot
+/// be read is an error with its line.
+fn hold_the_stop(
+    check: &StopCheck,
+    active: bool,
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    // What the check line names the duty by, the allowance's words when nothing refuses, and the
+    // reason's text and branch.
+    let (asked, allowed, template, branch) = match &check.duty {
+        // The conductor takes nothing from such a tree, so nothing in it holds the stop.
+        TreeDuty::None => return Ok(None),
+        TreeDuty::Checkpoint { branch } => (
+            format!("on {branch}"),
+            "nothing refuses the checkpoint".to_string(),
+            STOP_HOOK_HELD,
+            branch.as_str(),
+        ),
+        TreeDuty::OwnCommits { output } => (
+            "for its own commits".to_string(),
+            format!("no work in {output} is left outside a commit"),
+            STOP_HOOK_UNCOMMITTED,
+            "",
+        ),
+    };
+    let (loc, selection) = require_store_dir()?;
+    refresh_registry_entry(&loc, &selection);
+    let run_id = over_the_run_store_at(&loc, &selection, hook_run_id)?;
+    let prog_backend = Store::open(&loc.file("progress.db"))?;
+    let prog_store = Namespaced::new(&prog_backend, &loc.identity()?);
+    let record = |activity: String| {
+        rigger::progress_store::record(&prog_store, &run_id, &check.spawn, &activity)
+    };
+    let continuing = if active {
+        ", continuing after a hold"
+    } else {
+        ""
+    };
+    record(format!("stop check: {} {asked}{continuing}", check.dir))?;
+    let outcome = rigger::progress_store::stop_holds(&prog_store, &run_id, &check.spawn)
+        .map_err(|e| e.to_string())
+        .and_then(|holds| {
+            match &check.duty {
+                TreeDuty::Checkpoint { branch } => {
+                    rigger::worktree::checkpoint_refusals(&check.dir, branch)
+                }
+                TreeDuty::OwnCommits { output } => {
+                    rigger::worktree::own_commits_refusals(&check.dir, output)
+                }
+                TreeDuty::None => Ok(Vec::new()),
+            }
+            .map(|refusals| (holds, refusals))
+            .map_err(|e| e.to_string())
+        });
+    let (holds, refusals) = match outcome {
+        Ok(read) => read,
+        Err(e) => {
+            record(format!("stop allowed: the check could not read: {e}"))?;
+            return Err(e.into());
+        }
+    };
+    let Some(first) = refusals.first() else {
+        record(format!("stop allowed: {allowed}"))?;
+        return Ok(None);
+    };
+    let bound = progress::STOP_HOLD_BOUND;
+    if holds >= bound {
+        record(format!(
+            "stop allowed with the refusal standing after {bound} holds: {first}"
+        ))?;
+        return Ok(None);
+    }
+    record(format!(
+        "{} ({} of {bound}): {first}",
+        progress::STOP_HELD_PREFIX,
+        holds + 1
+    ))?;
+    Ok(Some(stop_hook_reason(
+        template,
+        &refusals,
+        &check.dir,
+        &rigger::worktree::tree_status(&check.dir),
+        branch,
+    )))
+}
+
+/// The stop hook's reason `template` - [`STOP_HOOK_HELD`] for a tree the conductor commits onto
+/// `branch`, [`STOP_HOOK_UNCOMMITTED`] for one it lands only the commits of - over the `refusals`
+/// of the tree at `dir` and its `status`.
+fn stop_hook_reason(
+    template: &str,
+    refusals: &[String],
+    dir: &str,
+    status: &str,
+    branch: &str,
+) -> String {
+    fill(
+        template,
+        &[
+            ("refusals", &refusals.join("\n")),
+            ("dir", dir),
+            ("status", status),
+            ("branch", branch),
+        ],
+    )
 }
 
 #[cfg(test)]
@@ -1662,6 +1873,253 @@ mod tests {
                     "guard::cmd_guard_write",
                     &["GUARD_WRITE_STDERR_PREFIX", reason],
                 ),
+            );
+        }
+    }
+
+    /// `rigger hook stop`'s reason is one pick of its group over the refusals, the tree, its
+    /// status and, for a checkpointed tree, its branch: over the slots' own names each template
+    /// is its pick itself, and two refusals stand one to a line.
+    #[test]
+    fn the_stop_hook_reason_is_its_group() {
+        let picks = GroupPicks::new(rigger::prompt_surface::prompt_groups());
+        let held = picks.rendered("guard::stop_hook_reason", &["STOP_HOOK_HELD"]);
+        let uncommitted = picks.rendered("guard::stop_hook_reason", &["STOP_HOOK_UNCOMMITTED"]);
+        let filled = |group: &str, refusals: &str| {
+            fill(
+                group,
+                &[
+                    ("refusals", refusals),
+                    ("dir", "/wt"),
+                    ("status", "On branch main"),
+                    ("branch", "rigger/u/u"),
+                ],
+            )
+        };
+        // Each row: the case, the template, the refusals, the tree, its status and its branch,
+        // and the render expected.
+        type Row<'a> = (&'a str, &'a str, &'a [&'a str], [&'a str; 3], String);
+        let rows: [Row; 4] = [
+            (
+                "a checkpoint over the slots' own names",
+                STOP_HOOK_HELD,
+                &["{refusals}"],
+                ["{dir}", "{status}", "{branch}"],
+                held.clone(),
+            ),
+            (
+                "a checkpoint's two refusals",
+                STOP_HOOK_HELD,
+                &["a merge is in progress", "refusing to commit"],
+                ["/wt", "On branch main", "rigger/u/u"],
+                filled(&held, "a merge is in progress\nrefusing to commit"),
+            ),
+            (
+                "own commits over the slots' own names",
+                STOP_HOOK_UNCOMMITTED,
+                &["{refusals}"],
+                ["{dir}", "{status}", ""],
+                uncommitted.clone(),
+            ),
+            (
+                "own commits' two refusals",
+                STOP_HOOK_UNCOMMITTED,
+                &[
+                    "/wt holds work in specs/ that no commit records",
+                    "/wt also holds work outside specs/ that no commit records",
+                ],
+                ["/wt", "On branch main", ""],
+                filled(
+                    &uncommitted,
+                    "/wt holds work in specs/ that no commit records\n/wt also holds work \
+                     outside specs/ that no commit records",
+                ),
+            ),
+        ];
+        for (case, template, refusals, [dir, status, branch], expected) in rows {
+            let refusals: Vec<String> = refusals.iter().map(|r| r.to_string()).collect();
+            let render = stop_hook_reason(template, &refusals, dir, status, branch);
+            assert_renders(case, &render, &expected);
+        }
+    }
+
+    /// `rigger hook stop` takes `--spawn` and `--dir`, each with a non-empty value, and exactly
+    /// one duty, `--branch` with a non-empty value or `--own-commits` with the producer's output,
+    /// in any order; anything else is an error the verb answers by allowing the stop.
+    #[test]
+    fn rigger_hook_stop_reads_its_spawn_its_tree_and_one_duty() {
+        let check = StopCheck {
+            spawn: "u/implementer#0".to_string(),
+            dir: "/wt".to_string(),
+            duty: TreeDuty::Checkpoint {
+                branch: "rigger/u/u".to_string(),
+            },
+        };
+        let producer = StopCheck {
+            spawn: "plan/implementer#0".to_string(),
+            dir: "/wt".to_string(),
+            duty: TreeDuty::OwnCommits {
+                output: "requirements/".to_string(),
+            },
+        };
+        let rows: [(&str, &[&str], Result<&StopCheck, &str>); 11] = [
+            (
+                "a branch",
+                &[
+                    "--spawn",
+                    "u/implementer#0",
+                    "--dir",
+                    "/wt",
+                    "--branch",
+                    "rigger/u/u",
+                ],
+                Ok(&check),
+            ),
+            (
+                "another order",
+                &[
+                    "--branch",
+                    "rigger/u/u",
+                    "--dir",
+                    "/wt",
+                    "--spawn",
+                    "u/implementer#0",
+                ],
+                Ok(&check),
+            ),
+            (
+                "own commits",
+                &[
+                    "--own-commits",
+                    "requirements/",
+                    "--spawn",
+                    "plan/implementer#0",
+                    "--dir",
+                    "/wt",
+                ],
+                Ok(&producer),
+            ),
+            (
+                "own commits naming no output",
+                &[
+                    "--spawn",
+                    "plan/implementer#0",
+                    "--dir",
+                    "/wt",
+                    "--own-commits",
+                ],
+                Err("--own-commits expects a non-empty value"),
+            ),
+            (
+                "own commits naming an empty output",
+                &[
+                    "--spawn",
+                    "plan/implementer#0",
+                    "--own-commits",
+                    " ",
+                    "--dir",
+                    "/wt",
+                ],
+                Err("--own-commits expects a non-empty value"),
+            ),
+            (
+                "no duty",
+                &["--spawn", "u/implementer#0", "--dir", "/wt"],
+                Err(STOP_ARGS_REQUIRED),
+            ),
+            (
+                "two duties",
+                &[
+                    "--spawn",
+                    "u/implementer#0",
+                    "--dir",
+                    "/wt",
+                    "--branch",
+                    "rigger/u/u",
+                    "--own-commits",
+                    "specs/",
+                ],
+                Err(STOP_ARGS_REQUIRED),
+            ),
+            (
+                "a missing dir",
+                &["--spawn", "plan/implementer#0", "--own-commits", "specs/"],
+                Err(STOP_ARGS_REQUIRED),
+            ),
+            (
+                "an empty dir",
+                &[
+                    "--spawn",
+                    "u/implementer#0",
+                    "--dir",
+                    " ",
+                    "--branch",
+                    "rigger/u/u",
+                ],
+                Err("--dir expects a non-empty value"),
+            ),
+            (
+                "a dangling spawn",
+                &["--dir", "/wt", "--branch", "rigger/u/u", "--spawn"],
+                Err("--spawn expects a non-empty value"),
+            ),
+            (
+                "an unknown argument",
+                &["--class", "x"],
+                Err("unknown argument \"--class\""),
+            ),
+        ];
+        for (case, args, expected) in rows {
+            let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+            let parsed = parse_hook_stop_args(&args).map_err(|e| e.to_string());
+            match expected {
+                Ok(check) => assert_eq!(parsed.as_ref(), Ok(check), "{case}"),
+                Err(message) => assert_eq!(parsed, Err(message.to_string()), "{case}"),
+            }
+        }
+    }
+
+    /// A hook names its run by the latest `RunStarted` alone: over a log holding a superseded
+    /// run, the knowledge carried out of it and the current run's own events, it reads that one
+    /// event, asserted through the counting store double, since the stop hook runs at every stop
+    /// of every writer under a timeout. With no run started it names none.
+    #[test]
+    fn a_hook_reads_the_current_run_id_alone() {
+        use crate::test_support::{ev, run_started, ReadCountingStore};
+
+        let rows: [(&str, Vec<Event>, &str, usize); 2] = [
+            (
+                "a run after a superseded one",
+                vec![
+                    run_started("run-a", &["a prior campaign"]),
+                    ev(
+                        "DecisionMade",
+                        r#"{"id":"d-a","summary":"chose a","governs":["a.rs"]}"#,
+                    ),
+                    ev("RunNote", "{}"),
+                    run_started("run-b", &["this campaign"]),
+                    ev("UnitStarted", r#"{"id":"ub","unit":"ub","agent":"impl"}"#),
+                    ev("RunNote", "{}"),
+                ],
+                "run-b",
+                1,
+            ),
+            ("no run started", Vec::new(), "", 0),
+        ];
+        for (case, seeded, run_id, materialized) in rows {
+            let inner = Store::open(":memory:").unwrap();
+            if !seeded.is_empty() {
+                inner
+                    .append(conductor::STREAM, ExpectedRevision::Any, &seeded)
+                    .unwrap();
+            }
+            let store = ReadCountingStore::new(&inner);
+            assert_eq!(hook_run_id(&store).unwrap(), run_id, "{case}");
+            assert_eq!(
+                store.materialized(),
+                materialized,
+                "{case}: {:?}",
+                store.reads()
             );
         }
     }

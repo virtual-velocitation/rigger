@@ -288,7 +288,8 @@ impl Sidecar {
     /// The decision, lesson or finding whose id is `id`, read from the log as a show surface
     /// prints a graph node, for an id the graph no longer holds (a `rigger reset --runs` prune
     /// deletes no event): its kind, the distinct locations it names ([`Peer::LOCATIONS`]) as its
-    /// degree, and the fold's attrs ([`Peer::ATTRS`]); a restated id reads as its latest record.
+    /// degree, and the fold's attrs ([`Peer::ATTRS`]), with no doc and no referrer; a restated id
+    /// reads as its latest record.
     pub fn site_of(&self, id: &str) -> Option<contextgraph::EntitySite> {
         self.site_of_kind::<PeerDecision>(id)
             .or_else(|| self.site_of_kind::<PeerLesson>(id))
@@ -333,6 +334,8 @@ impl Sidecar {
             degree,
             attrs,
             unresolved: Vec::new(),
+            doc_comment: None,
+            referrers: Vec::new(),
         })
     }
 
@@ -574,8 +577,9 @@ mod tests {
 
     /// A record a superseded run left in the log reads back by its id as the show surfaces print
     /// a graph node: its kind, the distinct locations it names (a lesson's or finding's `about`
-    /// and `file`, a decision's `governs`) as its degree, and the attrs the fold gives it; a
-    /// restated id reads as its latest record, and an id no record holds reads as none.
+    /// and `file`, a decision's `governs`) as its degree, and the attrs the fold gives it, with no
+    /// doc and no referrer; a restated id reads as its latest record, and an id no record holds
+    /// reads as none.
     #[test]
     fn site_of_reads_a_record_by_id_from_the_log() {
         let store = Store::open(":memory:").unwrap();
@@ -595,6 +599,8 @@ mod tests {
                     .map(|(k, v)| (k.to_string(), v.to_string()))
                     .collect(),
                 unresolved: Vec::new(),
+                doc_comment: None,
+                referrers: Vec::new(),
             })
         };
         assert_eq!(

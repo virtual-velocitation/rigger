@@ -2122,7 +2122,8 @@ impl ReadGraph<'_> {
     ) -> Result<rigger_domain::composed::WholeOpen<'_>, contextgraph::Error> {
         use rigger_domain::composed::Composed;
         let head = self.head().map_err(contextgraph::Error)?;
-        let (view, honesty) = (&*head.view, Self::honesty(&head));
+        let honesty = rigger_domain::composed::Honesty::of(&head);
+        let view = &*head.view;
         match held {
             Some(held) => {
                 Composed::whole_held_at(self.records, view, filter, honesty, resolution, held)
@@ -2143,19 +2144,9 @@ impl ReadGraph<'_> {
             self.records,
             &*head.view,
             filter,
-            Self::honesty(head),
+            rigger_domain::composed::Honesty::of(head),
             resolution,
         )
-    }
-
-    /// How the worktree `head` was opened for compares with it, as the composed graph's label
-    /// states it.
-    fn honesty(head: &rigger_domain::code_view::Head) -> rigger_domain::composed::Honesty {
-        rigger_domain::composed::Honesty {
-            worktree: head.worktree.display().to_string(),
-            compared: head.compared,
-            behind: head.behind.clone(),
-        }
     }
 }
 
@@ -2181,19 +2172,17 @@ impl OpenGraph for ReadGraph<'_> {
     }
 
     /// The graph whose code half resolves near the ids `ask` reads (spec 6.3), over the one view
-    /// of the head this answer opens.
+    /// of the head this answer opens, a node's doc read from the head's worktree as the extractor
+    /// the store was opened with gives its text.
     fn answer(
         &self,
         filter: rigger_domain::code_view::ViewFilter,
         ask: &mut dyn FnMut(&dyn ContextGraph) -> Result<(), contextgraph::Error>,
     ) -> Result<(), contextgraph::Error> {
         let head = self.head().map_err(contextgraph::Error)?;
-        let composed = rigger_domain::composed::Composed::near(
-            self.records,
-            &*head.view,
-            filter,
-            Self::honesty(&head),
-        )?;
+        let lines = rigger_store::code::WorktreeLines::new(&head.worktree);
+        let composed =
+            rigger_domain::composed::Composed::near_head(self.records, &head, filter, &lines)?;
         ask(&composed)
     }
 }
@@ -2207,7 +2196,7 @@ fn open_head(site: &Site, worktree: &Path) -> Result<rigger_domain::code_view::H
 }
 
 /// Light-lane [`open_head`]: no extractor is compiled in, so the head's tree is read with no code
-/// facts.
+/// facts and gives no doc.
 #[cfg(not(feature = "symbols"))]
 fn open_head(site: &Site, worktree: &Path) -> Result<rigger_domain::code_view::Head, String> {
     use rigger_domain::code_view::TreeSource;
@@ -2231,6 +2220,7 @@ fn open_head(site: &Site, worktree: &Path) -> Result<rigger_domain::code_view::H
         compared: rigger_domain::code_view::Compared::of(diff.as_ref().map_err(String::as_str)),
         behind: None,
         worktree: worktree.to_path_buf(),
+        extract: None,
     })
 }
 
@@ -2364,24 +2354,36 @@ fn live_branches_for_sweep(
 /// Reap any process rooted in a leftover unit worktree `dir` (spec 23), then reclaim the dir -
 /// the worktree half of the spec-34 orphan-sweep, the analog of [`reap_then_remove_dir`] for a
 /// scratch entry git may still track. A killed run can leave a `rigger-wt-<slug>` worktree
-/// still REGISTERED, so a plain `remove_dir_all` would strand a dangling admin entry; `git
-/// worktree remove --force` deregisters it (and tolerates a dirty tree). A bare leftover dir
-/// git never tracked makes that command fail, so it falls through to the plain removal, and any
-/// dangling admin entry a partial removal leaves is pruned by [`rigger::worktree::sweep_terminal`]
-/// at the next run start. Best-effort - a failed reclaim never aborts the sweep.
-/// `authorized_root` is the resolved scratch root `dir` was enumerated from (spec 78 round 2).
-fn reap_then_remove_worktree(repo: &str, dir: &std::path::Path, authorized_root: &std::path::Path) {
-    rigger::reap::reap_processes_rooted_under(dir, authorized_root);
-    let deregistered = !repo.is_empty()
-        && subprocess::git_in(repo)
-            .args(["worktree", "remove", "--force"])
-            .arg(dir)
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
-    if !deregistered {
-        let _ = std::fs::remove_dir_all(dir);
-    }
+/// still REGISTERED, so a plain `remove_dir_all` would strand a dangling admin entry; the removal
+/// goes through [`rigger::worktree::remove_worktree_at`], which reaps `dir` first and whose `git
+/// worktree remove --force` deregisters it (and tolerates a dirty tree).
+///
+/// A refusal from git is never answered by removing `dir` another way: git's list is read again,
+/// and `dir` goes off disk only when git lists no worktree there and `dir` names no registration
+/// (git's "not a working tree", a bare leftover dir). Every other refusal keeps `dir` and is the
+/// error: a tree git marks `locked`, or `prunable` with its dir there; a tree git lists unmarked
+/// yet refuses to remove; a tree whose registration git does not list; a list git cannot give,
+/// including git failing to spawn; and an empty `repo`, which names no repository (a run always
+/// passes its own). `Ok` means `dir` is gone. `authorized_root` is the resolved scratch root `dir`
+/// was enumerated from (spec 78 round 2).
+fn reap_then_remove_worktree(
+    repo: &str,
+    dir: &std::path::Path,
+    authorized_root: &std::path::Path,
+) -> Result<(), String> {
+    rigger::worktree::remove_worktree_at(
+        repo,
+        &dir.to_string_lossy(),
+        &authorized_root.to_string_lossy(),
+    )
+    .map_err(|e| e.0)
+}
+
+/// The one line the orphan sweep says of an entry it kept: `path`, and `why` it stays.
+fn say_orphan_kept(path: &std::path::Path, why: &str) {
+    rigger::whole_line::say(format_args!(
+        "rigger run: orphan sweep: kept {path:?} - {why}"
+    ));
 }
 
 /// Run `run_id`'s progress reports out of `project`'s namespace of the progress store
@@ -2586,15 +2588,9 @@ const NO_RUNS_MESSAGE: &str =
 /// default. Both operator surfaces then omit the line, so default output is byte-for-byte unchanged.
 ///
 /// When measured it reports the share of grounded units that stay co-schedulable (the
-/// wave-parallelism the fleet retained), and a fleet that has quietly serialized itself - a
-/// retention below [`metrics::PARALLELISM_RETENTION_WARN`], per
-/// [`parallelism_retention_warns`](Metrics::parallelism_retention_warns) - gets a loud inline
-/// `WARN` naming the floor. Units whose radius is empty (their criterion names no code) are
+/// wave-parallelism the fleet retained), with no threshold. Units whose radius is empty (their criterion names no code) are
 /// counted on the line, since under the partition each runs alone and so lowers the share by
 /// construction.
-///
-/// Single-sourced so the `rigger stats` retention row and the end-of-`rigger run` stderr notice
-/// render IDENTICALLY: the warn text and its firing condition have ONE authority and cannot drift.
 fn parallelism_retention_line(m: &Metrics) -> Option<String> {
     let retention = m.parallelism_retention?;
     let mut line = format!(
@@ -2605,13 +2601,6 @@ fn parallelism_retention_line(m: &Metrics) -> Option<String> {
         line.push_str(&format!(
             "; {} of {} grounded units name no code (an empty radius runs alone under the partition)",
             m.empty_radii, m.grounded_units,
-        ));
-    }
-    if m.parallelism_retention_warns() {
-        line.push_str(&format!(
-            " - WARN: below the {:.1}% floor, the fleet is largely serializing (most units \
-             alone in their partition batch)",
-            metrics::PARALLELISM_RETENTION_WARN * 100.0,
         ));
     }
     Some(line)
@@ -2649,8 +2638,8 @@ fn format_stats(m: &Metrics) -> Vec<String> {
     ));
     // The runtime parallelism-retention row (spec 17 criterion 4c): shown only when structural
     // grounding measured it (`Some`); omitted on the shipped non-symbols default so that output
-    // is unchanged. A below-floor share carries a loud inline WARN (single-sourced via
-    // `parallelism_retention_line`, shared with the end-of-run stderr notice).
+    // is unchanged. The line is `parallelism_retention_line`'s, shared with the end-of-run
+    // stderr notice.
     if let Some(body) = parallelism_retention_line(m) {
         lines.push(format!("  parallelism        {body}"));
     }
@@ -3071,6 +3060,7 @@ pub(crate) fn cmd_replay(args: &[String]) -> Res {
             driver: &driver,
             gates: &ReplayRunner,
             repo: String::new(),
+            run_branch: None,
             grounder: None,
             graph: None,
             criteria,
@@ -3267,8 +3257,9 @@ fn run_started_id(e: &Event) -> Option<String> {
         .map(|r| r.run)
 }
 
-/// Load the candidate [`Config`](config), its definition hash and the spawn host its defaults
-/// and helper copies resolve ([`hooks::resolve_spawn_host`], the replay's one resolution point)
+/// Load the candidate [`Config`](config), its definition hash and the spawn host its defaults,
+/// helper copies and declared specs location resolve ([`spawn_host`], the replay's one
+/// resolution point)
 /// from git `<rev>` via a throwaway DETACHED worktree under `scratch_root`, removed once loaded.
 /// Reading the config through a real checkout (rather than piping `git show`) reuses the exact
 /// [`config::load`] / [`definition_hash`] readers the live path uses, so a replay evaluates
@@ -3285,7 +3276,7 @@ fn materialize_config_at_rev(
     let checkout_str = checkout
         .to_str()
         .ok_or("rigger replay: non-utf8 scratch path")?;
-    let add = subprocess::git_in(repo)
+    let add = subprocess::git_in(repo)?
         .args(["worktree", "add", "--detach"])
         .arg(checkout_str)
         .arg(rev)
@@ -3302,7 +3293,7 @@ fn materialize_config_at_rev(
     let loaded = config_store::load(checkout_str)
         .map_err(|e| format!("rigger replay: candidate config at {rev:?} is invalid: {e}"))
         .and_then(|cfg| {
-            let host = hooks::resolve_spawn_host(&cfg.workflow.defaults, &checkout)
+            let host = spawn_host(&cfg.workflow.defaults, &checkout)
                 .map_err(|e| format!("rigger replay: candidate helpers at {rev:?}: {e}"))?;
             definition_hash(checkout_str, &host.helpers)
                 .map(|def| (cfg, def, host))
@@ -3310,13 +3301,14 @@ fn materialize_config_at_rev(
         });
     // reap-exempt (spec 79, criterion 2): `checkout_str` is created and removed entirely
     // within this one function, and the ONLY things ever run against it in between are
-    // `config::load`, `resolve_spawn_host` and `definition_hash` (just above) - each a pure
+    // `config::load`, `spawn_host` and `definition_hash` (just above) - each a pure
     // `std::fs` reader with no subprocess spawned inside the checkout - so nothing can be rooted
     // there to reap.
-    let _ = subprocess::git_in(repo)
-        .args(["worktree", "remove", "--force"])
-        .arg(checkout_str)
-        .output();
+    let _ = subprocess::git_in(repo).and_then(|mut git| {
+        git.args(["worktree", "remove", "--force"])
+            .arg(checkout_str)
+            .output()
+    });
     Ok(loaded?)
 }
 
@@ -3365,6 +3357,7 @@ impl Runner for ReplayRunner {
                  with no recorded verdict); rigger replay never executes a gate command",
                 g.id
             ),
+            ..Default::default()
         })
     }
 }
@@ -3795,19 +3788,12 @@ fn watch_poll_over(
         .map(|s| s.trim().to_string())
         .is_some_and(|attempted_run| !attempted_run.is_empty() && attempted_run == run_id);
 
-    // An operator hold on the run is its stop: `watch` reports it held, never its driver dead.
-    // Folded from the run this poll already read, which holds the run's hold events.
-    let mut held = RunState::new();
-    runscope::read::fold_holds(&mut held, &run_events)?;
-    let operator_held = held.hold.is_some_and(|hold| hold.operator);
-
     let inputs = watch::WatchInputs {
         run_events: &run_events,
         now,
         last_event_at,
         step_lock_free,
         driver_record_left,
-        operator_held,
         wave_liveness_ages: &wave_liveness_ages,
         dash,
         run_started_at,
@@ -3856,8 +3842,9 @@ fn spec_lint_warning_lines(spec_path: &str, text: &str) -> Vec<String> {
 // the run teardown (`reclaim_run_scratch`); this half only reports.
 
 /// The leftover artifacts a `rigger validate` residue scan found under the scratch root
-/// (plus dead `rigger/u/*` branches), each with a size where one is meaningful. Held as
-/// data so the scan is unit-testable apart from its stderr rendering ([`format_residue`]).
+/// (plus dead `rigger/u/*` branches and the refs rigger holds aside), each with a size where
+/// one is meaningful. Held as data so the scan is unit-testable apart from its stderr rendering
+/// ([`format_residue`]).
 #[derive(Debug, Default, PartialEq, Eq)]
 struct ResidueReport {
     /// Scratch-root worktrees (`rigger-wt-*`) whose unit is not live: (dir name, bytes).
@@ -3868,6 +3855,9 @@ struct ResidueReport {
     shadow_stores: Vec<(String, u64)>,
     /// Local `rigger/u/*` branches with no live unit.
     branches: Vec<String>,
+    /// Every ref rigger holds aside ([`rigger::worktree::held_refs`]), a kept tree or one set
+    /// aside: (name, tip).
+    held: Vec<(String, String)>,
 }
 
 impl ResidueReport {
@@ -3876,6 +3866,7 @@ impl ResidueReport {
             && self.caches.is_empty()
             && self.shadow_stores.is_empty()
             && self.branches.is_empty()
+            && self.held.is_empty()
     }
 }
 
@@ -3946,7 +3937,7 @@ fn current_run_units(events: &[Event]) -> RunUnits {
                 rigger::worktree::SpawnFence::InFlight { .. }
             );
         if run.is_terminal(&u.id) && !fenced_live {
-            if let Some(slug) = u.branch.strip_prefix("rigger/u/") {
+            if let Some(slug) = u.branch.strip_prefix(rigger::worktree::UNIT_BRANCHES) {
                 if !slug.is_empty() {
                     out.dead_slugs.insert(slug.to_string());
                 }
@@ -3978,7 +3969,10 @@ fn live_slugs(
 ) -> std::collections::HashSet<String> {
     live_branches
         .iter()
-        .filter_map(|b| b.strip_prefix("rigger/u/").map(str::to_string))
+        .filter_map(|b| {
+            b.strip_prefix(rigger::worktree::UNIT_BRANCHES)
+                .map(str::to_string)
+        })
         .collect()
 }
 
@@ -4002,6 +3996,12 @@ fn live_slugs(
 /// `CARGO_TARGET_DIR`). Those are run-level scratch reclaimed by the run's fixpoint/teardown
 /// once no spawn is live, never by this run-start backstop, so it can never delete a target a
 /// running build is writing. Best-effort per entry: a failed reclaim never aborts the sweep.
+///
+/// A unit worktree git marks `locked`, or `prunable` with its dir there (a person's lock, an add
+/// or remove git did not finish, a lost link), and the scratch beside it that serves it (its build
+/// caches, store fence and gate scratch root), are kept and named on stderr by the one rule
+/// [`rigger::worktree::sweep_terminal`] keeps them by ([`rigger::worktree::kept_by_git`]): nothing
+/// in or beside the tree is reaped or removed.
 ///
 /// `declared_units` (spec 89, criterion 1, round 2 fix) is the CURRENTLY loaded workflow's own
 /// `rigger/u/<slug>` stages - config, never the event log, the SAME set `run_cli` also hands
@@ -4064,13 +4064,25 @@ fn reclaim_orphan_scratch(
             // claiming the two mirror each other. Sharing the one primitive - and picking the
             // same `unwrap_or(true)` fail-closed direction the sibling call site now also picks
             // explicitly - makes that divergence structurally impossible to reintroduce.
+            //
+            // A speculation lane counts its unit as a declared owner only while the unit has not
+            // finished: once it has, the group's outcome has merged, dropped or kept each lane's
+            // work, so a lane tree left behind is residue this sweep reclaims.
             let slug = name.trim_start_matches(rigger::worktree::UNIT_WORKTREE_PREFIX);
-            let dirty = declared_slugs.contains(slug)
-                && path.join(".git").exists()
+            let dirty = rigger::worktree::owner_names(slug).any(|owner| {
+                declared_slugs.contains(owner)
+                    && (owner == slug || !run_units.dead_slugs.contains(owner))
+            }) && path.join(".git").exists()
                 && rigger::worktree::path_is_dirty(&path.to_string_lossy()).unwrap_or(true);
             if !worktree_belongs_to_live(&name, &live, &run_units.dead_slugs) && !dirty {
-                reap_then_remove_worktree(repo, &path, root_path);
-                removed += 1;
+                let kept = match rigger::worktree::kept_by_git(repo, &path.to_string_lossy()) {
+                    None => reap_then_remove_worktree(repo, &path, root_path).err(),
+                    why => why,
+                };
+                match kept {
+                    None => removed += 1,
+                    Some(why) => say_orphan_kept(&path, &why),
+                }
             }
         } else if let Some(slug) = rigger::worktree::unit_scratch_slug(&name) {
             // A per-unit / ad-hoc `cargo-target-<slug>` cache, a unit's review cache
@@ -4079,10 +4091,18 @@ fn reclaim_orphan_scratch(
             // reconstructed `rigger-wt-<slug>` name so either stays in lockstep with its unit's
             // liveness (a live unit's is in use, not residue). A bare `cargo-target` (no
             // `-<slug>` tail) never matches and is spared.
+            //
+            // A sibling of a tree git marks is kept as the tree is, by the one rule both sweeps
+            // keep by ([`rigger::worktree::kept_by_git`]).
             let wt = format!("{}{slug}", rigger::worktree::UNIT_WORKTREE_PREFIX);
             if !worktree_belongs_to_live(&wt, &live, &run_units.dead_slugs) {
-                reap_then_remove_dir(&path, root_path);
-                removed += 1;
+                match rigger::worktree::kept_by_git(repo, &path.to_string_lossy()) {
+                    None => {
+                        reap_then_remove_dir(&path, root_path);
+                        removed += 1;
+                    }
+                    Some(why) => say_orphan_kept(&path, &why),
+                }
             }
         } else if is_build_cache_tombstone(&name) {
             // A stray shared-build-cache tombstone (spec 77 criterion 5): the enumerable
@@ -4162,7 +4182,7 @@ fn scan_residue(
         report.shadow_stores.push((rel, size));
     }
     for b in local_unit_branches {
-        if !live_branches.contains(b) {
+        if !rigger::worktree::owner_names(b).any(|owner| live_branches.contains(owner)) {
             report.branches.push(b.clone());
         }
     }
@@ -4182,7 +4202,9 @@ fn scan_residue(
 /// deterministic `rigger-wt-foo-deadbeef` worktree that would otherwise decompose as
 /// live-`foo` + uuid-`deadbeef` and be spared. `dead_slugs` (the current run's terminal
 /// units) resolves it - an exact dead slug is its OWN (dead) unit's worktree, never a live
-/// unit's per-process tail (adv-u6res-uuid8-tail-false-match), so it stays residue.
+/// unit's per-process tail (adv-u6res-uuid8-tail-false-match), so it stays residue. A speculation
+/// lane's tree belongs to a live unit as the unit's own tree does
+/// ([`rigger::worktree::owner_names`]).
 fn worktree_belongs_to_live(
     name: &str,
     live_slugs: &std::collections::HashSet<String>,
@@ -4194,12 +4216,14 @@ fn worktree_belongs_to_live(
     if dead_slugs.contains(rest) {
         return false;
     }
-    live_slugs.iter().any(|slug| {
-        rest == slug.as_str()
-            || rest
-                .strip_prefix(slug.as_str())
-                .and_then(|s| s.strip_prefix('-'))
-                .is_some_and(is_uuid8)
+    rigger::worktree::owner_names(rest).any(|owner| {
+        live_slugs.iter().any(|slug| {
+            owner == slug.as_str()
+                || owner
+                    .strip_prefix(slug.as_str())
+                    .and_then(|s| s.strip_prefix('-'))
+                    .is_some_and(is_uuid8)
+        })
     })
 }
 
@@ -4366,26 +4390,24 @@ fn reclaim_shared_build_cache(
     let guard_path =
         rigger::worktree::shared_build_cache_guard_path(&scratch_root.to_string_lossy());
     let guard = rigger::gate::open_build_cache_guard(Path::new(&guard_path))?;
-    // Fully-qualified, matching `gate::hold_shared_lock`'s own reasoning: std's
-    // more recently stabilized `File::try_lock`/`lock`/`unlock` share these exact names with
-    // `fs2::FileExt`, and a plain method call would silently prefer the std inherent method
-    // (leaving this crate's deliberate `fs2` choice unused) rather than genuinely exercising it.
-    if fs2::FileExt::try_lock_exclusive(&guard).is_err() {
-        return Ok(BuildCacheReclaim::Busy);
+    match guard.try_lock() {
+        Ok(()) => {}
+        Err(std::fs::TryLockError::WouldBlock) => return Ok(BuildCacheReclaim::Busy),
+        Err(std::fs::TryLockError::Error(e)) => return Err(e),
     }
     if !cache.exists() {
-        let _ = fs2::FileExt::unlock(&guard);
+        let _ = guard.unlock();
         return Ok(BuildCacheReclaim::Reclaimed(0));
     }
     let tombstone = build_cache_tombstone_path(cache);
     if let Err(e) = std::fs::rename(cache, &tombstone) {
-        let _ = fs2::FileExt::unlock(&guard);
+        let _ = guard.unlock();
         return Err(e);
     }
     // Release the instant the rename lands - the delete below never runs with the guard
     // held, so it can never block (or be blocked by) a build starting fresh at the now-absent
     // original path.
-    let _ = fs2::FileExt::unlock(&guard);
+    let _ = guard.unlock();
     let bytes = dir_size_bytes(&tombstone);
     reap_then_remove_dir(&tombstone, scratch_root);
     Ok(BuildCacheReclaim::Reclaimed(bytes))
@@ -4438,6 +4460,10 @@ fn format_residue(report: &ResidueReport) -> Vec<String> {
     }
     for b in &report.branches {
         msg.push_str(&format!("\n  branch with no live unit: {b}"));
+    }
+    for (name, tip) in &report.held {
+        let short = &tip[..tip.len().min(12)];
+        msg.push_str(&format!("\n  ref held aside: {name} at {short}"));
     }
     vec![msg]
 }
@@ -5146,13 +5172,11 @@ struct DocsOverlay {
 impl DocsOverlay {
     /// Merge this overlay onto `ctx`, overriding ONLY the fields the overlay declares, so a
     /// repo customizes just the facts it differs on and inherits the shared defaults for
-    /// the rest.
+    /// the rest. Its `specs_location` is not merged here: it reaches `ctx` through
+    /// [`declared_specs_location`], spelled as every command spells it.
     fn apply(&self, ctx: &mut rigger::docs::DocsContext) {
         if let Some(base) = &self.base_ref {
             ctx.base_ref = base.clone();
-        }
-        if let Some(specs) = &self.specs_location {
-            ctx.specs_location = specs.clone();
         }
         if let Some(constraints) = &self.global_constraints {
             ctx.global_constraints = constraints.clone();
@@ -5173,7 +5197,47 @@ fn read_docs_overlay(root: &Path) -> Result<DocsOverlay, Box<dyn std::error::Err
         Err(e) => return Err(setup_read_error(&path, e)),
     };
     serde_yaml::from_str(&raw)
-        .map_err(|e| format!("setup: {} is not a valid docs overlay: {e}", path.display()).into())
+        .map_err(|e| format!("{} is not a valid docs overlay: {e}", path.display()).into())
+}
+
+/// The directory a producer's commits may touch in the project at `root`: the `specs_location`
+/// its [`DocsOverlay`] declares, else [`DEFAULT_SPECS_LOCATION`], spelled relative to the root
+/// with `/` between its parts and one closing `/` (a `\` reads as `/`, and empty and `.` parts
+/// are dropped). A declared location naming no directory inside the project - none at all, an
+/// absolute one, or one stepping out through `..` - is an error naming the overlay, as is an
+/// overlay [`read_docs_overlay`] refuses.
+fn declared_specs_location(root: &Path) -> Result<String, Box<dyn std::error::Error>> {
+    let Some(declared) = read_docs_overlay(root)?.specs_location else {
+        return Ok(DEFAULT_SPECS_LOCATION.to_string());
+    };
+    let spelled = declared.trim().replace('\\', "/");
+    let parts: Vec<&str> = spelled
+        .split('/')
+        .filter(|part| !matches!(*part, "" | "."))
+        .collect();
+    if parts.is_empty()
+        || spelled.starts_with('/')
+        || Path::new(&spelled).is_absolute()
+        || parts.contains(&"..")
+    {
+        return Err(format!(
+            "{}: specs_location {declared:?} names no directory inside the project",
+            rigger_path(root, DOCS_OVERLAY_FILE).display()
+        )
+        .into());
+    }
+    Ok(format!("{}/", parts.join("/")))
+}
+
+/// The host values every spawn of one command in the project at `root` carries
+/// ([`hooks::resolve_spawn_host`]), its producer output the project's
+/// [`declared_specs_location`]. Fails as either does.
+fn spawn_host(
+    defaults: &config::Defaults,
+    root: &Path,
+) -> Result<conductor::SpawnHost, Box<dyn std::error::Error>> {
+    let output = declared_specs_location(root)?;
+    Ok(hooks::resolve_spawn_host(defaults, root, &output)?)
 }
 
 /// The `rigger setup` failure for a project file at `path` it could not read: the path, then
@@ -5248,9 +5312,15 @@ fn read_project_skill(
 /// copy. Through [`install_file_if_changed`], each entry writes ONLY when its file is absent or
 /// differs, so a `rigger setup` rerun on an up-to-date repo is a true no-op that does not even
 /// move a file's mtime.
+///
+/// The skills name the project's specs location as every command spells it
+/// ([`declared_specs_location`]), and one every later command refuses fails the install before
+/// any skill renders it.
 fn install_skills(root: &Path) -> Result<SkillInstall, Box<dyn std::error::Error>> {
+    let specs_location = declared_specs_location(root)?;
     let mut ctx = docs_context();
     read_docs_overlay(root)?.apply(&mut ctx);
+    ctx.specs_location = specs_location;
     // Every entry no project copy has claimed yet; what is left after the loop is the strays.
     let mut unclaimed = project_skill_entries(root)?;
     let mut outcomes = Vec::new();
@@ -5408,9 +5478,11 @@ if [ -n "$main_worktree" ]; then
 fi
 # The relocated per-unit target (spec 89): a unit's build cache is the sibling
 # `cargo-target-<unit>` of its worktree under `<cache home>/rigger/<encoded repo root>`,
-# where the repo root is encoded byte by byte - alphanumerics and `-` kept, every other
-# byte as `_xx` hex - exactly as the binary encodes it, so this shell derivation and the
-# Rust one name the same directory.
+# where the cache home is XDG_CACHE_HOME when it is an absolute path (the XDG base directory
+# specification makes a relative value invalid) and `.cache` under the home otherwise, and
+# the repo root is encoded byte by byte - alphanumerics and `-` kept, every other byte as
+# `_xx` hex - each exactly as the binary resolves it, so this shell derivation and the Rust
+# one name the same directory.
 encode_repo_path() {
     p="$1"; out=""
     while [ -n "$p" ]; do
@@ -5431,7 +5503,11 @@ if [ -n "$repo_root" ]; then
     if [ -n "$unit" ]; then
         unit_release="$repo_root/.rigger/tmp/cargo-target-$unit/release/rigger"
         unit_debug="$repo_root/.rigger/tmp/cargo-target-$unit/debug/rigger"
-        cache_root="${XDG_CACHE_HOME:-$HOME/.cache}/rigger/$(encode_repo_path "$repo_root")"
+        case "${XDG_CACHE_HOME:-}" in
+            /*) cache_home=$XDG_CACHE_HOME ;;
+            *) cache_home="$HOME/.cache" ;;
+        esac
+        cache_root="$cache_home/rigger/$(encode_repo_path "$repo_root")"
         relocated_release="$cache_root/cargo-target-$unit/release/rigger"
         relocated_debug="$cache_root/cargo-target-$unit/debug/rigger"
     fi
@@ -6367,10 +6443,8 @@ mod tests {
             "relocated candidates sit after the local target and before the pre-relocation \
              unit paths; got:\n{candidates}"
         );
-        assert!(
-            hook.contains("XDG_CACHE_HOME:-$HOME/.cache") && hook.contains("/rigger/"),
-            "the relocated root honors XDG_CACHE_HOME and nests under rigger/; got:\n{hook}"
-        );
+        // Where the relocated root lies under each XDG_CACHE_HOME value is pinned by running
+        // the block (`relocated_build_under`).
 
         let fn_start = hook.find("encode_repo_path() {").unwrap();
         let fn_end = fn_start + hook[fn_start..].find("\n}\n").unwrap() + "\n}\n".len();
@@ -6486,23 +6560,27 @@ mod tests {
     }
 
     /// The candidate builds the managed block derives where git runs it, at the top of the
-    /// worktree `top` with the cache home at `cache`: the unit-derived debug build, its relocated
-    /// copy and the shared build cache's, each resolved where it lies, or named missing, and empty
-    /// where the block derives none.
-    fn precommit_candidates(top: &Path, cache: &Path) -> Vec<String> {
+    /// worktree `top` with `XDG_CACHE_HOME` set to `cache_home` (unset when it is `None`) and the
+    /// home at `home`: the unit-derived debug build, its relocated copy and the shared build
+    /// cache's, each resolved where it lies, or named missing, and empty where the block derives
+    /// none.
+    fn precommit_candidates(top: &Path, cache_home: Option<&str>, home: &Path) -> Vec<String> {
         let hook = compose_precommit(None);
         let derived = &hook[..hook
             .find("\nrigger_bin=\n")
             .expect("the block derives its candidates before it resolves a binary")];
-        let out = std::process::Command::new("sh")
-            .arg("-c")
+        let mut sh = std::process::Command::new("sh");
+        sh.arg("-c")
             .arg(format!(
                 "{derived}\nprintf '%s\\n' \"$unit_debug\" \"$relocated_debug\" \"$shared_debug\""
             ))
             .current_dir(top)
-            .env("XDG_CACHE_HOME", cache)
-            .output()
-            .expect("sh runs the block's derivation");
+            .env("HOME", home);
+        match cache_home {
+            Some(value) => sh.env("XDG_CACHE_HOME", value),
+            None => sh.env_remove("XDG_CACHE_HOME"),
+        };
+        let out = sh.output().expect("sh runs the block's derivation");
         String::from_utf8(out.stdout)
             .unwrap()
             .lines()
@@ -6580,13 +6658,61 @@ mod tests {
                 built(scratch.join("cargo-target")),
             ];
             assert_eq!(
-                precommit_candidates(&top, &cache),
+                precommit_candidates(&top, cache.to_str(), &at.join("home")),
                 expected,
                 "from {}, the block looks under the root {}",
                 top.display(),
                 root.display()
             );
         }
+    }
+
+    /// From a unit worktree of the main checkout, the managed block looks for the unit's
+    /// relocated debug build under the cache home rigger resolves
+    /// ([`rigger_process::home::xdg_or_home`]) with `XDG_CACHE_HOME` set to `cache_home` (unset
+    /// when it is `None`; `{at}` stands for the fixture's directory) and the home at `<at>/home`:
+    /// the cache home is `<at>/<expected>`.
+    fn relocated_build_under(cache_home: Option<&str>, expected: &str) {
+        let dir = tempfile::tempdir().unwrap();
+        let at = std::fs::canonicalize(dir.path()).unwrap();
+        let main = at.join("main");
+        std::fs::create_dir_all(&main).unwrap();
+        init_committed_repo(&main, "README.md", "seed\n");
+        git_ok(
+            &main,
+            &["worktree", "add", "-q", "../rigger-wt-u", "-b", "u"],
+        );
+        let encoded = rigger::liveness::marker_filename(main.to_str().unwrap()).unwrap();
+        let build = at
+            .join(expected)
+            .join("rigger")
+            .join(encoded)
+            .join("cargo-target-u")
+            .join("debug")
+            .join("rigger");
+        write_file(&build, b"");
+        let cache_home = cache_home.map(|v| v.replace("{at}", at.to_str().unwrap()));
+        assert_eq!(
+            precommit_candidates(
+                &at.join("rigger-wt-u"),
+                cache_home.as_deref(),
+                &at.join("home")
+            )[1],
+            build.display().to_string(),
+            "XDG_CACHE_HOME {cache_home:?} puts the cache home at {expected}"
+        );
+    }
+
+    // GIVEN a unit worktree, WHEN the managed block derives the unit's relocated build, THEN it
+    // looks under an absolute XDG_CACHE_HOME, and under `.cache` in the home when the value is
+    // unset, empty or relative (the XDG base directory specification makes a relative value
+    // invalid), as the binary resolves the cache home.
+    rigger::test_cases! {
+        an_absolute_cache_home_holds_the_relocated_build: relocated_build_under(Some("{at}/xdg"), "xdg");
+        an_unset_cache_home_falls_to_the_home: relocated_build_under(None, "home/.cache");
+        an_empty_cache_home_falls_to_the_home: relocated_build_under(Some(""), "home/.cache");
+        a_relative_cache_home_falls_to_the_home: relocated_build_under(Some("xdg"), "home/.cache");
+        a_dot_relative_cache_home_falls_to_the_home: relocated_build_under(Some("./xdg"), "home/.cache");
     }
 
     /// spec 24, crit 1 (idempotency, pure): re-composing an already-installed hook is a
@@ -7040,6 +7166,36 @@ mod tests {
         ]);
     }
 
+    /// The escalation skill names the refs a keep writes by the names the code writes them
+    /// under ([`rigger::worktree::kept_ref`], [`rigger::worktree::orphaned_ref`]) and the unit
+    /// branch it never moves, so a person sent to the kept tree reads the ref that holds it, and
+    /// tells that person to free the branch from their own tree before the relaunch, since a run
+    /// finding it checked out outside rigger's work root holds.
+    #[test]
+    fn the_escalation_skill_names_the_refs_a_keep_writes() {
+        let registry = rigger::docs::skill_registry();
+        let rendered = registry
+            .iter()
+            .find(|e| e.name == "rigger-handle-an-escalation")
+            .expect("the escalation skill is in the registry")
+            .render(&docs_context());
+        let branch = format!("{}<unit-id>", rigger::worktree::UNIT_BRANCHES);
+        for name in [
+            rigger::worktree::kept_ref(&branch),
+            rigger::worktree::orphaned_ref("<unit-id>", "<sha>"),
+            branch.clone(),
+        ] {
+            assert!(
+                rendered.contains(&format!("`{name}`")),
+                "the escalation skill names `{name}`"
+            );
+        }
+        assert!(
+            rendered.contains("`git -C <tree> switch --detach`"),
+            "the escalation skill frees the unit's branch from the person's tree before the relaunch"
+        );
+    }
+
     rigger::test_cases! {
         /// Spec 69, criterion 1 (the accuracy pin, extending the spec-68 sibling
         /// [`per_operation_skills_reference_only_real_subcommands`] to the three watch-discipline
@@ -7094,7 +7250,7 @@ mod tests {
     /// Spec 19a, unit 1 (the shared current-blocker classifier): `rigger status` and the
     /// dashboard render the SAME one-line current-blocker per unfinished unit, from ONE
     /// classifier - covering building, reject-recurrence (#n/max), approved-not-integrated,
-    /// escalated, and the run-level budget halt. Proven over the PRODUCTION render of each
+    /// and escalated. Proven over the PRODUCTION render of each
     /// surface: the exact `Vec<String>` `cmd_status` prints (via `console::fold`, spec 93
     /// criterion 4) versus the `line` field the dashboard serializes into its `/api/state`
     /// snapshot (via `dash::build_state`). Byte-identical lines are the structural proof
@@ -7104,9 +7260,7 @@ mod tests {
         use rigger::contextgraph::Graph;
         use std::collections::HashMap;
 
-        // A run holding a unit in every classifier arm, plus a live budget halt. The
-        // BudgetExhausted is LAST (highest position) so it is the current run-level blocker,
-        // not a stale one a resume progressed past.
+        // A run holding a unit in every classifier arm.
         let mut events = vec![
             Event::new(ledger::TYPE_UNIT_STARTED, br#"{"id":"u-build"}"#.to_vec()),
             Event::new(ledger::TYPE_UNIT_STARTED, br#"{"id":"u-fail"}"#.to_vec()),
@@ -7121,10 +7275,6 @@ mod tests {
             ),
             Event::new(ledger::TYPE_UNIT_STARTED, br#"{"id":"u-esc"}"#.to_vec()),
             Event::new(ledger::TYPE_UNIT_ESCALATED, br#"{"id":"u-esc"}"#.to_vec()),
-            Event::new(
-                conductor::TYPE_BUDGET_EXHAUSTED,
-                br#"{"budget":200,"spawns":200}"#.to_vec(),
-            ),
         ];
         for (i, e) in events.iter_mut().enumerate() {
             e.position = (i + 1) as u64;
@@ -7157,12 +7307,10 @@ mod tests {
             "rigger status and the dashboard must render identical current-blocker lines"
         );
 
-        // Every required kind is covered, deterministically ordered (run-level budget first,
-        // then units lexically).
+        // Every required kind is covered, deterministically ordered (units lexically).
         assert_eq!(
             status_lines,
             vec![
-                "run: budget spent 200/200 (raise defaults.budget and resume)".to_string(),
                 "u-appr: approved, not yet integrated (review passed; integration pending)"
                     .to_string(),
                 "u-build: building (attempt 1)".to_string(),
@@ -7868,7 +8016,7 @@ mod tests {
             .truncate(false)
             .open(&guard_path)
             .expect("open guard");
-        fs2::FileExt::lock_shared(&held).expect("a build's own shared lock");
+        held.lock_shared().expect("a build's own shared lock");
 
         let outcome = reclaim_shared_build_cache(&cache, dir.path()).expect("no io error");
         assert!(
@@ -7903,7 +8051,7 @@ mod tests {
             .open(&guard_path)
             .expect("open guard for probe");
         assert!(
-            fs2::FileExt::try_lock_exclusive(&probe).is_ok(),
+            probe.try_lock().is_ok(),
             "the guard must be free the instant a successful reclaim returns"
         );
     }
@@ -8024,6 +8172,10 @@ mod tests {
             caches: vec![("cargo-target".to_string(), 5_905_580_032)],
             shadow_stores: vec![("probe/.rigger/events.db".to_string(), 6)],
             branches: vec!["rigger/u/unit-99-ghost".to_string()],
+            held: vec![(
+                "rigger/kept/unit-99-ghost".to_string(),
+                "0123456789abcdef0123456789abcdef01234567".to_string(),
+            )],
         };
         let lines = format_residue(&report);
         assert_eq!(lines.len(), 1, "the residue report is one stderr block");
@@ -8035,6 +8187,7 @@ mod tests {
         assert!(block.contains("orphaned build cache: cargo-target (5.5G)"));
         assert!(block.contains("shadow store: probe/.rigger/events.db (6B)"));
         assert!(block.contains("branch with no live unit: rigger/u/unit-99-ghost"));
+        assert!(block.ends_with("\n  ref held aside: rigger/kept/unit-99-ghost at 0123456789ab"));
     }
 
     // ---- spec 77 criterion 6: FOOTPRINT ACCOUNTING -----------------------------------
@@ -8669,10 +8822,13 @@ mod tests {
             live_spawn_leaf_names: slugs([]),
             current_run_scratch_leaf: None,
         };
-        // Empty repo -> the git-aware worktree deregister is skipped and a plain removal runs,
-        // which is all the synthetic (non-registered) worktree dirs here need.
+        // The worktree dirs here are registered with no repository, so git refuses each as not a
+        // working tree, the one refusal the sweep answers by removing the dir.
+        let repo_dir = tempfile::tempdir().unwrap();
+        init_committed_repo(repo_dir.path(), "README.md", "seed\n");
+        let repo = repo_dir.path().to_str().unwrap();
         let removed = reclaim_orphan_scratch(
-            "",
+            repo,
             scratch.to_str().unwrap(),
             &run_units,
             &std::collections::HashSet::new(),
@@ -8737,7 +8893,7 @@ mod tests {
         // Idempotent: a re-run over the now-clean root reclaims nothing and errors on nothing.
         assert_eq!(
             reclaim_orphan_scratch(
-                "",
+                repo,
                 scratch.to_str().unwrap(),
                 &run_units,
                 &std::collections::HashSet::new(),
@@ -8845,6 +9001,349 @@ mod tests {
             !wt_dir.exists(),
             "the undeclared, unrelated worktree is gone"
         );
+    }
+
+    /// A SPECULATION LANE IS ITS UNIT'S: the orphan sweep and `rigger validate`'s residue scan
+    /// read a lane's tree (`rigger-wt-<unit>-spec<lane>`) and branch (`rigger/u/<unit>-spec<lane>`)
+    /// as their unit's. A lane of a live unit, such as the tree a run held on a lane leaves in
+    /// place for its release, is neither reclaimed nor named residue; a dirty lane of a unit the
+    /// workflow declares is spared as the unit's own tree is, and named residue as that tree is
+    /// while no run records the unit; a lane of a terminal unit is named and reclaimed, whether or
+    /// not the workflow still declares the unit, since the group's outcome has passed it by.
+    #[test]
+    fn the_orphan_sweep_and_the_residue_scan_read_a_speculation_lane_as_its_unit() {
+        /// Where the run stands with the lane's unit.
+        #[derive(Clone, Copy)]
+        enum Unit {
+            /// In flight.
+            Live,
+            /// Not yet recorded.
+            Unrecorded,
+            /// Integrated or escalated.
+            Terminal,
+        }
+        // Each row: where the run stands with the unit, whether the workflow declares it, whether
+        // the sweep keeps the lane's tree, and whether the scan names the tree and branch residue.
+        let cases = [
+            ("a lane of a live unit", Unit::Live, true, true, false),
+            (
+                "a dirty lane of a declared unit no run records",
+                Unit::Unrecorded,
+                true,
+                true,
+                true,
+            ),
+            (
+                "a lane of a terminal unit no longer declared",
+                Unit::Terminal,
+                false,
+                false,
+                true,
+            ),
+            (
+                "a dirty lane of a terminal unit still declared",
+                Unit::Terminal,
+                true,
+                false,
+                true,
+            ),
+        ];
+        for (row, unit, declared, kept, residue) in cases {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path();
+            init_committed_repo(root, "README.md", "seed\n");
+            let repo = root.to_str().unwrap();
+            let lane = root.join("rigger-wt-held-spec1");
+            Worktree::create(repo, lane.to_str().unwrap(), "rigger/u/held-spec1", "").unwrap();
+            write_file(&lane.join("refused.txt"), b"work git refused\n");
+            let run_units = RunUnits {
+                live_branches: match unit {
+                    Unit::Live => slugs(["rigger/u/held"]),
+                    _ => slugs([]),
+                },
+                dead_slugs: match unit {
+                    Unit::Terminal => slugs(["held"]),
+                    _ => slugs([]),
+                },
+                live_spawn_leaf_names: slugs([]),
+                current_run_scratch_leaf: None,
+            };
+            let declared = if declared {
+                slugs(["rigger/u/held"])
+            } else {
+                slugs([])
+            };
+
+            let report = scan_residue(
+                root,
+                &live_slugs(&run_units.live_branches),
+                &run_units.dead_slugs,
+                &["rigger/u/held-spec1".to_string()],
+                &run_units.live_branches,
+            );
+            let removed =
+                reclaim_orphan_scratch(repo, root.to_str().unwrap(), &run_units, &declared);
+
+            assert_eq!(
+                lane.join("refused.txt").exists(),
+                kept,
+                "{row}: reclaimed {removed}"
+            );
+            assert_eq!(
+                report
+                    .worktrees
+                    .iter()
+                    .any(|(name, _)| name == "rigger-wt-held-spec1"),
+                residue,
+                "{row}: {report:?}"
+            );
+            assert_eq!(
+                report.branches == ["rigger/u/held-spec1"],
+                residue,
+                "{row}: {report:?}"
+            );
+        }
+    }
+
+    /// The orphan sweep keeps a tree git marks locked (a person's lock, an add git did not
+    /// finish) out of its reclaim: nothing in it is reaped or removed and its registration stays,
+    /// and the trees beside it are still reclaimed.
+    #[test]
+    fn reclaim_orphan_scratch_keeps_a_tree_git_marks_locked_and_reclaims_the_rest() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        init_committed_repo(&root, "README.md", "seed\n");
+        let repo = root.to_str().unwrap();
+        let locked = root.join("rigger-wt-a-locked");
+        let done = root.join("rigger-wt-done");
+        Worktree::create(repo, locked.to_str().unwrap(), "rigger/u/a-locked", "").unwrap();
+        Worktree::create(repo, done.to_str().unwrap(), "rigger/u/done", "").unwrap();
+        write_file(&locked.join("work.txt"), b"a person's work\n");
+        git_ok(&locked, &["add", "work.txt"]);
+        git_ok(&locked, &["commit", "-q", "-m", "work"]);
+        git_ok(
+            &root,
+            &[
+                "worktree",
+                "lock",
+                "--reason",
+                "a person's lock",
+                locked.to_str().unwrap(),
+            ],
+        );
+        let run_units = RunUnits {
+            live_branches: slugs([]),
+            dead_slugs: slugs(["a-locked", "done"]),
+            live_spawn_leaf_names: slugs([]),
+            current_run_scratch_leaf: None,
+        };
+        let removed = reclaim_orphan_scratch(
+            repo,
+            root.to_str().unwrap(),
+            &run_units,
+            &std::collections::HashSet::new(),
+        );
+        assert_eq!(removed, 1, "only the tree git does not mark is reclaimed");
+        assert!(
+            locked.join("work.txt").exists(),
+            "the tree git marks locked keeps its work"
+        );
+        let listed = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["worktree", "list", "--porcelain"])
+            .output()
+            .unwrap();
+        let listed = String::from_utf8_lossy(&listed.stdout);
+        assert!(
+            listed
+                .lines()
+                .any(|line| line == format!("worktree {}", locked.display())),
+            "the tree git marks locked keeps its registration: {listed}"
+        );
+        assert!(!done.exists(), "the tree beside it is reclaimed");
+    }
+
+    /// The orphan sweep's removal never answers a refusal from git by removing the dir another
+    /// way: a tree git tracks goes through git, a dir git never tracked goes off disk, and a tree
+    /// git marks locked or prunable, a tree another repository registers, and a tree git lists
+    /// but refuses to remove, keep their work and their registration.
+    #[test]
+    fn reap_then_remove_worktree_removes_off_disk_only_a_dir_git_registers_nothing_at() {
+        // Each row: the case, what is done to the dir (answering the repository whose list names
+        // the tree while it is kept), and whether its work is kept.
+        type Row = (&'static str, fn(&str, &Path) -> PathBuf, bool);
+        let rows: [Row; 6] = [
+            (
+                "a dir git never tracked",
+                |repo, dir| {
+                    write_file(&dir.join("work.txt"), b"work\n");
+                    PathBuf::from(repo)
+                },
+                false,
+            ),
+            (
+                "a tree git tracks",
+                |repo, dir| {
+                    add_tree(repo, dir);
+                    PathBuf::from(repo)
+                },
+                false,
+            ),
+            (
+                "a tree git marks prunable, its dir still there",
+                |repo, dir| {
+                    add_tree(repo, dir);
+                    std::fs::remove_file(dir.join(".git")).unwrap();
+                    PathBuf::from(repo)
+                },
+                true,
+            ),
+            (
+                "a tree git marks locked",
+                |repo, dir| {
+                    add_tree(repo, dir);
+                    let at = dir.to_str().unwrap();
+                    git_ok(
+                        repo,
+                        &["worktree", "lock", "--reason", "a person's lock", at],
+                    );
+                    PathBuf::from(repo)
+                },
+                true,
+            ),
+            (
+                "a tree another repository registers",
+                |repo, dir| {
+                    let other = Path::new(repo).join("other-repo");
+                    std::fs::create_dir_all(&other).unwrap();
+                    init_committed_repo(&other, "README.md", "seed\n");
+                    add_tree(other.to_str().unwrap(), dir);
+                    other
+                },
+                true,
+            ),
+            (
+                "a tree git lists but refuses",
+                |repo, dir| {
+                    add_tree(repo, dir);
+                    let other = Path::new(repo).join("rigger-wt-other");
+                    let at = other.to_str().unwrap();
+                    Worktree::create(repo, at, "rigger/u/other", "").unwrap();
+                    let admin = run_git(&other, &["rev-parse", "--absolute-git-dir"]);
+                    let admin = String::from_utf8_lossy(&admin.stdout);
+                    write_file(
+                        &dir.join(".git"),
+                        format!("gitdir: {}\n", admin.trim_end()).as_bytes(),
+                    );
+                    PathBuf::from(repo)
+                },
+                true,
+            ),
+        ];
+        let mut violations = Vec::new();
+        for (row, plant, kept) in rows {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path().canonicalize().unwrap();
+            init_committed_repo(&root, "README.md", "seed\n");
+            let repo = root.to_str().unwrap();
+            let dir = root.join("rigger-wt-unit");
+            let registers = plant(repo, &dir);
+            let removed = reap_then_remove_worktree(repo, &dir, &root);
+            if removed.is_ok() == kept {
+                violations.push(format!("{row}: the removal answers {removed:?}"));
+            }
+            if dir.join("work.txt").exists() != kept {
+                violations.push(format!("{row}: its work is kept: {}", !kept));
+            }
+            let listed = run_git(&registers, &["worktree", "list", "--porcelain"]);
+            let listed = String::from_utf8_lossy(&listed.stdout)
+                .lines()
+                .any(|line| line == format!("worktree {}", dir.display()));
+            if listed != kept {
+                violations.push(format!("{row}: its registration is kept: {listed}"));
+            }
+        }
+        assert!(violations.is_empty(), "{}", violations.join("\n"));
+    }
+
+    /// Add a tree on the unit branch `rigger/u/unit` of `repo` at `dir`, holding work in
+    /// `work.txt`.
+    fn add_tree(repo: &str, dir: &Path) {
+        Worktree::create(repo, dir.to_str().unwrap(), "rigger/u/unit", "").unwrap();
+        write_file(&dir.join("work.txt"), b"work\n");
+    }
+
+    /// The orphan sweep keeps the scratch siblings of a tree git marks (its build caches, its
+    /// store fence, its review cache and its gate scratch root) as it keeps the tree, the rule
+    /// the terminal sweep keeps them by, and still reclaims the siblings of a tree git does not
+    /// mark.
+    #[test]
+    fn reclaim_orphan_scratch_keeps_the_siblings_of_a_tree_git_marks() {
+        // Each row: the unit's slug, what is done to its tree, and whether its siblings are kept.
+        type Row = (&'static str, fn(&str, &Path), bool);
+        let rows: [Row; 3] = [
+            (
+                "a-locked",
+                |repo, dir| {
+                    let at = dir.to_str().unwrap();
+                    git_ok(
+                        repo,
+                        &["worktree", "lock", "--reason", "a person's lock", at],
+                    );
+                },
+                true,
+            ),
+            (
+                "a-prunable",
+                |_, dir| std::fs::remove_file(dir.join(".git")).unwrap(),
+                true,
+            ),
+            ("done", |_, _| {}, false),
+        ];
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        init_committed_repo(&root, "README.md", "seed\n");
+        let repo = root.to_str().unwrap();
+        let siblings = |slug: &str| {
+            [
+                format!("cargo-target-{slug}"),
+                format!("cargo-target-{slug}-store-fence"),
+                format!("review-target-{slug}"),
+                format!("rigger-gate-{slug}"),
+            ]
+            .map(|name| root.join(name))
+        };
+        for (slug, mark, _) in rows {
+            let dir = root.join(format!("rigger-wt-{slug}"));
+            Worktree::create(repo, dir.to_str().unwrap(), &format!("rigger/u/{slug}"), "").unwrap();
+            for sibling in siblings(slug) {
+                write_file(&sibling.join("kept.txt"), b"build\n");
+            }
+            mark(repo, &dir);
+        }
+        let run_units = RunUnits {
+            live_branches: slugs([]),
+            dead_slugs: slugs(["a-locked", "a-prunable", "done"]),
+            live_spawn_leaf_names: slugs([]),
+            current_run_scratch_leaf: None,
+        };
+        reclaim_orphan_scratch(
+            repo,
+            root.to_str().unwrap(),
+            &run_units,
+            &std::collections::HashSet::new(),
+        );
+        let violations: Vec<String> = rows
+            .iter()
+            .flat_map(|&(slug, _, kept)| {
+                siblings(slug)
+                    .into_iter()
+                    .filter(move |sibling| sibling.join("kept.txt").exists() != kept)
+                    .map(move |sibling| format!("{slug}: {} is kept: {}", sibling.display(), !kept))
+            })
+            .collect();
+        assert!(violations.is_empty(), "{}", violations.join("\n"));
     }
 
     #[test]
@@ -9280,9 +9779,8 @@ mod tests {
     // ---- `rigger result` refuses to replace the result of an ended spawn (gap 108) ----
 
     /// The two checked-in workflows that ship with the repo - the self-hosted
-    /// `.rigger/workflow.yml` and `examples/demo` - must each carry a NON-ZERO spawn
-    /// budget (FIX 3): a shipped, unattended config must cap its own spawns. A 0
-    /// (unlimited) budget here is what let a runaway loop churn for hours.
+    /// `.rigger/workflow.yml` and `examples/demo` - each load and validate, so neither
+    /// carries a retired key such as `defaults.budget`.
     #[test]
     // Reads relative paths (`.`, `..`) so it depends on the process CWD. Another test
     // (`cmd_stats_on_a_never_run_project...`) temporarily `set_current_dir`s to a temp
@@ -9291,7 +9789,7 @@ mod tests {
     // process-global, so a restore guard in the other test does not close the window -
     // the two must be mutually exclusive. Both share the `cwd` serial key.
     #[serial_test::serial(cwd)]
-    fn shipped_workflows_carry_a_non_zero_spawn_budget() {
+    fn shipped_workflows_load_and_validate() {
         for root in ["..", "../examples/demo", ".", "examples/demo"] {
             // The test runs from the crate root in CI and from the workspace root
             // locally; probe both layouts and skip a path that does not resolve to a
@@ -9300,13 +9798,8 @@ mod tests {
             if !path.join(RIGGER_DIR).join("workflow.yml").exists() {
                 continue;
             }
-            let cfg = config_store::load(root)
+            config_store::load(root)
                 .unwrap_or_else(|e| panic!("shipped workflow at {root:?} must load: {e}"));
-            assert!(
-                cfg.workflow.defaults.budget > 0,
-                "shipped workflow at {root:?} must cap spawns with a non-zero budget; was {}",
-                cfg.workflow.defaults.budget
-            );
         }
     }
 
@@ -9797,7 +10290,7 @@ mod tests {
             .unwrap();
             let pinned = || {
                 let cfg = config_store::load(repo).unwrap();
-                let host = hooks::resolve_spawn_host(&cfg.workflow.defaults, root).unwrap();
+                let host = spawn_host(&cfg.workflow.defaults, root).unwrap();
                 definition_hash(repo, &host.helpers).unwrap()
             };
             at_rev(root);
@@ -10821,6 +11314,102 @@ mod tests {
         );
     }
 
+    /// A PRODUCER'S OUTPUT IS THE SPECS LOCATION THE PROJECT DECLARES: the spawn host every
+    /// command resolves carries the overlay's `specs_location`, spelled relative to the root with
+    /// `/` between its parts and one closing `/`, and `specs/` when the project declares none; a
+    /// location naming no directory inside the project fails the resolution, naming the overlay,
+    /// and fails `rigger setup`'s skill install the same way. An installed skill names the
+    /// location as the spawn host carries it.
+    #[test]
+    fn a_producers_output_is_the_specs_location_the_project_declares() {
+        // Each row: the case, the overlay (none for no file), and the output the host carries or
+        // the declared location the error quotes.
+        let rows: [(&str, Option<&str>, Result<&str, &str>); 10] = [
+            ("no overlay", None, Ok("specs/")),
+            (
+                "an overlay declaring no location",
+                Some("base_ref: main\n"),
+                Ok("specs/"),
+            ),
+            (
+                "a location with its closing slash",
+                Some("specs_location: requirements/\n"),
+                Ok("requirements/"),
+            ),
+            (
+                "a location without it",
+                Some("specs_location: requirements\n"),
+                Ok("requirements/"),
+            ),
+            (
+                "a location spelled from the root",
+                Some("specs_location: ./docs//requirements/\n"),
+                Ok("docs/requirements/"),
+            ),
+            (
+                "a location spelled with backslashes",
+                Some("specs_location: 'docs\\requirements\\'\n"),
+                Ok("docs/requirements/"),
+            ),
+            (
+                "an empty location",
+                Some("specs_location: ''\n"),
+                Err("\"\""),
+            ),
+            (
+                "the root itself",
+                Some("specs_location: ./\n"),
+                Err("\"./\""),
+            ),
+            (
+                "an absolute location",
+                Some("specs_location: /abs/\n"),
+                Err("\"/abs/\""),
+            ),
+            (
+                "a location stepping out of the project",
+                Some("specs_location: docs/../../x/\n"),
+                Err("\"docs/../../x/\""),
+            ),
+        ];
+        for (case, overlay, expected) in rows {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path();
+            if let Some(overlay) = overlay {
+                std::fs::create_dir_all(root.join(RIGGER_DIR)).unwrap();
+                std::fs::write(rigger_path(root, DOCS_OVERLAY_FILE), overlay).unwrap();
+            }
+            let expected = expected.map(str::to_string).map_err(|declared| {
+                format!(
+                    "{}: specs_location {declared} names no directory inside the project",
+                    rigger_path(root, DOCS_OVERLAY_FILE).display()
+                )
+            });
+            assert_eq!(
+                spawn_host(&config::Defaults::default(), root)
+                    .map(|host| host.producer_output)
+                    .map_err(|e| e.to_string()),
+                expected,
+                "{case}"
+            );
+            assert_eq!(
+                install_skills(root).map(|_| ()).map_err(|e| e.to_string()),
+                expected.clone().map(|_| ()),
+                "{case}: rigger setup installs no skill naming a location every later command \
+                 refuses"
+            );
+            if let Ok(output) = &expected {
+                let installed =
+                    std::fs::read_to_string(skill_install_path(root, "using-rigger")).unwrap();
+                assert!(
+                    installed.contains(&format!("This repo keeps its specs in {output}.")),
+                    "{case}: the installed using-rigger names the location as every command \
+                     spells it"
+                );
+            }
+        }
+    }
+
     /// Spec 05, criterion 4 and spec 121, criterion 14: `rigger setup` reports an install step's
     /// outcome as a change only when the step installed or refreshed its file; an already-current
     /// file and a project copy installed in place of a skill are states it reports nothing for.
@@ -11375,14 +11964,13 @@ mod tests {
 
     /// spec 17 criterion 4c: the runtime parallelism-retention metric must REACH an operator on
     /// the production `rigger stats` render (previously it was computed by `metrics::project` but
-    /// no path surfaced it). A MEASURED retention shows a row with the co-schedulable share; a
-    /// retention below [`metrics::PARALLELISM_RETENTION_WARN`] adds a loud inline WARN naming the
-    /// floor so a silently-serializing fleet is visible; and an UNMEASURED retention (`None` - the
+    /// no path surfaced it). A MEASURED retention shows a row with the co-schedulable share and
+    /// no threshold or WARN at any value; and an UNMEASURED retention (`None` - the
     /// shipped non-symbols default records no `BlastRadiusComputed` audit) OMITS the row entirely,
     /// so the default `rigger stats` output is byte-for-byte unchanged.
     #[test]
-    fn format_stats_surfaces_parallelism_retention_and_warns_below_the_floor() {
-        // Measured and above the floor: a row with the share, no WARN.
+    fn format_stats_surfaces_parallelism_retention_with_no_threshold() {
+        // Measured: a row with the share, no WARN.
         let healthy = Metrics {
             parallelism_retention: Some(0.95),
             ..Default::default()
@@ -11392,12 +11980,9 @@ mod tests {
             out.contains("parallelism        95.0%"),
             "a measured retention must appear on an operator-visible stats row:\n{out}"
         );
-        assert!(
-            !out.contains("WARN"),
-            "a healthy fleet at or above the floor must not warn:\n{out}"
-        );
+        assert!(!out.contains("WARN"), "no retention warns:\n{out}");
 
-        // Measured and below the floor: the share is still shown AND a loud WARN names the floor.
+        // Measured low: the share is shown, still with no WARN.
         let serializing = Metrics {
             parallelism_retention: Some(0.5),
             ..Default::default()
@@ -11405,12 +11990,9 @@ mod tests {
         let out = format_stats(&serializing).join("\n");
         assert!(
             out.contains("parallelism        50.0%"),
-            "the below-floor retention share must still be shown:\n{out}"
+            "a low retention share is shown:\n{out}"
         );
-        assert!(
-            out.contains("WARN") && out.contains("80.0% floor"),
-            "a below-floor retention must warn and name the 80.0% floor:\n{out}"
-        );
+        assert!(!out.contains("WARN"), "no retention warns:\n{out}");
 
         // Unmeasured (the shipped non-symbols default): no retention row at all.
         let unmeasured = Metrics {
@@ -11539,13 +12121,10 @@ mod tests {
         );
     }
 
-    /// The parallelism-retention line is single-sourced through [`parallelism_retention_line`] so
-    /// the `rigger stats` row and the end-of-`rigger run` stderr notice (spec 17 4c's "logged
-    /// warning when retention drops below the threshold on a run") render IDENTICALLY and cannot
-    /// drift: `None` when unmeasured, no `WARN` at or above the floor, and a `WARN` naming the
-    /// floor below it.
+    /// The parallelism-retention line: `None` when unmeasured, and the measured share with no
+    /// `WARN` at any value.
     #[test]
-    fn parallelism_retention_line_is_single_sourced_and_warns_below_the_floor() {
+    fn parallelism_retention_line_states_the_share_with_no_threshold() {
         assert!(
             parallelism_retention_line(&Metrics {
                 parallelism_retention: None,
@@ -11561,16 +12140,16 @@ mod tests {
         .expect("a measured retention yields a line");
         assert!(
             healthy.contains("90.0%") && !healthy.contains("WARN"),
-            "a healthy retention shows the share without a warning: {healthy}"
+            "a retention shows the share without a warning: {healthy}"
         );
-        let warn = parallelism_retention_line(&Metrics {
+        let low = parallelism_retention_line(&Metrics {
             parallelism_retention: Some(0.4),
             ..Default::default()
         })
         .expect("a measured retention yields a line");
         assert!(
-            warn.contains("40.0%") && warn.contains("WARN") && warn.contains("80.0% floor"),
-            "a below-floor retention warns and names the floor: {warn}"
+            low.contains("40.0%") && !low.contains("WARN"),
+            "a low retention shows the share without a warning: {low}"
         );
     }
 
@@ -11814,17 +12393,15 @@ mod tests {
         );
     }
 
-    /// Spec 102 criterion 2: a config that never sets `defaults.max_parallel_units` loads as
-    /// UNBOUNDED (`0`), so an existing consumer's behavior is unchanged until it writes the
-    /// key - the scaffold's `2` above is a fresh-project opinion, never a forced default onto
-    /// an already-authored workflow.yml.
+    /// A config that never sets `defaults.max_parallel_units` loads it as unset (`0`), so the
+    /// width follows the build slot count.
     #[test]
-    fn defaults_max_parallel_units_is_unbounded_when_the_key_is_absent() {
+    fn defaults_max_parallel_units_is_unset_when_the_key_is_absent() {
         let wf: config::Workflow = serde_yaml::from_str("stages: {}\ngates: {}\n")
             .expect("a workflow with no defaults: block must still parse");
         assert_eq!(
             wf.defaults.max_parallel_units, 0,
-            "an absent max_parallel_units key must load as 0 (unbounded), not a forced bound"
+            "an absent max_parallel_units key must load as 0 (unset)"
         );
     }
 

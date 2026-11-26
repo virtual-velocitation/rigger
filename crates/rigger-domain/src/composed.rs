@@ -17,15 +17,18 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::code_facts::{Recorded, Tip};
 use crate::code_graph::{CodeGraph, DOC_ATTR};
-use crate::code_view::{CodeView, Compared, Groupings, Tests, ViewFilter};
+use crate::code_view::{
+    CodeView, Compared, Extract, Groupings, Head, SourceLines, Tests, ViewFilter,
+};
 use crate::community::DEFAULT_RESOLUTION;
 use crate::contextgraph::query::{
-    entity_id, leaf_of, member_file, node_file, node_leaf, node_name, path_leaf, split_id,
+    attrs_name, entity_id, kept_of, leaf_of, member_file, node_file, node_leaf, node_name,
+    path_leaf, placeholder_cut, split_id,
 };
 use crate::contextgraph::{
     entity_site, holds_attachment, is_call_target, CallEdge, CallGraph, CallNode, Candidate,
-    ContextGraph, Direction, Edge, EntitySite, Error, Graph, Located, Neighbors, Node, Rows,
-    KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, PLACEHOLDER_SIGIL, REL_CALLS,
+    ContextGraph, Direction, Edge, EntitySite, Error, Graph, Located, Neighbors, Node, Referrer,
+    Rows, KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, KIND_FILE, REL_CALLS,
     REL_GOVERNS, REL_IN_COMMUNITY, REL_REALIZES, REL_REFERENCES, TIER_AMBIGUOUS, TIER_EXTRACTED,
     TIER_INFERRED,
 };
@@ -134,18 +137,33 @@ pub struct Honesty {
     pub behind: Option<String>,
 }
 
-/// Whether `node` is bound by `leaf`: its [`node_name`] is `leaf`, or its id's text after the
-/// first `::` is `leaf` or `leaf` behind the [`PLACEHOLDER_SIGIL`].
+impl Honesty {
+    /// What a reader in `head`'s worktree knows of it, as the composed graph's label states it:
+    /// the worktree as its path displays, how the head's view compares with it and why the view
+    /// is behind, when it is.
+    pub fn of(head: &Head) -> Honesty {
+        Honesty {
+            worktree: head.worktree.display().to_string(),
+            compared: head.compared,
+            behind: head.behind.clone(),
+        }
+    }
+}
+
+/// Whether `node` is bound by `leaf`: its [`node_name`] is `leaf`, or its id is
+/// ([`id_binds_leaf`]).
 pub(crate) fn binds_leaf(node: &Node, leaf: &str) -> bool {
     node_name(node) == Some(leaf) || id_binds_leaf(&node.id, leaf)
 }
 
-/// Whether the text of `id` after its first `::` is `leaf` or `leaf` behind the
-/// [`PLACEHOLDER_SIGIL`].
+/// Whether the text of `id` after its first `::` is `leaf`, or a name behind the
+/// [`crate::contextgraph::PLACEHOLDER_SIGIL`] that is `leaf` ([`leaf_of`]) or whose leaf, the
+/// text after its last `::` or `.`, is ([`placeholder_cut`]): a placeholder keyed by a qualified
+/// name binds its leaf.
 pub(crate) fn id_binds_leaf(id: &str, leaf: &str) -> bool {
-    split_id(id)
-        .1
-        .is_some_and(|rest| rest == leaf || rest.strip_prefix(PLACEHOLDER_SIGIL) == Some(leaf))
+    split_id(id).1 == Some(leaf)
+        || leaf_of(id) == Some(leaf)
+        || placeholder_cut(id).is_some_and(|(_, at)| at == leaf)
 }
 
 /// The edges sorted by ends then relation, one per (from, to, relation), the first kept.
@@ -191,6 +209,23 @@ pub struct Indexed {
     index: OnceLock<Index>,
 }
 
+/// The rows an [`Indexed`] is held and indexed as ([`Indexed::half_rows`]): each index names
+/// nodes or edges by place.
+#[derive(Debug)]
+pub struct HalfRows<'a> {
+    /// The nodes, in id order, one per id.
+    pub nodes: &'a [Node],
+    /// The live edges, in [`ordered`] order.
+    pub edges: &'a [Edge],
+    /// Each id's incoming edges, in edge order.
+    pub incoming: BTreeMap<&'a str, Vec<usize>>,
+    /// Each file's members ([`member_file`]), in the order the nodes were given.
+    pub members: &'a BTreeMap<String, Vec<usize>>,
+    /// Each leaf's nodes, in node order: those whose name, id rest, placeholder or its path leaf
+    /// is the leaf, so each is one the leaf binds ([`binds_leaf`]).
+    pub leaves: &'a BTreeMap<String, Vec<usize>>,
+}
+
 /// The places [`Indexed`] reads its neighbours by.
 #[derive(Default)]
 struct Index {
@@ -227,6 +262,33 @@ impl Indexed {
         }
     }
 
+    /// The code half `graph` resolves to whole, with `groupings` joined on under the tests
+    /// `graph`'s filter shows: what a store settles ([`Self::half_rows`]) and a neighbourhood
+    /// reads.
+    pub fn resolved(graph: &CodeGraph<'_>, groupings: &Groupings) -> Indexed {
+        let resolved = graph.resolved();
+        let attached = attachments(graph.resolver().proof_calls(), groupings);
+        let joined = joined(resolved.graph, groupings, &attached, graph.tests());
+        Indexed::new(joined, Vec::new())
+    }
+
+    /// The rows this graph is held and indexed as, which a store settles and answers
+    /// [`crate::code_view::SettledHalf`] from.
+    pub fn half_rows(&self) -> HalfRows<'_> {
+        let ix = self.index();
+        let mut incoming: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
+        for &at in &ix.incoming {
+            incoming.entry(&self.edges[at].to).or_default().push(at);
+        }
+        HalfRows {
+            nodes: &self.nodes,
+            edges: &self.edges,
+            incoming,
+            members: &ix.members,
+            leaves: &ix.leaves,
+        }
+    }
+
     /// The indexes, built on first read.
     fn index(&self) -> &Index {
         self.index.get_or_init(|| {
@@ -244,12 +306,8 @@ impl Indexed {
                 ix.kinds.entry(n.kind.clone()).or_default().push(at);
             }
             for (at, n) in self.nodes.iter().enumerate() {
-                let rest = split_id(&n.id).1;
-                let leaves = [
-                    node_name(n),
-                    rest,
-                    rest.and_then(|r| r.strip_prefix(PLACEHOLDER_SIGIL)),
-                ];
+                let placeholder = placeholder_cut(&n.id).map(|(_, leaf)| leaf);
+                let leaves = [node_name(n), split_id(&n.id).1, leaf_of(&n.id), placeholder];
                 for leaf in leaves.into_iter().flatten() {
                     let held = ix.leaves.entry(leaf.to_string()).or_default();
                     if held.last() != Some(&at) {
@@ -418,10 +476,17 @@ pub trait CodeHalf: Neighbors {
     /// The distinct test entities the filter hides that prove a node of `ids`, in id order,
     /// read from the proofs the half read for them ([`ContextGraph::hidden_provers`]).
     fn hidden_provers(&self, ids: &[String]) -> Vec<String>;
-    /// The distinct test entities the filter hides whose calls to `leaf` land on a placeholder,
-    /// in order ([`crate::resolve::Resolver::placeholder_callers`]): the callers a callers walk
-    /// reaches through a placeholder bound to `leaf`.
-    fn placeholder_callers(&self, leaf: &str) -> Vec<String>;
+    /// The distinct test entities the filter hides whose calls to `leaf` land on a placeholder
+    /// filed under `leaf` or under `id`, in order
+    /// ([`crate::resolve::Resolver::placeholder_callers`]): the callers a callers walk from the
+    /// definition `id` named `leaf` reaches through a placeholder bound to `leaf`.
+    fn placeholder_callers(&self, id: &str, leaf: &str) -> Vec<String>;
+    /// The candidate ids the down-hop of the placeholder `id` keeps, when it is keyed by a
+    /// qualified name ([`CodeGraph::down_hop`]); none for any other id.
+    fn down_hop(&self, id: &str) -> Option<Vec<String>>;
+    /// Every referrer of the code entity `id`, test ones too, in path then mention order
+    /// ([`crate::resolve::Resolver::referrers`]).
+    fn referrers(&self, id: &str) -> Vec<Referrer>;
     /// The files the attributes of the grouping `id` summarise, by [`fact_file`]: its members'
     /// (its label and hash) and its attached tests' (its test count); none when `id` names no
     /// grouping.
@@ -432,6 +497,13 @@ pub trait CodeHalf: Neighbors {
     fn definition_end(&self, _file: &str, _recorded: Recorded) -> Option<u32> {
         None
     }
+    /// The language the facts of the code file `file` read it as, with the doc span they hold for
+    /// the `recorded` definition ([`Recorded::widest`]), or for the file itself when none is given;
+    /// `None` when no such definition is there, it or the file has no doc, or the half keeps no
+    /// facts of `file`, as a half resolved whole keeps none.
+    fn doc_span(&self, _file: &str, _recorded: Option<Recorded>) -> Option<(String, (u32, u32))> {
+        None
+    }
     /// The groupings of the view the half resolves.
     fn groupings(&self) -> &Groupings;
     /// The half's whole graph ([`Neighbors::whole`]), moved out of the half where it is held
@@ -440,6 +512,21 @@ pub trait CodeHalf: Neighbors {
     fn take_whole(&mut self) -> Result<Graph, Error> {
         self.whole()
     }
+}
+
+/// The file `site` names and the definition its node records there, when the node carries a
+/// name: where [`ContextGraph::definition_end`] and [`ContextGraph::doc`] read a code file's facts.
+fn recorded_at(site: &EntitySite) -> Option<(&str, Recorded<'_>)> {
+    let name = attrs_name(&site.attrs)?;
+    let (file, path) = split_id(&site.id);
+    let kind = &site.kind;
+    let recorded = Recorded {
+        name,
+        path,
+        kind,
+        line: site.line,
+    };
+    Some((file, recorded))
 }
 
 /// The distinct provers of the `(proved, prover)` pairs `proofs` that prove an id of `ids`, in
@@ -497,9 +584,15 @@ pub struct Whole {
     attachments: Vec<TestAttachment>,
     /// The proof calls read to attach the tests, kept while the filter hides tests.
     proofs: Vec<ProofCall>,
-    /// The callers of the test calls to each leaf that land on a placeholder, in order, kept
-    /// while the filter hides tests.
+    /// The callers of the test calls that land on a placeholder, in order, by the key each is
+    /// filed under, a leaf or a candidate id, kept while the filter hides tests.
     placeholder_callers: BTreeMap<String, Vec<String>>,
+    /// The candidates each placeholder keyed by a qualified name keeps ([`CodeGraph::down_hop`]),
+    /// read when the half is walked.
+    down_hops: BTreeMap<String, Vec<String>>,
+    /// Every code entity's referrers, test ones too, by id ([`CodeGraph::referrers`]), read when
+    /// the half is walked.
+    referrers: BTreeMap<String, Vec<Referrer>>,
 }
 
 impl Whole {
@@ -517,8 +610,12 @@ impl Whole {
     }
 
     /// [`Self::at`], reading the test calls landing on a placeholder that a callers walk reaches
-    /// ([`CodeGraph::placeholder_calls`]) only when `walked`: a read that is never walked leaves
-    /// them unresolved.
+    /// ([`CodeGraph::placeholder_calls`]), the down-hops of its placeholders keyed by a qualified
+    /// name ([`CodeGraph::down_hop`]) and its entities' referrers ([`CodeGraph::referrers`]) into
+    /// the half only when `walked`: a read that is never walked holds none of them, though each
+    /// placeholder node keyed by a qualified name carries its down-hop as its
+    /// [`crate::contextgraph::query::CANDIDATES_ATTR`] either way, as [`CodeGraph`] writes it on
+    /// every read.
     fn read(view: &dyn CodeView, filter: ViewFilter, resolution: f64, walked: bool) -> Self {
         let computed = computed_at(view, resolution);
         let grains: Vec<&Groupings> = std::iter::once(view.groupings())
@@ -535,13 +632,17 @@ impl Whole {
         }
         let code = Indexed::new(graph, Vec::new());
         let mut placeholder_callers: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        let placeholder_calls = if walked {
-            code_graph.placeholder_calls()
+        let (placeholder_calls, down_hops, referrers) = if walked {
+            let down_hops = (code.nodes.iter())
+                .filter_map(|n| Some((n.id.clone(), code_graph.down_hop(&n.id)?)))
+                .collect();
+            let referrers = code_graph.referrers();
+            (code_graph.placeholder_calls(), down_hops, referrers)
         } else {
-            Vec::new()
+            (Vec::new(), BTreeMap::new(), BTreeMap::new())
         };
-        for (leaf, caller) in placeholder_calls {
-            placeholder_callers.entry(leaf).or_default().push(caller);
+        for (key, caller) in placeholder_calls {
+            placeholder_callers.entry(key).or_default().push(caller);
         }
         for callers in placeholder_callers.values_mut() {
             callers.sort_unstable();
@@ -578,6 +679,8 @@ impl Whole {
             attachments: attached,
             proofs,
             placeholder_callers,
+            down_hops,
+            referrers,
         }
     }
 }
@@ -664,11 +767,18 @@ impl CodeHalf for Whole {
             ids,
         )
     }
-    fn placeholder_callers(&self, leaf: &str) -> Vec<String> {
-        self.placeholder_callers
-            .get(leaf)
-            .cloned()
-            .unwrap_or_default()
+    fn placeholder_callers(&self, id: &str, leaf: &str) -> Vec<String> {
+        let filed = [leaf, id].map(|key| self.placeholder_callers.get(key));
+        let mut callers: Vec<String> = filed.into_iter().flatten().flatten().cloned().collect();
+        callers.sort_unstable();
+        callers.dedup();
+        callers
+    }
+    fn down_hop(&self, id: &str) -> Option<Vec<String>> {
+        self.down_hops.get(id).cloned()
+    }
+    fn referrers(&self, id: &str) -> Vec<Referrer> {
+        self.referrers.get(id).cloned().unwrap_or_default()
     }
     fn summarised_files(&self, id: &str) -> Vec<String> {
         let arms = [&self.groupings.communities, &self.groupings.concepts];
@@ -746,8 +856,14 @@ impl CodeHalf for Arc<Whole> {
     fn hidden_provers(&self, ids: &[String]) -> Vec<String> {
         (**self).hidden_provers(ids)
     }
-    fn placeholder_callers(&self, leaf: &str) -> Vec<String> {
-        (**self).placeholder_callers(leaf)
+    fn placeholder_callers(&self, id: &str, leaf: &str) -> Vec<String> {
+        (**self).placeholder_callers(id, leaf)
+    }
+    fn down_hop(&self, id: &str) -> Option<Vec<String>> {
+        (**self).down_hop(id)
+    }
+    fn referrers(&self, id: &str) -> Vec<Referrer> {
+        (**self).referrers(id)
     }
     fn summarised_files(&self, id: &str) -> Vec<String> {
         (**self).summarised_files(id)
@@ -894,10 +1010,23 @@ enum Way {
     In,
 }
 
+/// What a read takes a node's doc from ([`ContextGraph::doc`]): the lines of the caller's
+/// worktree, and the extractor the store was opened with, which gives a span's text.
+#[derive(Clone, Copy)]
+pub struct DocReader<'r> {
+    pub lines: &'r dyn SourceLines,
+    pub extract: &'r dyn Extract,
+}
+
 /// The record half and a view's code half `C` read as one context graph.
 pub struct Composed<'r, C = Whole> {
     records: &'r dyn Neighbors,
     code: C,
+    /// What the read takes a node's doc from; none for a read that gives no doc.
+    docs: Option<DocReader<'r>>,
+    /// The tests mode of the filter the graph was opened under, which
+    /// [`ContextGraph::locate`] reads a site's referrers under.
+    tests: Tests,
     /// Each recorded alias's canonical id.
     canonical: BTreeMap<String, String>,
     /// Each canonical id's recorded aliases.
@@ -937,20 +1066,37 @@ impl<'r> Composed<'r> {
             Whole::at(view, filter, resolution),
             &view.stamp().tip,
             honesty,
+            filter.tests,
         )
     }
 
     /// The record half `records` composed with `view` under `filter`, labelled by `honesty`, its
     /// code half resolved only near the ids it is asked about (section 6.3): the graph a reader
-    /// of a neighbourhood reads. Its answers are [`Self::new`]'s.
+    /// of a neighbourhood reads. Its answers are [`Self::new`]'s, and it alone gives a node's doc,
+    /// read through `docs` when given ([`ContextGraph::doc`]).
     pub fn near(
         records: &'r dyn Neighbors,
         view: &'r dyn CodeView,
         filter: ViewFilter,
         honesty: Honesty,
+        docs: Option<DocReader<'r>>,
     ) -> Result<impl ContextGraph + 'r, Error> {
         let code = crate::near::Near::new(view, filter);
-        Composed::over(records, code, &view.stamp().tip, honesty)
+        let composed = Composed::over(records, code, &view.stamp().tip, honesty, filter.tests)?;
+        Ok(Composed { docs, ..composed })
+    }
+
+    /// [`Self::near`] over `head`'s view, labelled by what its reader knows of it
+    /// ([`Honesty::of`]), a node's doc read from `lines`, its worktree's lines, as the extractor
+    /// the store was opened with gives their text; no doc when `head` carries no extractor.
+    pub fn near_head(
+        records: &'r dyn Neighbors,
+        head: &'r Head,
+        filter: ViewFilter,
+        lines: &'r dyn SourceLines,
+    ) -> Result<impl ContextGraph + 'r, Error> {
+        let docs = (head.extract.as_deref()).map(|extract| DocReader { lines, extract });
+        Self::near(records, &*head.view, filter, Honesty::of(head), docs)
     }
 }
 
@@ -976,7 +1122,7 @@ impl<'r> Composed<'r> {
         resolution: f64,
     ) -> Result<WholeOpen<'r>, Error> {
         let code = Arc::new(Whole::read(view, filter, resolution, false));
-        Composed::over(records, code, &view.stamp().tip, honesty).map(WholeOpen)
+        Composed::over(records, code, &view.stamp().tip, honesty, filter.tests).map(WholeOpen)
     }
 
     /// [`Self::whole_at`] with the code half taken from `memo` when it holds it for this read,
@@ -991,17 +1137,19 @@ impl<'r> Composed<'r> {
         memo: &WholeMemo,
     ) -> Result<WholeOpen<'r>, Error> {
         let code = memo.whole(view, filter, resolution);
-        Composed::over(records, code, &view.stamp().tip, honesty).map(WholeOpen)
+        Composed::over(records, code, &view.stamp().tip, honesty, filter.tests).map(WholeOpen)
     }
 }
 
 impl<'r, C: CodeHalf> Composed<'r, C> {
-    /// `records` composed with `code`, a view of the tree `tip`, labelled by `honesty`.
+    /// `records` composed with `code`, a view of the tree `tip` under the tests mode `tests`,
+    /// labelled by `honesty`.
     fn over(
         records: &'r dyn Neighbors,
         code: C,
         tip: &Tip,
         honesty: Honesty,
+        tests: Tests,
     ) -> Result<Self, Error> {
         let mut canonical = BTreeMap::new();
         let mut aliased: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -1015,6 +1163,8 @@ impl<'r, C: CodeHalf> Composed<'r, C> {
         Ok(Composed {
             records,
             code,
+            docs: None,
+            tests,
             canonical,
             aliased,
             stale,
@@ -1401,7 +1551,8 @@ impl<C: CodeHalf> ContextGraph for Composed<'_, C> {
         depth: i64,
         tier_floor: &str,
     ) -> Result<CallGraph, Error> {
-        calls(self, seed, direction, depth, tier_floor)
+        let down_hop = |id: &str| self.code.down_hop(id);
+        calls(self, seed, direction, depth, tier_floor, &down_hop)
     }
     fn resolve(&self, mention: &str) -> Result<Option<String>, Error> {
         match self.canonical.get(mention) {
@@ -1410,21 +1561,38 @@ impl<C: CodeHalf> ContextGraph for Composed<'_, C> {
         }
     }
     fn locate(&self, entity: &str) -> Result<Located, Error> {
-        locate(self, entity)
+        Ok(match locate(self, entity)? {
+            Located::One(mut site) => {
+                site.doc_comment = self.node(&site.id)?.and_then(|node| self.doc(&node));
+                site.referrers = self.referrers(&site.id, self.tests);
+                Located::One(site)
+            }
+            other => other,
+        })
     }
     fn definition_end(&self, site: &EntitySite) -> Result<Option<u32>, Error> {
-        let name = site.attrs.get("name").filter(|name| !name.is_empty());
-        let (Some(name), false) = (name, self.label.compared.withholds_code()) else {
-            return Ok(None);
+        let at = recorded_at(site).filter(|_| !self.label.compared.withholds_code());
+        Ok(at.and_then(|(file, recorded)| self.code.definition_end(file, recorded)))
+    }
+    fn doc(&self, node: &Node) -> Option<String> {
+        let docs = self
+            .docs
+            .filter(|_| !self.label.compared.withholds_code())?;
+        let site = entity_site(node, 0);
+        let (file, recorded) = match node.kind == KIND_FILE {
+            true => (site.file.as_deref()?, None),
+            false => recorded_at(&site).map(|(file, recorded)| (file, Some(recorded)))?,
         };
-        let (file, path) = split_id(&site.id);
-        let recorded = Recorded {
-            name,
-            path,
-            kind: &site.kind,
-            line: site.line,
-        };
-        Ok(self.code.definition_end(file, recorded))
+        let (lang, span) = self.code.doc_span(file, recorded)?;
+        Some(docs.extract.doc_text(&lang, &docs.lines.lines(file, span)?))
+    }
+    fn referrers(&self, id: &str, tests: Tests) -> Vec<Referrer> {
+        if self.stale {
+            return Vec::new();
+        }
+        let mut referrers = self.code.referrers(id);
+        referrers.retain(|r| !r.test || tests.admits(true));
+        referrers
     }
     fn nodes_of_kind(&self, kind: &str) -> Result<Vec<Node>, Error> {
         self.of_kind(kind)
@@ -1482,13 +1650,11 @@ impl<C: CodeHalf> ContextGraph for Composed<'_, C> {
         if self.stale {
             return Ok(Vec::new());
         }
-        let mut leaves = BTreeSet::new();
-        for id in ids {
-            leaves.extend(bound_leaf(self, id)?);
-        }
         let mut hidden = Vec::new();
-        for leaf in &leaves {
-            hidden.extend(self.code.placeholder_callers(leaf));
+        for id in ids {
+            if let Some(leaf) = bound_leaf(self, id)? {
+                hidden.extend(self.code.placeholder_callers(id, &leaf));
+            }
         }
         hidden.sort_unstable();
         hidden.dedup();
@@ -1642,19 +1808,29 @@ struct Hop {
     frontier: Option<Vec<String>>,
 }
 
+/// The candidates a placeholder keyed by a qualified name keeps ([`CodeHalf::down_hop`]): none
+/// for any other id.
+type DownHop<'a> = &'a dyn Fn(&str) -> Option<Vec<String>>;
+
 /// One DOWN hop's callee: a named call target lands on itself; any other target resolves by the
-/// leaf its id names over the call-target definitions, one auto-continuing, more a frontier,
-/// none leaving it where it is.
+/// leaf its id names over the call-target definitions, those a placeholder keyed by a qualified
+/// name reaches by its leaf and keeps by its down-hop (`down_hop`), one auto-continuing, more a
+/// frontier, none leaving it where it is.
 fn resolve_down_hop(
     graph: &dyn Neighbors,
     raw_to: &str,
+    down_hop: DownHop,
 ) -> Result<(String, Option<Vec<String>>), Error> {
     if named_call_target(graph, raw_to)? == Some(true) {
         return Ok((raw_to.to_string(), None));
     }
-    let cands = match leaf_of(raw_to) {
-        Some(leaf) => definitions(graph, leaf, Admitted::CallTargets, None)?,
-        None => Vec::new(),
+    let cands = match (leaf_of(raw_to), down_hop(raw_to)) {
+        (Some(name), Some(kept)) => {
+            let cands = definitions(graph, path_leaf(name), Admitted::CallTargets, None)?;
+            kept_of(&cands, Some(&kept))
+        }
+        (Some(leaf), None) => definitions(graph, leaf, Admitted::CallTargets, None)?,
+        (None, _) => Vec::new(),
     };
     Ok(match cands.len() {
         1 => (cands.into_iter().next().unwrap(), None),
@@ -1679,8 +1855,10 @@ fn bound_leaf(graph: &dyn Neighbors, cur: &str) -> Result<Option<String>, Error>
 
 /// The callers of `cur` for one UP hop: none for a named non-target; else the direct callers
 /// whose edge targets `cur`, and, for a definition, the callers through a placeholder bound to
-/// its leaf ([`bound_leaf`]), a frontier when the leaf has more than one call-target definition.
-fn callers_of(graph: &dyn Neighbors, cur: &str) -> Result<Vec<Hop>, Error> {
+/// its leaf ([`bound_leaf`]) that reaches it: one keyed by a qualified name only when its
+/// down-hop keeps `cur` (`down_hop`). Each is a frontier when the call-target definitions of the
+/// leaf its placeholder reaches, those its down-hop keeps, are more than one.
+fn callers_of(graph: &dyn Neighbors, cur: &str, down_hop: DownHop) -> Result<Vec<Hop>, Error> {
     if named_call_target(graph, cur)? == Some(false) {
         return Ok(Vec::new());
     }
@@ -1694,19 +1872,27 @@ fn callers_of(graph: &dyn Neighbors, cur: &str) -> Result<Vec<Hop>, Error> {
         .collect();
     if let Some(leaf) = bound_leaf(graph, cur)?.as_deref() {
         let cands = definitions(graph, leaf, Admitted::CallTargets, None)?;
-        let frontier = (cands.len() > 1).then_some(cands);
         let mut via_bare = Vec::new();
         for t in graph.leaf_nodes(leaf)? {
             let target = is_call_target(t.attrs.get("kind").map(String::as_str));
-            if id_binds_leaf(&t.id, leaf) && (node_name(&t).is_none() || !target) {
-                via_bare.extend(graph.incoming(&t.id)?);
+            if !id_binds_leaf(&t.id, leaf) || (node_name(&t).is_some() && target) {
+                continue;
             }
+            let kept = down_hop(&t.id);
+            if kept.as_ref().is_some_and(|k| !k.iter().any(|c| c == cur)) {
+                continue;
+            }
+            let reached = kept_of(&cands, kept.as_deref());
+            let frontier = (reached.len() > 1).then_some(reached);
+            let calls = calls_at(graph.incoming(&t.id)?, |e| &e.from);
+            via_bare.extend(calls.into_iter().map(|via| (via, frontier.clone())));
         }
-        for via in calls_at(via_bare, |e| &e.from) {
+        via_bare.sort_by(|(a, _), (b, _)| a.from.cmp(&b.from));
+        for (via, frontier) in via_bare {
             hops.push(Hop {
                 next: via.from.clone(),
                 via,
-                frontier: frontier.clone(),
+                frontier,
             });
         }
     }
@@ -1832,13 +2018,15 @@ fn layered_call_walk(
 /// The directed `CALLS` walk of [`ContextGraph::calls`] over `graph`: callees (`Down`, a hop to a
 /// placeholder resolved by its leaf) or callers (`Up`, through the placeholders bound to each
 /// definition's leaf, with the referenced-but-not-called files beside them), each edge followed
-/// only at or above `tier_floor`.
+/// only at or above `tier_floor`. A placeholder keyed by a qualified name reaches only the
+/// candidates its down-hop keeps (`down_hop`, [`CodeHalf::down_hop`]).
 pub fn calls(
     graph: &dyn Neighbors,
     seed: &[String],
     direction: Direction,
     depth: i64,
     tier_floor: &str,
+    down_hop: DownHop,
 ) -> Result<CallGraph, Error> {
     let floor = tier_rank(tier_floor, UNRECOGNIZED_FLOOR_RANK);
     let followed = |e: &Edge| tier_rank(&e.tier, UNRECOGNIZED_EDGE_RANK) >= floor;
@@ -1848,7 +2036,7 @@ pub fn calls(
                 let mut hops = Vec::new();
                 for via in calls_at(graph.out(cur)?, |e| &e.to) {
                     if followed(&via) {
-                        let (next, frontier) = resolve_down_hop(graph, &via.to)?;
+                        let (next, frontier) = resolve_down_hop(graph, &via.to, down_hop)?;
                         hops.push(Hop {
                             next,
                             via,
@@ -1868,7 +2056,7 @@ pub fn calls(
         }
         Direction::Up => {
             let hops = |cur: &str| {
-                let mut hops = callers_of(graph, cur)?;
+                let mut hops = callers_of(graph, cur, down_hop)?;
                 hops.retain(|h| followed(&h.via));
                 Ok(hops)
             };
@@ -1956,6 +2144,7 @@ pub(crate) fn hidden_named(graph: &dyn ContextGraph, query: &str) -> Result<Vec<
 
 /// [`ContextGraph::locate`] over `graph`: an exact id (a bare flat node's only once no definition
 /// answers), else the definitions [`shown_candidates`] names, one a site and more the candidates.
+/// The site carries no doc and no referrer, which the composed graph's `locate` adds to it.
 pub fn locate(graph: &dyn Neighbors, entity: &str) -> Result<Located, Error> {
     let (exact, deferred) = match graph.node(entity)? {
         Some(node) if is_bare_flat_node(&node) => (None, Some(node)),
@@ -1994,7 +2183,9 @@ mod tests {
     use crate::code_facts::{
         Def, DocConcept, DocLink, FileFacts, Half, Mention, MentionKind, Stamp, Tip, WfNode,
     };
-    use crate::code_view::{Cluster, DefRef, FactsView, FileRef, Groupings, MentionRef};
+    use crate::code_view::{
+        Cluster, DefRef, Entry, Extract, FactsView, FileRef, Groupings, MentionRef, SourceLines,
+    };
     use crate::contextgraph::{
         KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_CONCEPT, KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE,
         KIND_FINDING, KIND_STAGE, REL_ABOUT, REL_GOVERNS, REL_REALIZES, REL_SPECIFIES,
@@ -2192,7 +2383,8 @@ mod tests {
             let records = Indexed::new(rows, aliases);
             let counted = Counted::new(&view);
             let seed = ["src/b.rs::compute".to_string()];
-            let near = Composed::near(&records, &counted, ViewFilter::default(), exact()).unwrap();
+            let near =
+                Composed::near(&records, &counted, ViewFilter::default(), exact(), None).unwrap();
             let got = near.subgraph(&seed, 1).unwrap();
             let asked = counted.asked.lock().unwrap();
             let past: Vec<&String> = asked.iter().filter(|r| r.contains("src/z.rs")).collect();
@@ -2416,6 +2608,7 @@ mod tests {
             end_line: 2,
             parent: None,
             test: false,
+            doc: None,
         }
     }
 
@@ -2736,7 +2929,9 @@ mod tests {
                 };
                 let filter = ViewFilter::default();
                 let g: Box<dyn ContextGraph + '_> = match near {
-                    true => Box::new(Composed::near(&records, &view, filter, exact()).unwrap()),
+                    true => {
+                        Box::new(Composed::near(&records, &view, filter, exact(), None).unwrap())
+                    }
                     false => Box::new(Composed::new(&records, &view, filter, exact()).unwrap()),
                 };
                 g.subgraph(&[seed.to_string()], 2).unwrap();
@@ -2919,9 +3114,9 @@ mod tests {
                 let open = || -> Box<dyn ContextGraph + '_> {
                     let filter = ViewFilter::default();
                     match near {
-                        true => {
-                            Box::new(Composed::near(&records, &view, filter, honesty()).unwrap())
-                        }
+                        true => Box::new(
+                            Composed::near(&records, &view, filter, honesty(), None).unwrap(),
+                        ),
                         false => Box::new(composed(&records, &view, honesty())),
                     }
                 };
@@ -2987,7 +3182,13 @@ mod tests {
         ];
         let (records, view) = (records(), view(Some("c1")));
         for (case, compared, id, kind, line, want) in cases {
-            let near = Composed::near(&records, &view, ViewFilter::default(), honest(compared));
+            let near = Composed::near(
+                &records,
+                &view,
+                ViewFilter::default(),
+                honest(compared),
+                None,
+            );
             let site = EntitySite {
                 id: id.into(),
                 kind: kind.into(),
@@ -2996,9 +3197,235 @@ mod tests {
                 degree: 0,
                 attrs: BTreeMap::from([("name".to_string(), "run".to_string())]),
                 unresolved: Vec::new(),
+                doc_comment: None,
+                referrers: Vec::new(),
             };
             let got = near.unwrap().definition_end(&site).unwrap();
             assert_eq!(got, want, "{case}");
+        }
+    }
+
+    /// A worktree's lines as a table: each file's span with the raw lines it holds there.
+    struct Lines(Vec<(&'static str, (u32, u32), &'static str)>);
+
+    impl SourceLines for Lines {
+        fn lines(&self, path: &str, span: (u32, u32)) -> Option<String> {
+            (self.0.iter())
+                .find(|(file, at, _)| *file == path && *at == span)
+                .map(|(_, _, raw)| raw.to_string())
+        }
+    }
+
+    /// An extractor whose doc text names the language it read the span's lines as; it extracts as
+    /// [`crate::test_support::NoDocRule`] does.
+    struct LangMarked;
+
+    impl Extract for LangMarked {
+        fn fingerprint(&self) -> u64 {
+            crate::test_support::NoDocRule.fingerprint()
+        }
+
+        fn extract(&self, entry: &Entry, bytes: &[u8]) -> FileFacts {
+            crate::test_support::NoDocRule.extract(entry, bytes)
+        }
+
+        fn doc_text(&self, lang: &str, raw: &str) -> String {
+            format!("{lang}: {raw}")
+        }
+    }
+
+    /// A node's doc is its facts' doc span read from the worktree: GIVEN the facts of `src/a.rs`
+    /// documenting the file on lines 1-2, `run` at line 4 on line 3, two `helper`s and a test twin
+    /// at line 8, two `tie`s at line 30 sharing an end line with the first alone documented, and
+    /// `gone` at line 14 on a span the worktree does not hold, and `src/b.rs` with no doc, WHEN the
+    /// near read is asked each node's doc, THEN a read describing the worktree gives the
+    /// extractor's text of the span's lines - the file's, or the widest production definition's at
+    /// the node's name, kind and line, the first of an end-line tie - and none for a site no
+    /// definition sits at, a nameless node, a definition or file with no doc, a span the worktree
+    /// does not hold, a record node or a file the view holds no facts of though the worktree holds
+    /// its lines at (1, 2), while a read withholding its code facts, or opened with no doc reader,
+    /// gives none.
+    #[test]
+    fn a_node_s_doc_is_its_facts_span_read_from_the_worktree() {
+        let documented = |local: &str, line, end_line, doc, test| Def {
+            line,
+            end_line,
+            doc: Some(doc),
+            test,
+            ..def(local)
+        };
+        let a = FileFacts {
+            doc: Some((1, 2)),
+            ..rust(
+                "src/a.rs",
+                vec![
+                    documented("run", 4, 5, (3, 3), false),
+                    documented("helper", 8, 9, (7, 7), false),
+                    documented("helper", 8, 12, (6, 7), false),
+                    documented("helper", 8, 20, (5, 5), true),
+                    documented("gone", 14, 15, (13, 13), false),
+                    documented("tie", 30, 31, (29, 29), false),
+                    Def {
+                        line: 30,
+                        end_line: 31,
+                        ..def("tie")
+                    },
+                ],
+                Vec::new(),
+            )
+        };
+        let b = rust("src/b.rs", vec![def("compute")], Vec::new());
+        let mut view = view(Some("c1"));
+        view.facts = FactsView::new(view.facts.stamp().clone(), vec![a, b]);
+        let lines = Lines(vec![
+            ("src/a.rs", (1, 2), "//! A.\n//! More."),
+            ("src/a.rs", (3, 3), "/// Runs."),
+            ("src/a.rs", (5, 5), "/// Tests."),
+            ("src/a.rs", (6, 7), "/// Helps\n/// widely."),
+            ("src/a.rs", (7, 7), "/// Helps."),
+            ("src/a.rs", (29, 29), "/// Ties first."),
+            ("src/c.rs", (1, 2), "//! C."),
+        ]);
+        let reader = DocReader {
+            lines: &lines,
+            extract: &LangMarked,
+        };
+        let records = records();
+        let read = |compared, docs| {
+            Composed::near(
+                &records,
+                &view,
+                ViewFilter::default(),
+                honest(compared),
+                docs,
+            )
+            .unwrap()
+        };
+        let held = |id: &str| -> Node {
+            let graph = read(Compared::Overlaid(0), None).subgraph(&[id.into()], 0);
+            graph
+                .unwrap()
+                .nodes
+                .into_iter()
+                .find(|n| n.id == id)
+                .expect(id)
+        };
+        let entity = |id: &str, name: &str, kind: &str, line: &str| {
+            let attrs = [("name", name), ("kind", kind), ("line", line)];
+            node(id, KIND_CODE_ENTITY, &attrs)
+        };
+        let run = held("src/a.rs::run");
+        // (case, the comparison, whether the read has a doc reader, the node, its doc)
+        let cases = [
+            (
+                "a definition's doc",
+                Compared::Overlaid(0),
+                true,
+                run.clone(),
+                Some("rust: /// Runs."),
+            ),
+            (
+                "the file's doc",
+                Compared::Overlaid(0),
+                true,
+                held("src/a.rs"),
+                Some("rust: //! A.\n//! More."),
+            ),
+            (
+                "an overlaid read",
+                Compared::Overlaid(1),
+                true,
+                run.clone(),
+                Some("rust: /// Runs."),
+            ),
+            (
+                "the widest production definition at its line",
+                Compared::Overlaid(0),
+                true,
+                entity("src/a.rs::helper", "helper", "function", "8"),
+                Some("rust: /// Helps\n/// widely."),
+            ),
+            (
+                "the first of an end-line tie",
+                Compared::Overlaid(0),
+                true,
+                entity("src/a.rs::tie", "tie", "function", "30"),
+                Some("rust: /// Ties first."),
+            ),
+            (
+                "another line",
+                Compared::Overlaid(0),
+                true,
+                entity("src/a.rs::run", "run", "function", "5"),
+                None,
+            ),
+            (
+                "another kind",
+                Compared::Overlaid(0),
+                true,
+                entity("src/a.rs::run", "run", "struct", "4"),
+                None,
+            ),
+            (
+                "a nameless node",
+                Compared::Overlaid(0),
+                true,
+                node("src/a.rs::run", KIND_CODE_ENTITY, &[("line", "4")]),
+                None,
+            ),
+            (
+                "a definition with no doc",
+                Compared::Overlaid(0),
+                true,
+                held("src/b.rs::compute"),
+                None,
+            ),
+            (
+                "a file with no doc",
+                Compared::Overlaid(0),
+                true,
+                held("src/b.rs"),
+                None,
+            ),
+            (
+                "a span the worktree does not hold",
+                Compared::Overlaid(0),
+                true,
+                entity("src/a.rs::gone", "gone", "function", "14"),
+                None,
+            ),
+            (
+                "a record node",
+                Compared::Overlaid(0),
+                true,
+                node("dec-1", KIND_DECISION, &[("title", "keep it")]),
+                None,
+            ),
+            (
+                "a file the view holds no facts of",
+                Compared::Overlaid(0),
+                true,
+                node("src/c.rs", KIND_FILE, &[]),
+                None,
+            ),
+            (
+                "no comparison",
+                Compared::Uncomparable,
+                true,
+                run.clone(),
+                None,
+            ),
+            (
+                "no doc reader",
+                Compared::Overlaid(0),
+                false,
+                run.clone(),
+                None,
+            ),
+        ];
+        for (case, compared, docs, node, want) in cases {
+            let got = read(compared, docs.then_some(reader)).doc(&node);
+            assert_eq!(got.as_deref(), want, "{case}");
         }
     }
 
@@ -3046,7 +3473,9 @@ mod tests {
                 let filter = ViewFilter::default();
                 let honesty = || honest(compared);
                 let g: Box<dyn ContextGraph + '_> = match near {
-                    true => Box::new(Composed::near(&records, &view, filter, honesty()).unwrap()),
+                    true => {
+                        Box::new(Composed::near(&records, &view, filter, honesty(), None).unwrap())
+                    }
                     false => Box::new(composed(&records, &view, honesty())),
                 };
                 let whole = ContextGraph::whole(&composed(&records, &view, honesty())).unwrap();
@@ -3117,7 +3546,8 @@ mod tests {
                 let honesty = honest(compared);
                 let g: Box<dyn ContextGraph + '_> = if near {
                     Box::new(
-                        Composed::near(&records, &view, ViewFilter::default(), honesty).unwrap(),
+                        Composed::near(&records, &view, ViewFilter::default(), honesty, None)
+                            .unwrap(),
                     )
                 } else {
                     Box::new(composed(&records, &view, honesty))

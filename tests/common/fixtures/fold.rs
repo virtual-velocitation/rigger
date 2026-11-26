@@ -174,11 +174,12 @@ pub fn assert_live_calls(
     assert_live(p, REL_CALLS, calls, why);
 }
 
+/// One landed edge as [`landed`] gives it: `(from, rel, to, tier)`.
+pub type LandedEdge = (String, String, String, String);
+
 /// Every live `REFERENCES` and `CALLS` edge `p` serves, as `(from, rel, to, tier)`, sorted:
 /// where each reference landed and at what tier.
-pub fn landed(
-    p: &(impl rigger::contextgraph::Neighbors + ?Sized),
-) -> Vec<(String, String, String, String)> {
+pub fn landed(p: &(impl rigger::contextgraph::Neighbors + ?Sized)) -> Vec<LandedEdge> {
     let mut edges: Vec<_> = p
         .whole()
         .unwrap()

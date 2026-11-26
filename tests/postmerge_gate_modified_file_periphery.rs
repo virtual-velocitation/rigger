@@ -137,6 +137,7 @@ fn a_locally_modified_tracked_file_in_the_operators_checkout_never_reaches_the_p
         store: &store,
         driver: &driver,
         gates: &ExecRunner,
+        run_branch: common::fixtures::branch_of(&repo_path),
         repo: repo_path.clone(),
         grounder: None,
         graph: None,

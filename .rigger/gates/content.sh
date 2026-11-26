@@ -41,7 +41,8 @@
 #     operator commits that landed on the run branch directly included, never only the check-in
 #     branch's own commits. An empty base refuses: the run recorded no base tip, so there is no
 #     spec diff to check.
-# A base that names no commit refuses too, rather than reading a failed diff as a clean one.
+# A base that names no commit, or one sharing no history with HEAD, refuses too, rather than
+# reading a failed diff as a clean one.
 
 check=${1:-}
 if [ $# -ge 2 ]; then
@@ -55,6 +56,10 @@ else
 fi
 git rev-parse -q --verify "$base^{commit}" > /dev/null || {
     echo "$check gate: base '$base' names no commit in this repository, so there is no diff to check; refusing"
+    exit 1
+}
+git merge-base "$base" HEAD > /dev/null || {
+    echo "$check gate: base '$base' shares no history with HEAD, so there is no diff to check; refusing"
     exit 1
 }
 

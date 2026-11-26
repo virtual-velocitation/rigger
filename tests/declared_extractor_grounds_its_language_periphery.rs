@@ -7,21 +7,34 @@
 //! stderr as `rigger: extractor <name>: <path>: <why>`, leaves the file its identity facts and
 //! closes the session, the next file starting a new one, and the file is asked again only when its
 //! content or the declaration changes; a graph read in a linked worktree asks the root's
-//! extractor for the worktree's text of a declared file it changed; and `rigger graph --show`
+//! extractor for the worktree's text of a declared file it changed, and a one-shot read - a
+//! lookup, a show, a neighbourhood - has closed and waited for every session it started by the
+//! time it exits; and `rigger graph --show`
 //! bounds a declared definition's body by the `end_line` the root's extractor answers for the
 //! shown tree's text, in a session of its own, a failed answer leaving a note and never the
-//! bundled grammar's bound.
+//! bundled grammar's bound; and a reference the answer qualifies by a path or a member is held as
+//! the mention named as written, of its leaf (spec 117, CAPTURES), and lands on the definition its
+//! qualifier keeps, while an answer qualifying a name that holds a separator, or that the name
+//! written after its qualifier reads back as another leaf, is a failed answer; and the code store
+//! holds a declared answer's mentions, as it holds those of a file the bundled grammar reads, one
+//! tagged mention per enclosing definition, name, leaf, tag and test flag, in the first one's
+//! place at the lowest of their lines, and every call, one per site (spec 117, ONE TAGGED MENTION
+//! PER SITE KIND); and each mention the code store holds, of either extractor, reads the label its
+//! referrer is listed under by its tag alone (spec 117, READERS).
 
 use std::path::Path;
 
 use crate::common;
-use common::cli::{past_label, run_rigger, source_repository, write_scaffold, BuiltGraph, SOURCE};
+use common::cli::{
+    past_label, run_rigger, run_rigger_to_files, source_repository, write_scaffold, BuiltGraph,
+    SOURCE,
+};
 use common::fixtures::{
-    answer_defining, answer_defining_at, declared_identity, git_ok, git_out, request_for,
-    root_dir_of, workflow_declaring_extractors, write_files, StubExtractor,
+    answer_defining, answer_defining_at, answer_with_refs, declared_identity, git_ok, git_out,
+    request_for, root_dir_of, workflow_declaring_extractors, write_files, StubExtractor,
 };
 use common::git::linked_worktree;
-use rigger_domain::code_facts::{Def, FileFacts};
+use rigger_domain::code_facts::{Def, FileFacts, Mention, MentionKind};
 use rigger_domain::code_view::{CodeView, Entry, Extract};
 use rigger_grounder::facts::FactsExtractor;
 
@@ -72,6 +85,7 @@ fn declared_facts(root: &Path, path: &str, lang: &str, leaves: &[&str]) -> FileF
                 end_line: 1,
                 parent: None,
                 test: false,
+                doc: None,
             })
             .collect(),
         ..declared_identity(path, &committed_blob(root, path), lang)
@@ -195,9 +209,11 @@ fn graph_build_grounds_each_committed_declared_file_from_one_session() {
 
 /// Given a committed repository declaring the stub for `zig`, when the operator builds the graph,
 /// each file the stub answers with an error (quoted, so its line break says no second line), with
-/// another file's path, with two defs each naming the other its parent, or not at all is said on
-/// stderr with why on one line, holds its identity facts and no
-/// definitions, and closes the session, so the next file starts a new one in the root, while the
+/// another file's path, with two defs each naming the other its parent, with a qualified ref whose
+/// name holds a separator (`+.` of the member `Float`) or reads back from the name written after
+/// its qualifier as another leaf (`:b` of the path `Q`, written `Q:::b`, read back as `b`), or not
+/// at all is said on stderr with why on one line, holds its identity facts and no definitions or
+/// mentions, and closes the session, so the next file starts a new one in the root, while the
 /// file the stub answers well holds its definition. Built again, nothing changed asks nothing; a
 /// committed change asks that file alone; and a changed declaration asks every file - each of them
 /// in one session, saying nothing on stderr.
@@ -208,8 +224,18 @@ fn a_failed_answer_is_said_and_asked_again_only_when_its_file_or_the_declaration
     let stub = StubExtractor::new(kept.path());
     declare(&root, &stub, "zig", "[zig]");
     let root_dir = root.display().to_string();
+    // The answer to `path` referring on its first line to `name` qualified by `qualifier`, a path
+    // when `is_path`, a member access otherwise.
+    let qualifying = |path: &str, name: &str, qualifier: &str, is_path: bool| {
+        answer_with_refs(
+            path,
+            &format!(
+                r#"{{"name":"{name}","line":1,"qualifier":{{"name":"{qualifier}","path":{is_path}}}}}"#
+            ),
+        )
+    };
     // (the file, its committed text, the stub's first answer, why that answer fails)
-    let first: [(&str, &str, Option<String>, Option<&str>); 5] = [
+    let first: [(&str, &str, Option<String>, Option<&str>); 7] = [
         (
             "src/a.zig",
             "a\n",
@@ -234,6 +260,18 @@ fn a_failed_answer_is_said_and_asked_again_only_when_its_file_or_the_declaration
             "e\n",
             Some(answer_defining("src/e.zig", "e")),
             None,
+        ),
+        (
+            "src/f.zig",
+            "f\n",
+            Some(qualifying("src/f.zig", "+.", "Float", false)),
+            Some(r#"refs[0]: a qualified ref's name "+." holds "::" or ".""#),
+        ),
+        (
+            "src/g.zig",
+            "g\n",
+            Some(qualifying("src/g.zig", ":b", "Q", true)),
+            Some(r#"refs[0]: a qualified ref's name ":b" reads back from "Q:::b" as "b""#),
         ),
     ];
     commit(
@@ -297,14 +335,14 @@ fn a_failed_answer_is_said_and_asked_again_only_when_its_file_or_the_declaration
 
     let good = |path: &str, leaf: &str| (path.to_string(), answer_defining(path, leaf));
     // (what changed, the files committed, the answers the stub gives, the extensions declared, the
-    // requests the build asks, the leaves src/a.zig to src/e.zig then hold)
+    // requests the build asks, the leaves src/a.zig to src/g.zig then hold)
     type Rebuild<'a> = (
         &'a str,
         &'a [(&'a str, &'a str)],
         Vec<(String, String)>,
         &'a str,
         Vec<String>,
-        [&'a [&'a str]; 5],
+        [&'a [&'a str]; 7],
     );
     let rebuilds: [Rebuild; 3] = [
         (
@@ -313,7 +351,7 @@ fn a_failed_answer_is_said_and_asked_again_only_when_its_file_or_the_declaration
             vec![],
             "[zig]",
             vec![],
-            [&[], &[], &[], &[], &["e"]],
+            [&[], &[], &[], &[], &["e"], &[], &[]],
         ),
         (
             "src/a.zig's committed text",
@@ -321,7 +359,7 @@ fn a_failed_answer_is_said_and_asked_again_only_when_its_file_or_the_declaration
             vec![good("src/a.zig", "a")],
             "[zig]",
             vec![request_for("src/a.zig", "a2\n")],
-            [&["a"], &[], &[], &[], &["e"]],
+            [&["a"], &[], &[], &[], &["e"], &[], &[]],
         ),
         (
             "the declaration",
@@ -330,6 +368,8 @@ fn a_failed_answer_is_said_and_asked_again_only_when_its_file_or_the_declaration
                 good("src/b.zig", "b"),
                 good("src/c.zig", "c"),
                 good("src/d.zig", "d"),
+                good("src/f.zig", "f"),
+                good("src/g.zig", "g"),
             ],
             "[zig, zag]",
             [
@@ -338,10 +378,12 @@ fn a_failed_answer_is_said_and_asked_again_only_when_its_file_or_the_declaration
                 ("src/c.zig", "c\n"),
                 ("src/d.zig", "d\n"),
                 ("src/e.zig", "e\n"),
+                ("src/f.zig", "f\n"),
+                ("src/g.zig", "g\n"),
             ]
             .map(|(path, text)| request_for(path, text))
             .to_vec(),
-            [&["a"], &["b"], &["c"], &["d"], &["e"]],
+            [&["a"], &["b"], &["c"], &["d"], &["e"], &["f"], &["g"]],
         ),
     ];
     for (changed, commits, answers, extensions, asked, leaves) in rebuilds {
@@ -437,6 +479,66 @@ fn a_read_in_a_linked_worktree_asks_the_roots_extractor_for_the_text_it_changed(
         &[declared_facts(&root, "src/a.zig", "zig", &["kept"])],
         "the root's store after the read",
     );
+}
+
+/// Given a repository built under a declaration and a linked worktree of it, whose stub waits a
+/// second once its input ends, when a declared file is changed in the worktree and the operator
+/// looks a name up, shows a definition or reads a file's neighbourhood there, each read starts
+/// one session of the root's extractor, in the root, asks it the worktree's text alone, and has
+/// closed and waited for that session by the time it exits, saying nothing on stderr. Each read's
+/// stdout and stderr are files, not pipes the test reads to their end, so the read's end is
+/// rigger's own though the stub inherits its stderr; each changes the file's text, so no read is
+/// answered from an earlier one's.
+#[test]
+fn a_one_shot_read_closes_and_waits_for_its_session_before_it_exits() {
+    let (_dir, root) = source_repository();
+    let kept = tempfile::tempdir().expect("tempdir");
+    let stub = StubExtractor::new(kept.path());
+    declare(&root, &stub, "zig", "[zig]");
+    commit(&root, &[("src/a.zig", "a\n")]);
+    stub.answers("src/a.zig", &answer_defining("src/a.zig", "kept"));
+    let (out, err, ok) = run_rigger(&root, &["graph", "build"]);
+    assert_eq!(
+        (ok, err.as_str()),
+        (true, ""),
+        "graph build succeeds saying nothing on stderr; stdout: {out}"
+    );
+    let trees = tempfile::tempdir().expect("tempdir");
+    let worktree = linked_worktree(
+        &root,
+        trees.path().canonicalize().expect("canonical").join("wt"),
+    );
+    stub.lingers(1);
+    for (leaf, read) in [
+        ("looked", ["graph", "--lookup", "looked"]),
+        ("shown", ["graph", "--show", "src/a.zig::shown"]),
+        ("near", ["graph", "--around", "src/a.zig"]),
+    ] {
+        let text = format!("{leaf}\n");
+        std::fs::write(worktree.join("src/a.zig"), &text).expect("change a declared file");
+        stub.answers("src/a.zig", &answer_defining("src/a.zig", leaf));
+        let (starts, requests, ends) = (stub.starts(), stub.requests(), stub.ends());
+        let (out, err, ok) = run_rigger_to_files(&worktree, &read);
+        assert_eq!(
+            (ok, err.as_str()),
+            (true, ""),
+            "{read:?} succeeds saying nothing on stderr; stdout: {out}"
+        );
+        assert_eq!(
+            (
+                stub.starts()[starts.len()..].to_vec(),
+                stub.requests()[requests.len()..].to_vec(),
+                stub.ends()[ends.len()..].to_vec()
+            ),
+            (
+                vec![root_dir_of(&root)],
+                vec![request_for("src/a.zig", &text)],
+                ended(1)
+            ),
+            "{read:?}: the read's one session started in the root, was asked the worktree's text \
+             and had ended when the read exited"
+        );
+    }
 }
 
 /// A Zig file holding `main` over its lines 2 to 4, between two other lines.
@@ -659,4 +761,291 @@ fn graph_show_bounds_a_declared_definitions_body_by_its_extractors_end_line() {
             case.query
         );
     }
+}
+
+/// A Zig file whose `main`, over its lines 7 to 14, calls the `area` of `Shape` through a path,
+/// the `area` of `Disk` through a member access and an `area` by its name alone, then the `:b` of
+/// `Disk` through a member access, the `a:b` of `Shape` through a path and an `x.y` by its name
+/// alone.
+const AREAS_ZIG: &str = concat!(
+    "const Shape = struct {\n    fn area() void {}\n};\n",
+    "const Disk = struct {\n    fn area() void {}\n};\n",
+    "pub fn main() void {\n    Shape::area();\n    Disk.area();\n    area();\n",
+    "    Disk.@\":b\"();\n    Shape::@\"a:b\"();\n    @\"x.y\"();\n}\n",
+);
+
+/// The answer to `src/q.zig` holding [`AREAS_ZIG`]: the definitions `Shape`, `Shape::area`,
+/// `Disk`, `Disk::area` and `main`, and `main`'s three calls of `area` on lines 8 to 10, the first
+/// qualified by the path `Shape`, the second by the member `Disk`, the third carrying no qualifier,
+/// then its calls on lines 11 to 13 of names just inside what the protocol accepts: `:b` qualified
+/// by the member `Disk`, `a:b` by the path `Shape`, and `x.y`, holding a separator, by nothing.
+const AREAS_ANSWER: &str = concat!(
+    r#"{"path":"src/q.zig","defs":["#,
+    r#"{"kind":"Type","name":"Shape","line":1,"end_line":3,"path":"Shape"},"#,
+    r#"{"kind":"Method","name":"area","line":2,"end_line":2,"path":"Shape::area","parent":"Shape"},"#,
+    r#"{"kind":"Type","name":"Disk","line":4,"end_line":6,"path":"Disk"},"#,
+    r#"{"kind":"Method","name":"area","line":5,"end_line":5,"path":"Disk::area","parent":"Disk"},"#,
+    r#"{"kind":"Function","name":"main","line":7,"end_line":14,"path":"main"}"#,
+    r#"],"refs":["#,
+    r#"{"name":"area","line":8,"enclosing":"main","qualifier":{"name":"Shape","path":true}},"#,
+    r#"{"name":"area","line":9,"enclosing":"main","qualifier":{"name":"Disk","path":false}},"#,
+    r#"{"name":"area","line":10,"enclosing":"main"},"#,
+    r#"{"name":":b","line":11,"enclosing":"main","qualifier":{"name":"Disk","path":false}},"#,
+    r#"{"name":"a:b","line":12,"enclosing":"main","qualifier":{"name":"Shape","path":true}},"#,
+    r#"{"name":"x.y","line":13,"enclosing":"main"}"#,
+    r#"]}"#
+);
+
+/// Given a committed repository whose workflow declares the stub for `zig`, and a file whose
+/// answer gives `main` three calls of the leaf `area` - qualified by the path `Shape`, by the
+/// member `Disk`, and by nothing - when the operator builds the graph, A QUALIFIER CAPTURE NAMES
+/// THE MENTION (spec 117, CAPTURES) through THE EXTRACTOR PROTOCOL: the store holds the mentions
+/// `Shape::area`, `Disk.area` and `area`, each of the leaf `area`, and the graph lands the first
+/// two, `extracted`, on the `area` their qualifier keeps, while the third, which neither of its
+/// same-file candidates takes alone, lands `inferred` on its placeholder. The answer's calls of
+/// names just inside what the protocol accepts are held too, so the answer is no failed one: `:b`
+/// after the member `Disk` as `Disk.:b`, `a:b` after the path `Shape` as `Shape::a:b`, and the
+/// unqualified `x.y` as itself, each of the leaf answered, and with no definition of its leaf each
+/// lands `ambiguous` on its leaf's placeholder - neither qualifier keeps a target, and `x.y`,
+/// written as its leaf, has none to read. Nothing is said on stderr.
+#[test]
+fn graph_build_names_a_declared_reference_by_its_qualifier_and_lands_it_where_that_reaches() {
+    use rigger::contextgraph::query::{entity_id, placeholder_id};
+    use rigger::contextgraph::{TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED};
+
+    let path = "src/q.zig";
+    let (_dir, root) = source_repository();
+    let kept = tempfile::tempdir().expect("tempdir");
+    let stub = StubExtractor::new(kept.path());
+    declare(&root, &stub, "zig", "[zig]");
+    commit(&root, &[(path, AREAS_ZIG)]);
+    stub.answers(path, AREAS_ANSWER);
+    let (out, err, ok) = run_rigger(&root, &["graph", "build"]);
+    let graph = BuiltGraph::of(&root);
+    let found = (
+        ok,
+        err,
+        graph
+            .view
+            .file(path)
+            .map(|facts| facts.into_owned().mentions),
+        common::fixtures::landed(&graph),
+    );
+
+    let in_main = |name: &str, leaf: &str, line| Mention {
+        enclosing: Some(4),
+        name: name.to_string(),
+        leaf: leaf.to_string(),
+        kind: MentionKind::Call,
+        line,
+        test: false,
+    };
+    let mut edges: Vec<_> = [
+        (entity_id(path, "Shape::area"), TIER_EXTRACTED),
+        (entity_id(path, "Disk::area"), TIER_EXTRACTED),
+        (placeholder_id(path, "area"), TIER_INFERRED),
+        (placeholder_id(path, ":b"), TIER_AMBIGUOUS),
+        (placeholder_id(path, "a:b"), TIER_AMBIGUOUS),
+        (placeholder_id(path, "x.y"), TIER_AMBIGUOUS),
+    ]
+    .iter()
+    .flat_map(|(to, tier)| common::fixtures::a_call_from(path, "main", to, tier))
+    .collect();
+    edges.sort();
+    assert_eq!(
+        found,
+        (
+            true,
+            String::new(),
+            Some(vec![
+                in_main("Shape::area", "area", 8),
+                in_main("Disk.area", "area", 9),
+                in_main("area", "area", 10),
+                in_main("Disk.:b", ":b", 11),
+                in_main("Shape::a:b", "a:b", 12),
+                in_main("x.y", "x.y", 13),
+            ]),
+            edges,
+        ),
+        "each declared reference is named as written and lands where that name reaches; stdout: \
+         {out}"
+    );
+}
+
+/// A Zig file defining `LIMIT`, `g` and `f`, in that order, whose `f`, over its lines 3 to 10,
+/// reads `LIMIT` on lines 4 and 6, calls `g` twice on line 5, then reads the constant named `a.b`
+/// on line 7 and the `b` of `a` through a member access on line 8.
+const REPEATS_ZIG: &str = concat!(
+    "const LIMIT = 3;\nfn g() void {}\npub fn f() u32 {\n",
+    "    const x = LIMIT;\n    g(); g();\n    const y = LIMIT;\n",
+    "    _ = @\"a.b\";\n    _ = a.b;\n    return x + y;\n}\n",
+);
+
+/// The answer to `src/r.zig` holding [`REPEATS_ZIG`]: the definitions `LIMIT`, `g` and `f`, then
+/// `f`'s references out of line order - the `const` read of `LIMIT` on line 6, the two calls of
+/// `g` on line 5, the `const` read of `LIMIT` on line 4 - and its `const` reads of the unqualified
+/// `a.b` on line 7 and of `b` qualified by the member `a` on line 8, both written `a.b`.
+const REPEATS_ANSWER: &str = concat!(
+    r#"{"path":"src/r.zig","defs":["#,
+    r#"{"kind":"Constant","name":"LIMIT","line":1,"end_line":1,"path":"LIMIT"},"#,
+    r#"{"kind":"Function","name":"g","line":2,"end_line":2,"path":"g"},"#,
+    r#"{"kind":"Function","name":"f","line":3,"end_line":10,"path":"f"}"#,
+    r#"],"refs":["#,
+    r#"{"name":"LIMIT","line":6,"enclosing":"f","ref_kind":"const"},"#,
+    r#"{"name":"g","line":5,"enclosing":"f"},"#,
+    r#"{"name":"g","line":5,"enclosing":"f"},"#,
+    r#"{"name":"LIMIT","line":4,"enclosing":"f","ref_kind":"const"},"#,
+    r#"{"name":"a.b","line":7,"enclosing":"f","ref_kind":"const"},"#,
+    r#"{"name":"b","line":8,"enclosing":"f","ref_kind":"const","#,
+    r#""qualifier":{"name":"a","path":false}}"#,
+    r#"]}"#
+);
+
+/// Given a committed repository whose workflow declares the stub for `zig`, holding a Rust file
+/// whose `f` reads `LIMIT` three times and calls `g` three times and the Zig file
+/// [`REPEATS_ZIG`] answered as [`REPEATS_ANSWER`], when the operator builds the graph, the code
+/// store holds each file's mentions as ONE TAGGED MENTION PER SITE KIND (spec 117) keeps them,
+/// whichever extractor read the file: the Rust file's one `const` mention of `LIMIT` at the first
+/// read's line 4 after its three calls of `g`, one per line; the Zig file's one `const` mention of
+/// `LIMIT` in the place of the answer's first, at the lower of its lines, 4, its two calls of `g`
+/// on line 5 both kept, and its two `const` mentions written `a.b` kept apart by their leaves,
+/// `a.b` and `b`. Nothing is said on stderr.
+#[test]
+fn graph_build_stores_one_tagged_mention_per_site_kind_and_every_call_of_each_extractor() {
+    use crate::symbol_index::{mention_in, THREE_READS_AND_THREE_CALLS_SOURCE};
+
+    let zig = "src/r.zig";
+    let (_dir, root) = source_repository();
+    let kept = tempfile::tempdir().expect("tempdir");
+    let stub = StubExtractor::new(kept.path());
+    declare(&root, &stub, "zig", "[zig]");
+    // (the file, its committed text, the mentions the store holds of it; `f` is the definition
+    // at index 2 of each)
+    let in_f = |name, leaf, kind, line| mention_in(Some(2), name, leaf, kind, line, false);
+    let table = [
+        (
+            "src/lib.rs",
+            THREE_READS_AND_THREE_CALLS_SOURCE,
+            vec![
+                in_f("g", "g", None, 5),
+                in_f("g", "g", None, 7),
+                in_f("g", "g", None, 9),
+                in_f("LIMIT", "LIMIT", Some("const"), 4),
+            ],
+        ),
+        (
+            zig,
+            REPEATS_ZIG,
+            vec![
+                in_f("LIMIT", "LIMIT", Some("const"), 4),
+                in_f("g", "g", None, 5),
+                in_f("g", "g", None, 5),
+                in_f("a.b", "a.b", Some("const"), 7),
+                in_f("a.b", "b", Some("const"), 8),
+            ],
+        ),
+    ];
+    let files: Vec<(&str, &str)> = table.iter().map(|&(path, text, _)| (path, text)).collect();
+    commit(&root, &files);
+    stub.answers(zig, REPEATS_ANSWER);
+    let (out, err, ok) = run_rigger(&root, &["graph", "build"]);
+    let graph = BuiltGraph::of(&root);
+    let (found, expected): (Vec<_>, Vec<_>) = table
+        .into_iter()
+        .map(|(path, _, mentions)| {
+            let held = graph
+                .view
+                .file(path)
+                .map(|facts| facts.into_owned().mentions);
+            ((path, held), (path, Some(mentions)))
+        })
+        .unzip();
+    assert_eq!(
+        (ok, err, found),
+        (true, String::new(), expected),
+        "each file's mentions are stored one tagged mention per site kind and every call; \
+         stdout: {out}"
+    );
+}
+
+/// A Zig file whose lines 1 to 7 import `math`, take a `Shape`, check it against `Area`, compare
+/// its kind with the variant `Round`, call `g`, read its field `radius` and read `LIMIT`.
+const EVERY_TAG_ZIG: &str = concat!(
+    "const math = @import(\"math.zig\");\npub fn f(s: Shape) u32 {\n",
+    "    comptime Area.check(Shape);\n    _ = s.kind == .Round;\n    g();\n",
+    "    const r = s.radius;\n    return r + LIMIT;\n}\n",
+);
+
+/// The references of the answer to the file holding [`EVERY_TAG_ZIG`], one per line 1 to 7, each
+/// of a tag THE EXTRACTOR PROTOCOL accepts and a call where it omits the tag: the `use` of `math`,
+/// the `type` `Shape`, the `impl` `Area`, the `variant` `Round`, the call of `g`, the `field`
+/// `radius` and the `const` `LIMIT`.
+const EVERY_TAG_REFS: &str = concat!(
+    r#"{"name":"math","line":1,"ref_kind":"use"},"#,
+    r#"{"name":"Shape","line":2,"ref_kind":"type"},"#,
+    r#"{"name":"Area","line":3,"ref_kind":"impl"},"#,
+    r#"{"name":"Round","line":4,"ref_kind":"variant"},"#,
+    r#"{"name":"g","line":5},"#,
+    r#"{"name":"radius","line":6,"ref_kind":"field"},"#,
+    r#"{"name":"LIMIT","line":7,"ref_kind":"const"}"#,
+);
+
+/// Given a committed repository whose workflow declares the stub for `zig`, holding the Rust tree
+/// whose user file imports `Kestrel`, takes it as a type, calls `draw` and reads `QUOTA_CAP`, and a
+/// Zig file answered with one reference of each tag the protocol accepts and one call, when the
+/// operator builds the graph, every mention the code store holds reads the label its referrer is
+/// listed under (spec 117, READERS) by its tag alone, whichever extractor gave it: a `use` reads
+/// `imported by`, a `type` `type use`, a `const` `reads`, an `impl` `implemented by`, a `field`
+/// `field use`, a `variant` `variant use` and a call `called by`. Nothing is said on stderr.
+#[test]
+fn each_stored_mention_reads_its_tags_referrer_label_whichever_extractor_gave_it() {
+    use common::fixtures::{REFERENCE_KINDS_DEFINER, REFERENCE_KINDS_TREE, REFERENCE_KINDS_USER};
+    use rigger::contextgraph::referrer_label;
+
+    let zig = "src/t.zig";
+    let (_dir, root) = source_repository();
+    let kept = tempfile::tempdir().expect("tempdir");
+    let stub = StubExtractor::new(kept.path());
+    declare(&root, &stub, "zig", "[zig]");
+    let mut files = REFERENCE_KINDS_TREE.to_vec();
+    files.push((zig, EVERY_TAG_ZIG));
+    commit(&root, &files);
+    stub.answers(zig, &answer_with_refs(zig, EVERY_TAG_REFS));
+    let (out, err, ok) = run_rigger(&root, &["graph", "build"]);
+    let graph = BuiltGraph::of(&root);
+    let mut labelled: Vec<(&str, u32, String, Option<&str>)> =
+        [REFERENCE_KINDS_DEFINER, REFERENCE_KINDS_USER, zig]
+            .into_iter()
+            .flat_map(|path| {
+                let held = graph.view.file(path);
+                let facts = held.unwrap_or_else(|| panic!("the code store holds {path}"));
+                (facts.into_owned().mentions.into_iter())
+                    .map(move |m| (path, m.line, m.name, referrer_label(&m.kind)))
+            })
+            .collect();
+    labelled.sort();
+    assert_eq!(
+        (ok, err, labelled),
+        (
+            true,
+            String::new(),
+            [
+                (zig, 1, "math", Some("imported by")),
+                (zig, 2, "Shape", Some("type use")),
+                (zig, 3, "Area", Some("implemented by")),
+                (zig, 4, "Round", Some("variant use")),
+                (zig, 5, "g", Some("called by")),
+                (zig, 6, "radius", Some("field use")),
+                (zig, 7, "LIMIT", Some("reads")),
+                (REFERENCE_KINDS_USER, 1, "Kestrel", Some("imported by")),
+                (REFERENCE_KINDS_USER, 2, "Kestrel", Some("type use")),
+                (REFERENCE_KINDS_USER, 2, "QUOTA_CAP", Some("reads")),
+                (REFERENCE_KINDS_USER, 2, "draw", Some("called by")),
+            ]
+            .map(|(path, line, name, label)| (path, line, name.to_string(), label))
+            .to_vec(),
+        ),
+        "each stored mention, (path, line, name as written, label), reads its tag's label; \
+         stdout: {out}"
+    );
 }

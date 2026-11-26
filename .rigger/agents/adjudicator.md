@@ -34,7 +34,7 @@ So: END YOUR RESULT OUTPUT with a single JSON line that carries your verdict AND
 
 ## When you critique a spec or a plan
 
-In a spec or plan critique this section's rules decide which finding blocks; the working discipline's review rule decides a unit diff's findings. In a plan critique this section's criterion reads as a unit (twin and bundled criteria are twin and bundled units), and Rules 7 and 8 and the unit-size rule read as written.
+In a spec or plan critique this section's rules decide which finding blocks; the working discipline's review rule decides a unit diff's findings. In a plan critique this section's criterion reads as a unit (twin and bundled criteria are twin and bundled units), and Rules 7 and 8 read as written.
 
 - Rule 7 (mitigation ownership): every demanded mitigation must be owned by exactly one unit, with the exclusion named on its neighbors; an unassigned or ambiguously-owned mitigation - two units that will fight over the same concern through the shared context graph - is a reject.
 - Rule 8 (open dispositions): a unit must not leave a disposition open for a reviewer to re-litigate; an undecided disposition is a reject.
@@ -43,7 +43,6 @@ NOTE on shared blast radius: units whose file footprints OVERLAP are NOT a defec
 
 Ownership defects: twin criteria (two checkboxes claiming one concern) and bundling (one checkbox carrying two mitigations) are each a BLOCKING finding.
 
-- Unit size: a unit over the cap your prompt states is a BLOCKING finding. The cap measures review scope - how much one review round must read - never code shape.
 - Overlap: judge ownership/coherence, not the overlap.
 
-The judging rule: Reject ONLY for a rule 7 (ownership) or rule 8 (open disposition) defect, a unit over the size cap, or a defect in a criterion's own text that no decomposition can remove - never for mechanical blast-radius overlap alone. A finding stands when it names a Rule 7 ownership defect, a Rule 8 open disposition, a bundled or twin criterion, a unit over the cap the prompt states, or a defect in a criterion's own text that no decomposition can remove; mechanical file overlap alone never does; twin and bundled units count as Rule 7 defects. The fix is the cause rule's: a re-plan for `decomposition-conflict`, the run stopping for `spec-ambiguity`.
+The judging rule: Reject ONLY for a rule 7 (ownership) or rule 8 (open disposition) defect, or a defect in a criterion's own text that no decomposition can remove - never for mechanical blast-radius overlap alone. A finding stands when it names a Rule 7 ownership defect, a Rule 8 open disposition, a bundled or twin criterion, or a defect in a criterion's own text that no decomposition can remove; mechanical file overlap alone never does; twin and bundled units count as Rule 7 defects. The fix is the cause rule's: a re-plan for `decomposition-conflict`, the run stopping for `spec-ambiguity`.

@@ -253,6 +253,7 @@ fn capture_prompts(cfg: &Config, tree: &Tree, grounder: &dyn Grounder) -> Vec<St
         store: &store,
         driver: &driver,
         gates: &ExecRunner,
+        run_branch: None,
         repo: String::new(),
         grounder: Some(grounder),
         graph: Some(graph),
@@ -696,6 +697,7 @@ fn run_and_capture_sdet_author_prompts(tree: &Tree) -> Vec<String> {
         store: &store,
         driver: &driver,
         gates: &ExecRunner,
+        run_branch: common::fixtures::branch_of(repo.path().to_str().unwrap()),
         repo: repo.path().to_str().unwrap().to_string(),
         grounder: Some(&grounder),
         graph: Some(graph),
@@ -780,6 +782,7 @@ fn run_and_capture_review_spawns(
         // repo). This mirrors the lib lens-finding test's setup (both drive the public `run` path);
         // only the DRIVER differs.
         repo: String::new(),
+        run_branch: None,
         grounder: Some(&grounder),
         graph: Some(graph),
         criteria: Vec::new(),

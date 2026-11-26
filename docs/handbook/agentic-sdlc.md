@@ -85,7 +85,7 @@ When a unit escalates, when a reviewer catches a defect class, when an agent hit
 
 1. **Acceptance criteria.** You define done.
 2. **Design forks.** When two architectures are genuinely valid, an agent surfaces the fork with a recommendation; it does not pick for you.
-3. **Escalations.** A unit that exhausts `max_retries`, a budget breaker trip, a spec defect flag - all land on your desk with the evidence attached.
+3. **Escalations.** A unit that exhausts `max_retries`, a spec defect flag - all land on your desk with the evidence attached.
 4. **Scope.** Discovered work gets flagged, not silently added. What becomes a unit is your call.
 5. **Release.** The loop lands commits on a run branch; merging that branch to main - and anything else outward-facing - goes through your PR review.
 

@@ -14,8 +14,7 @@ use std::collections::BTreeMap;
 
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
-    around, entity_site, site_fields, ContextGraph, EntitySite, Fold, Located, Neighbors,
-    TYPE_REVIEW_FINDING,
+    around, entity_site, site_fields, ContextGraph, EntitySite, Fold, Located, TYPE_REVIEW_FINDING,
 };
 use rigger::eventstore::Event;
 
@@ -41,14 +40,16 @@ pub const SHOWN_TREE_SOURCES: [(&str, &str); 4] = [
 ];
 
 /// The ids shown by exact id: the const, the type, the function, the finding the record half
-/// holds, the architecture decision and the design-doc section.
-pub const SHOWN_TREE_IDS: [&str; 6] = [
+/// holds, the architecture decision, the design-doc section and [`SHOWN_TREE_FILE`], whose `//!`
+/// line is its doc.
+pub const SHOWN_TREE_IDS: [&str; 7] = [
     "src/limits.rs::LIMIT",
     "src/limits.rs::Bounds",
     "src/limits.rs::blank",
     "f-shown",
     "docs/decisions/one-renderer.md",
     "docs/x.md#sec",
+    SHOWN_TREE_FILE,
 ];
 
 /// The code view of the tree planted as the facts [`SHOWN_TREE_SOURCES`] extract to.
@@ -119,16 +120,17 @@ fn fields_of(site: &EntitySite) -> BTreeMap<String, serde_json::Value> {
         .collect()
 }
 
-/// The one site `graph` locates for `id`.
-pub fn shown_tree_site(graph: &dyn Neighbors, id: &str) -> EntitySite {
-    let Located::One(site) = rigger::composed::locate(graph, id).unwrap() else {
+/// The one site `graph` locates for `id`, its doc and referrers filled as the graph fills them
+/// ([`ContextGraph::locate`]).
+pub fn shown_tree_site(graph: &dyn ContextGraph, id: &str) -> EntitySite {
+    let Located::One(site) = graph.locate(id).unwrap() else {
         panic!("{id} locates one node")
     };
     site
 }
 
 /// Each of [`SHOWN_TREE_IDS`] beside the one site `graph` locates for it, in their order.
-pub fn shown_tree_sites(graph: &dyn Neighbors) -> Vec<(&'static str, EntitySite)> {
+pub fn shown_tree_sites(graph: &dyn ContextGraph) -> Vec<(&'static str, EntitySite)> {
     SHOWN_TREE_IDS
         .into_iter()
         .map(|id| (id, shown_tree_site(graph, id)))
@@ -152,7 +154,10 @@ pub fn assert_shown_tree_function_carries_proven_by(graph: &dyn ContextGraph) {
 /// Each of `sites`, the `rigger_graph` `show` site objects of [`SHOWN_TREE_IDS`] in their order, is
 /// its node's `id` beside the [`site_fields`] entries of the site `graph` locates for it,
 /// compared without order.
-pub fn assert_shown_tree_sites_are_site_fields(graph: &dyn Neighbors, sites: &[serde_json::Value]) {
+pub fn assert_shown_tree_sites_are_site_fields(
+    graph: &dyn ContextGraph,
+    sites: &[serde_json::Value],
+) {
     for ((id, located), site) in shown_tree_sites(graph).iter().zip(sites) {
         assert_eq!(
             site_keys(site, id),

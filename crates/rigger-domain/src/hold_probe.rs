@@ -6,16 +6,17 @@
 //! probe that finds the account still failing waits longer before the next. The chain is the open
 //! hold and every hold behind it that a quick re-hold continued: a hold released and held again
 //! within 600 s keeps its probes' count, so a hold the host re-declares straight after a probe
-//! released it does not start over at 60 s. An operator hold breaks the chain, since the operator
-//! ended it, and is never probed itself; a `model_not_found` hold is never probed either, its
-//! action being a configuration a probe cannot change.
+//! released it does not start over at 60 s. A manual hold, the operator's or the conductor's on a
+//! fault of its own, breaks the chain, since `rigger release` ends it, and is never probed itself;
+//! a `model_not_found` hold is never probed either, its action being a configuration a probe
+//! cannot change.
 //!
 //! The probe itself is an interface, [`HoldProbe`], which the agent host implements: what a probe
 //! answers ([`ProbeOutcome`]) is all the hold controller reads of it.
 
 use std::time::{Duration, SystemTime};
 
-use crate::agent::{cause_row, AgentFailure};
+use crate::agent::cause_row;
 use crate::eventstore::{Event, Revision};
 use crate::ledger::{holds, Hold, HoldSpan};
 use crate::progress::{decoded_progress, AgentProgress};
@@ -69,16 +70,18 @@ impl OwedProbe {
     }
 }
 
-/// Whether a probe can release `hold`: neither an operator hold nor a `model_not_found` hold, the
-/// two [`owed_probe`] owes no probe, so `rigger status` says only of a probed hold that the run
+/// Whether a probe can release `hold`: neither a manual hold (the operator's or the conductor's)
+/// nor a hold whose cause is for the orchestrator
+/// ([`crate::agent::DispositionRow::for_orchestrator`]), a `model_not_found` hold, the two
+/// [`owed_probe`] owes no probe, so `rigger status` says only of a probed hold that the run
 /// resumes by itself.
 pub fn is_probed(hold: &Hold) -> bool {
-    !hold.operator && hold.latest.cause != AgentFailure::ModelNotFound.as_str()
+    !hold.manual && !cause_row(&hold.latest.cause).for_orchestrator()
 }
 
 /// The probe the run's open hold is owed at `now`, read from the current run's events
 /// (`run_events`) through [`holds`] and the run's progress lines (`progress_events`): `None` for
-/// an unheld run, an operator hold, a `model_not_found` hold or a run slice whose `RunHeld` does
+/// an unheld run, a manual hold, a `model_not_found` hold or a run slice whose `RunHeld` does
 /// not decode. Otherwise the delay is [`FIRST_DELAY`] doubled per hold-probe line stamped inside
 /// the revisions of the hold's chain, capped at [`MAX_DELAY`], and the probe falls due one delay
 /// after the later of the chain's latest such line and the hold's latest `RunHeld`, and never
@@ -106,7 +109,7 @@ pub fn owed_probe(
         // Every hold behind the last is released: the walk opens a hold only while none is open.
         let Some(release) = &span.release else { break };
         let gap = since.duration_since(release.at).unwrap_or_default();
-        if behind_hold.operator || gap > QUICK_RE_HOLD {
+        if behind_hold.manual || gap > QUICK_RE_HOLD {
             break;
         }
         chain.push((span.first, Some(release.revision)));
@@ -149,7 +152,8 @@ pub enum ProbeOutcome {
     /// canary ran: a person must log in.
     LoggedOut,
     /// The canary did not answer, or its first result carried an error: the category of the
-    /// last `api_retry` line ahead of its first result, [`AgentFailure::Unknown`]'s with none.
+    /// last `api_retry` line ahead of its first result,
+    /// [`crate::agent::AgentFailure::Unknown`]'s with none.
     Failed(String),
 }
 
@@ -167,8 +171,8 @@ mod tests {
     use crate::hold_probe_fixtures::probe_line;
     use crate::progress::RunStamped;
     use crate::run::{
-        RunHeld, RunReleased, HOLD_BY_HOST, HOLD_BY_OPERATOR, HOLD_BY_PROBE, TYPE_RUN_HELD,
-        TYPE_RUN_RELEASED,
+        RunHeld, RunReleased, HOLD_BY_CONDUCTOR, HOLD_BY_HOST, HOLD_BY_OPERATOR, HOLD_BY_PROBE,
+        TYPE_RUN_HELD, TYPE_RUN_RELEASED,
     };
     use std::time::{Duration, SystemTime};
 
@@ -228,12 +232,13 @@ mod tests {
         line_of(HOLD_PROBE_ID, Some(revision), secs)
     }
 
-    /// THE DELAY (spec 105 RELEASE), one pure function: no probe of an unheld run, an operator
-    /// hold or a `model_not_found` hold; otherwise the delay is 60 s doubled per probe line inside
+    /// THE DELAY (spec 105 RELEASE), one pure function: no probe of an unheld run, a manual hold
+    /// (the operator's, or the conductor's whether for the orchestrator or, recurring after a
+    /// release, for a person) or a `model_not_found` hold; otherwise the delay is 60 s doubled per probe line inside
     /// the hold's chain, capped at 900 s, and the probe falls one delay after the later of the
     /// latest such line and the hold's latest `RunHeld`, clamped to one delay from now. A released
     /// hold joins the chain when the next hold's first `RunHeld` falls at most 600 s after its
-    /// release and it is no operator hold, and the walk ends at the first hold that does not join.
+    /// release and it is no manual hold, and the walk ends at the first hold that does not join.
     #[test]
     fn the_owed_probe_doubles_its_delay_per_probe_of_the_holds_chain() {
         let now = at(10_000);
@@ -260,6 +265,31 @@ mod tests {
             (
                 "an operator hold",
                 vec![Held("operator", HOLD_BY_OPERATOR, 100)],
+                vec![],
+                now,
+                None,
+            ),
+            (
+                "a conductor hold",
+                vec![Held("conductor-fault", HOLD_BY_CONDUCTOR, 100)],
+                vec![],
+                now,
+                None,
+            ),
+            (
+                "a conductor hold after a release of the same fault, for a person",
+                vec![
+                    Held("conductor-fault", HOLD_BY_CONDUCTOR, 100),
+                    Released(200),
+                    Held("conductor-fault", HOLD_BY_CONDUCTOR, 300),
+                ],
+                vec![],
+                now,
+                None,
+            ),
+            (
+                "a host hold a conductor RunHeld landed on",
+                vec![rate(100), Held("conductor-fault", HOLD_BY_CONDUCTOR, 200)],
                 vec![],
                 now,
                 None,

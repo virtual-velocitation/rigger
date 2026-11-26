@@ -13,8 +13,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 /// A toy language, one fact a line: `def NAME` defines `NAME` inside the previous definition if
-/// it is indented, `call NAME` calls it from the definition above, and `use KIND NAME` is a
-/// reference tagged `KIND`. A file under `tests/` is test scope. It records every file it reads.
+/// it is indented, a `fn` unless a third word `def NAME KIND` names its kind, `call NAME` calls it
+/// from the definition above, and `use KIND NAME` is a reference tagged `KIND`. A file under
+/// `tests/` is test scope. It records every file it reads.
 pub struct ToyExtract {
     fingerprint: u64,
     read: Mutex<Vec<(String, Vec<u8>)>>,
@@ -78,7 +79,7 @@ impl Extract for ToyExtract {
             let words: Vec<&str> = line.split_whitespace().collect();
             let enclosing = facts.defs.len().checked_sub(1).map(|i| i as u32);
             match words.as_slice() {
-                ["def", name] => {
+                ["def", name] | ["def", name, _] => {
                     let parent = if nested { top } else { None };
                     let local = match parent {
                         Some(p) => format!("{}::{name}", facts.defs[p as usize].local),
@@ -90,11 +91,15 @@ impl Extract for ToyExtract {
                     facts.defs.push(Def {
                         local,
                         leaf: (*name).to_owned(),
-                        kind: "fn".into(),
+                        kind: match words.as_slice() {
+                            ["def", _, kind] => (*kind).to_owned(),
+                            _ => "fn".into(),
+                        },
                         line: line_no,
                         end_line: line_no,
                         parent,
                         test: facts.scope == Scope::Test,
+                        doc: None,
                     });
                 }
                 ["call", name] | ["use", _, name] => facts.mentions.push(Mention {

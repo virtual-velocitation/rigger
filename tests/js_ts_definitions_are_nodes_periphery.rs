@@ -4,7 +4,7 @@
 //! the boundary the rule crosses on its way to an operator: the graph `rigger graph build` folds
 //! from each of the JS, TS and TSX definitions fixtures, where each definition is a node
 //! carrying its kind string and line, a computed member and a `for .. of` assigning an existing
-//! name are no node, and each reference hangs off the caller the fixture gives it.
+//! name are no node, and each call hangs off the caller the fixture gives it.
 
 #[cfg(feature = "symbols")]
 use crate::common;
@@ -13,8 +13,8 @@ rigger::test_cases! {
     /// GIVEN a project whose one JS file is the JS definitions fixture,
     /// WHEN the operator runs `rigger graph build`,
     /// THEN the graph's code entities are exactly the JS lines' nodes (see [`JS_LINES_NODES`]),
-    /// each carrying exactly its kind and line, and one placeholder per name a reference reaches
-    /// that no definition gives, `run` among them; its `CALLS` edges are exactly the JS lines'
+    /// each carrying exactly its kind and line, and one placeholder per name a call reaches that
+    /// no definition gives, `run` among them; its `CALLS` edges are exactly the JS lines'
     /// (see [`JS_LINES_CALLS`]).
     #[cfg(feature = "symbols")]
     graph_build_makes_each_js_definition_a_node_of_its_kind_and_none_of_a_computed_member:
@@ -114,7 +114,7 @@ const JS_LINES_NODES: [(&str, &str, &str, u64); 42] = [
     ("z", "z", "constant", 10),
 ];
 
-/// The placeholders the JS lines' references reach in every fixture, each a name no definition
+/// The placeholders the JS lines' calls reach in every fixture, each a name no definition
 /// gives, the file-level `f` of `f()` included; `run` is a placeholder in the JS fixture alone.
 #[cfg(feature = "symbols")]
 const JS_LINES_PLACEHOLDERS: [&str; 8] =
@@ -181,34 +181,19 @@ const TS_LINES_NODES: [(&str, &str, &str, u64); 26] = [
     ("sig", "sig", "declaration", 16),
 ];
 
-/// The placeholders the TS lines' references reach, each a type or call name no call target of
-/// the file gives, the ambient function's file-level `Arg` included, and `run`, which the
-/// JS lines call and the TS lines declare abstract.
+/// The placeholders the TS lines' calls reach, each a call name no call target of the file
+/// gives, and `run`, which the JS lines call and the TS lines declare abstract. A type the TS
+/// lines name is a type reference, no call, and reaches no placeholder (spec 117, CAPTURES).
 #[cfg(feature = "symbols")]
-const TS_LINES_PLACEHOLDERS: [&str; 11] = [
-    "Arg", "FT", "PQ", "PType", "Ret", "Two", "V", "boot", "mk", "run", "setup",
-];
+const TS_LINES_PLACEHOLDERS: [&str; 4] = ["boot", "mk", "run", "setup"];
 
-/// The `CALLS` edges of the TS lines, `(caller path, callee leaf)`: each property signature's
-/// and field's type reference from that member (`Shape2.p-q`, `Shape2.2`, `Shape2.prop`,
-/// `Abs.fld`), the method and index signatures' from their interface, the enum member value's
-/// call from `Color::Blue`, and the
-/// module's and the namespace's body calls from `x` and `A.B`; and the ambient function's
-/// types, outside every definition, from the file, the caller at the empty path.
+/// The `CALLS` edges of the TS lines, `(caller path, callee leaf)`: the enum member value's call
+/// from `Color::Blue`, and the module's and the namespace's body calls from `x` and `A.B`. A
+/// type the TS lines name, a property signature's, a field's, a method or index signature's or
+/// the ambient function's, is a type reference, no call, and makes no `CALLS` edge (spec 117,
+/// CAPTURES).
 #[cfg(feature = "symbols")]
-const TS_LINES_CALLS: [(&str, &str); 11] = [
-    ("", "Arg"),
-    ("", "Ret"),
-    ("A.B", "setup"),
-    ("Abs.fld", "FT"),
-    ("Color::Blue", "mk"),
-    ("Shape2", "Ret"),
-    ("Shape2", "V"),
-    ("Shape2.2", "Two"),
-    ("Shape2.p-q", "PQ"),
-    ("Shape2.prop", "PType"),
-    ("x", "boot"),
-];
+const TS_LINES_CALLS: [(&str, &str); 3] = [("A.B", "setup"), ("Color::Blue", "mk"), ("x", "boot")];
 
 /// The graph `rigger graph build` folds from a project whose one file, `path`, is `source`, a JS
 /// or TS definitions fixture, holds exactly the JS lines' nodes, placeholders and `CALLS` edges
@@ -247,6 +232,6 @@ fn assert_definitions_graph(
         &[&JS_LINES_PLACEHOLDERS[..], placeholders].concat(),
         &edges,
         "every definition of the built graph at its path, none for a computed member or a for .. \
-         of assigning an existing name, one placeholder per undefined name a reference reaches",
+         of assigning an existing name, one placeholder per undefined name a call reaches",
     );
 }

@@ -523,26 +523,31 @@ pub fn end_child(child: &mut std::process::Child, descendants: DescendantSnapsho
 /// still find and reap it. Never widens the boundary itself, never falls back on a genuine
 /// escape - the caller must no-op on `None`.
 fn is_reapable_base(base_dir: &Path, authorized_root: &Path) -> Option<PathBuf> {
-    let refuse = |root_display: &str| {
+    let base = strictly_under(base_dir, authorized_root);
+    if base.is_none() {
+        let root_display = authorized_root.canonicalize().map_or_else(
+            |_| authorized_root.display().to_string(),
+            |root| root.display().to_string(),
+        );
         crate::whole_line::say(format_args!(
             "rigger: reap refused: {} is not strictly under {root_display}",
             base_dir.display()
         ));
-        None
-    };
-
-    let Ok(root) = authorized_root.canonicalize() else {
-        return refuse(&authorized_root.display().to_string());
-    };
-    let root_display = root.display().to_string();
-    let Some(base) = resolve_lexically(base_dir) else {
-        return refuse(&root_display);
-    };
-    if base != root && base.starts_with(&root) {
-        Some(base)
-    } else {
-        refuse(&root_display)
     }
+    base
+}
+
+/// Where `path` resolves, when that is strictly under `root`: the one containment test for
+/// anything rigger reaps, removes or takes over under a root it was handed. Both sides are
+/// compared as resolved paths, component by component, never as string prefixes: `root` must
+/// canonicalize, and `path` is resolved lexically ([`resolve_lexically`]), so it need not exist
+/// while a link in whatever part of it does exist is still followed. `None` for a root that
+/// cannot be resolved (an empty one included), a path equal to the root, or a path that resolves
+/// outside it.
+pub fn strictly_under(path: &Path, root: &Path) -> Option<PathBuf> {
+    let root = root.canonicalize().ok()?;
+    let resolved = resolve_lexically(path)?;
+    (resolved != root && resolved.starts_with(&root)).then_some(resolved)
 }
 
 /// Resolve `path` as far as the filesystem allows WITHOUT requiring it to exist (spec 89

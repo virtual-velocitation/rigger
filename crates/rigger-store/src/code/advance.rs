@@ -939,7 +939,6 @@ mod tests {
                 }),
             ),
             ("magic".into(), flip(|_| 0)),
-            ("version".into(), flip(|_| 4)),
             ("header".into(), flip(|_| 14)),
             (
                 "the pointer names a missing file".into(),
@@ -965,7 +964,7 @@ mod tests {
                 }),
             ),
         ];
-        for kind in 1..=13u16 {
+        for kind in 1..=crate::code::snapshot::LAST {
             cases.push((
                 format!("section {kind}"),
                 Box::new(move |dir: &Path| {
@@ -1016,6 +1015,55 @@ mod tests {
                 store.current(stamped(FP)).unwrap().is_some(),
                 "{name}: repaired"
             );
+        }
+    }
+
+    /// Each row: a format version the published snapshot is written again at, its sections as
+    /// they were and every crc recomputed, and whether the snapshot reads back. Only the current
+    /// [`VERSION`](crate::code::snapshot::VERSION) does, and the next advance to the same commit
+    /// extracts nothing; a snapshot of the version before or after it reads as absent, and the
+    /// next advance extracts every file again. Either way the snapshot the pointer names after
+    /// that advance is at the current version.
+    #[test]
+    fn a_whole_snapshot_of_another_format_version_is_treated_as_absent() {
+        use crate::code::snapshot::{tests::rewritten, MAGIC, VERSION};
+        let cases = [
+            ("the version before", VERSION - 1, false),
+            ("the current version", VERSION, true),
+            ("the version after", VERSION + 1, false),
+        ];
+        for (name, version, reads) in cases {
+            let root = tempfile::tempdir().unwrap();
+            let store = Store::new(root.path());
+            let source = MemSource::default();
+            let group = CountingGroup::default();
+            let tip = source.commit("c1", A);
+            store
+                .advance(&source, &ToyExtract::new(FP), &group, &tip)
+                .unwrap();
+            let snap = store.dir().join("000001.snap");
+            let bytes = std::fs::read(&snap).unwrap();
+            std::fs::write(&snap, rewritten(&bytes, version, |_, _| {})).unwrap();
+            assert_eq!(
+                store
+                    .current(stamped(FP))
+                    .unwrap()
+                    .map(|s| s.stamp().tip.clone()),
+                reads.then(|| tip.clone()),
+                "{name}: the stamp read back"
+            );
+            let extract = ToyExtract::new(FP);
+            store.advance(&source, &extract, &group, &tip).unwrap();
+            assert_eq!(
+                extract.calls(),
+                if reads { 0 } else { A.len() },
+                "{name}: the files the next advance extracts"
+            );
+            let (named, _) = store.named(stamped(FP)).unwrap().unwrap();
+            let published = std::fs::read(named).unwrap();
+            if let Err(e) = Container::unchecked(&published, MAGIC, VERSION) {
+                panic!("{name}: the snapshot in force after that advance: {e}");
+            }
         }
     }
 
@@ -1206,32 +1254,85 @@ mod tests {
         }
     }
 
-    /// A damage done to one file's facts.
-    type Damage = fn(&mut FileFacts);
+    /// An edit made to one file's facts.
+    type Edit = fn(&mut FileFacts);
 
-    /// The toy extractor, with each file's facts damaged so they encode but fail to validate.
-    struct Damaging {
+    /// The toy extractor, with an edit made to each file's facts.
+    struct Edited {
         toy: ToyExtract,
-        damage: Damage,
+        edit: Edit,
     }
 
-    impl Extract for Damaging {
+    impl Extract for Edited {
         fn fingerprint(&self) -> u64 {
             self.toy.fingerprint()
         }
 
         fn extract(&self, entry: &Entry, bytes: &[u8]) -> FileFacts {
             let mut facts = self.toy.extract(entry, bytes);
-            (self.damage)(&mut facts);
+            (self.edit)(&mut facts);
             facts
         }
+    }
+
+    /// DOC SPANS AND MODULE LISTS SURVIVE THE STORE: GIVEN every file extracted as
+    /// [`code_file`](crate::code::snapshot::tests::code_file)'s facts under its own path and blob,
+    /// which carry a file doc span, a definition's doc span beside an absent one and module
+    /// declarations with distinct `as_root` and `as_child` lists, one with `path_attr`, WHEN the
+    /// store advances to commit A and then to B, which keeps three of A's files unchanged, THEN
+    /// the advance to B extracts only the file B modifies and the one it adds, and a store opened
+    /// afresh reads every file of B back with those facts, the kept files' carried over from A's
+    /// snapshot.
+    #[test]
+    fn doc_spans_and_module_lists_survive_the_store_across_advances() {
+        use crate::code::dir_source::content_id;
+        use crate::code::snapshot::tests::code_file;
+        let edited = || Edited {
+            toy: ToyExtract::new(FP),
+            edit: |facts| {
+                *facts = FileFacts {
+                    path: std::mem::take(&mut facts.path),
+                    blob: std::mem::take(&mut facts.blob),
+                    ..code_file()
+                }
+            },
+        };
+        let root = tempfile::tempdir().unwrap();
+        let source = MemSource::default();
+        let group = CountingGroup::default();
+        let store = Store::new(root.path());
+        let first = source.commit("c1", A);
+        store.advance(&source, &edited(), &group, &first).unwrap();
+        let target = source.commit("c2", B);
+        let second = edited();
+        store.advance(&source, &second, &group, &target).unwrap();
+        assert_eq!(
+            second.toy.paths(),
+            ["src/b.rs", "src/c.rs"],
+            "the files the advance to B extracts"
+        );
+        let cold = Store::new(root.path()).current(stamped(FP)).unwrap();
+        let cold = cold.expect("the snapshot of B");
+        let got: Vec<FileFacts> = (cold.files())
+            .map(|f| cold.file(f.path).expect("a listed file").into_owned())
+            .collect();
+        let mut want: Vec<FileFacts> = B
+            .iter()
+            .map(|(path, text)| FileFacts {
+                path: (*path).to_owned(),
+                blob: content_id(text.as_bytes()),
+                ..code_file()
+            })
+            .collect();
+        want.sort_by(|a, b| a.path.cmp(&b.path));
+        assert_eq!(got, want, "every file of B, read afresh");
     }
 
     /// Each row: facts that encode but fail the snapshot's validation. The advance is an error,
     /// and nothing is published or reaped: the old snapshot stays current beside the debris.
     #[test]
     fn a_snapshot_that_fails_validation_is_an_error_and_never_published() {
-        let cases: [(&str, Damage); 2] = [
+        let cases: [(&str, Edit); 2] = [
             ("a parent outside the file", |facts| {
                 if let Some(def) = facts.defs.first_mut() {
                     def.parent = Some(99);
@@ -1255,9 +1356,9 @@ mod tests {
             std::fs::write(store.dir().join("000000.snap.4242.0.tmp"), b"debris").unwrap();
             let before = snap_names(&store);
             let target = source.commit("c2", B);
-            let damaging = Damaging {
+            let damaging = Edited {
                 toy: ToyExtract::new(FP),
-                damage,
+                edit: damage,
             };
             assert!(
                 store.advance(&source, &damaging, &group, &target).is_err(),

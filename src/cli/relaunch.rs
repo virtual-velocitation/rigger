@@ -94,8 +94,9 @@ struct Credential {
 
 /// The credentials a driver can run on: the login token its agents get, and the server event
 /// store's connection string, which `--conn` gives too. A driver records which it had, never a
-/// value, and only a check whose environment sets each of them relaunches it, since a relaunch
-/// without one runs its agents on another login or drives another store.
+/// value, and only a check whose environment sets each of them relaunches it, handing each on to
+/// the relaunch by name, since a relaunch without one runs its agents on another login or drives
+/// another store.
 const CREDENTIALS_ENV: [Credential; 2] = [
     Credential {
         var: rigger::claude_auth::RIGGER_AGENT_TOKEN_VAR,
@@ -123,11 +124,10 @@ fn credentials_had(parsed: Option<&RunArgs>) -> BTreeSet<String> {
         .collect()
 }
 
-/// Each of [`ROOTS_ENV`] with its value in this process, `None` where it is unset.
-fn roots_env() -> BTreeMap<String, Option<OsString>> {
-    ROOTS_ENV
-        .iter()
-        .map(|var| ((*var).to_string(), std::env::var_os(var)))
+/// Each of `vars` with its value in this process, `None` where it is unset.
+fn env_of<'a>(vars: impl IntoIterator<Item = &'a str>) -> BTreeMap<String, Option<OsString>> {
+    vars.into_iter()
+        .map(|var| (var.to_string(), std::env::var_os(var)))
         .collect()
 }
 
@@ -319,7 +319,7 @@ impl KeptRecord {
             args: relaunch_args(parsed, run),
             bin: Some(standing_executable()),
             run: run.to_string(),
-            env: roots_env(),
+            env: env_of(ROOTS_ENV),
             credentials: credentials_had(Some(parsed)),
             relaunched_at: None,
             revived_at,
@@ -518,7 +518,7 @@ pub(crate) fn relaunch_a_dead_driver(site: &Site, released: bool) {
         now: now_secs(),
         released,
         in_main_checkout: &|| main_worktree_or_refuse(site, "").is_ok(),
-        operator_holds: &|run| operator_holds(site, run),
+        manually_held: &|run| manually_held(site, run),
         credentials: credentials_had(None),
     };
     let said = launcher().map_or_else(Some, |launcher| revive(&dir, &check, launcher.as_ref()));
@@ -527,16 +527,16 @@ pub(crate) fn relaunch_a_dead_driver(site: &Site, released: bool) {
     }
 }
 
-/// Whether an operator hold stands on `run`, the current run of the project at `site`. A store
-/// that cannot be read answers no hold: the relaunched driver reads the hold again as it adopts
-/// the run and parks on an operator hold it finds.
-fn operator_holds(site: &Site, run: &str) -> bool {
+/// Whether a manual hold, the operator's or the conductor's, stands on `run`, the current run of the
+/// project at `site`. A store that cannot be read answers no hold: the relaunched driver reads the
+/// hold again as it adopts the run and parks on such a hold it finds.
+fn manually_held(site: &Site, run: &str) -> bool {
     require_store_dir_in(site)
         .and_then(|(loc, selection)| {
             over_the_run_store_at(&loc, &selection, |store| {
                 let current = runscope::read::read_current_run_id(store, conductor::STREAM)?;
-                let hold = runscope::read::read_current_hold(store, conductor::STREAM)?;
-                Ok(current.as_deref() == Some(run) && hold.is_some_and(|hold| hold.operator))
+                let hold = runscope::read::read_manual_hold(store, conductor::STREAM)?;
+                Ok(current.as_deref() == Some(run) && hold.is_some())
             })
         })
         .unwrap_or(false)
@@ -544,19 +544,19 @@ fn operator_holds(site: &Site, run: &str) -> bool {
 
 /// What one check reads beside the step lock: the time it runs at, whether it follows the
 /// operator's `rigger release`, whether it was invoked from the project's main checkout, whether
-/// an operator hold stands on a run, and which credentials its own environment sets.
+/// a manual hold stands on a run, and which credentials its own environment sets.
 struct Check<'a> {
     now: u64,
     released: bool,
     in_main_checkout: &'a dyn Fn() -> bool,
-    operator_holds: &'a dyn Fn(&str) -> bool,
+    manually_held: &'a dyn Fn(&str) -> bool,
     credentials: BTreeSet<String>,
 }
 
 /// Relaunch the driver whose record the step lock under `dir` holds when no driver holds that
 /// lock, as `check` reads it, through `launcher`: the line to say, `None` when there is nothing to
 /// say. Every failure to read the lock is read as nothing to do. A check invoked from a linked
-/// worktree, and a run an operator hold stands on, leave the record as it is: the hold is the
+/// worktree, and a run a manual hold stands on, leave the record as it is: the hold is the
 /// run's stop. A check that follows the operator's release relaunches a driver that died soon
 /// after its own relaunch too, since the operator asked for it. A driver that ran on a
 /// credential is relaunched only from an environment that sets it too, and is otherwise left as
@@ -588,10 +588,9 @@ fn revive(dir: &Path, check: &Check, launcher: &dyn Launcher) -> Option<String> 
             return None;
         }
     };
-    if (check.operator_holds)(&record.run) {
+    if (check.manually_held)(&record.run) {
         return Some(format!(
-            "rigger: run {} is held by the operator and no driver is alive for it; `rigger \
-             release` relaunches it",
+            "rigger: run {} is held and no driver is alive for it; `rigger release` relaunches it",
             record.run
         ));
     }
@@ -655,8 +654,14 @@ fn revive(dir: &Path, check: &Check, launcher: &dyn Launcher) -> Option<String> 
     lock.replace(&stamp).ok()?;
     // The lock is released before the launch, so the relaunched driver can take it.
     drop(lock);
+    // No child inherits the agents' login token (`subprocess::command`), so the driver is handed
+    // by name each credential this invocation was just checked for; no record holds a value.
+    let mut env = record.env.clone();
+    env.extend(env_of(
+        CREDENTIALS_ENV.iter().map(|credential| credential.var),
+    ));
     Some(
-        match launcher.launch(&bin, &record.args, &record.env, &record.cwd, &output) {
+        match launcher.launch(&bin, &record.args, &env, &record.cwd, &output) {
             Ok(pid) => format!(
             "rigger: no driver was alive for this project's run {}, so rigger relaunched it in \
              the background (pid {pid}), its output in {}: {}. Follow it with `rigger status`.",
@@ -797,7 +802,8 @@ mod tests {
 
     /// A relaunch hands its launcher the roots variables the dead driver recorded, each set or
     /// removed as the driver had it, and a record an older driver wrote, which recorded none,
-    /// hands it none, so the relaunch keeps the checker's.
+    /// hands it none, so the relaunch keeps the checker's; beside them it hands each credential
+    /// as this process has it, which no record holds and no child inherits.
     #[test]
     fn a_relaunch_hands_the_launcher_the_roots_variables_the_driver_recorded() {
         let recorded: BTreeMap<String, Option<OsString>> = [
@@ -836,12 +842,18 @@ mod tests {
                 now: now_secs(),
                 released: false,
                 in_main_checkout: &|| true,
-                operator_holds: &|_| false,
+                manually_held: &|_| false,
                 credentials: BTreeSet::new(),
             };
             let keeper = EnvKeeper::default();
             revive(dir.path(), &check, &keeper);
-            assert_eq!(keeper.0.into_inner(), vec![env], "{name}");
+            let mut handed = env;
+            handed.extend(
+                CREDENTIALS_ENV.iter().map(|credential| {
+                    (credential.var.to_string(), std::env::var_os(credential.var))
+                }),
+            );
+            assert_eq!(keeper.0.into_inner(), vec![handed], "{name}");
         }
     }
 
@@ -883,7 +895,7 @@ mod tests {
             now: now_secs(),
             released: false,
             in_main_checkout: &|| true,
-            operator_holds: &|_| false,
+            manually_held: &|_| false,
             credentials: BTreeSet::new(),
         };
         let keeper = EnvKeeper::default();
@@ -930,7 +942,7 @@ mod tests {
                 now: now_secs(),
                 released: false,
                 in_main_checkout: &|| true,
-                operator_holds: &|_| false,
+                manually_held: &|_| false,
                 credentials: BTreeSet::new(),
             };
             let said = revive(dir.path(), &check, &EnvKeeper::default()).unwrap_or_default();

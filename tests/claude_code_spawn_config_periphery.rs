@@ -64,10 +64,11 @@ fn launch_handing(
     let progress = Store::open(":memory:").expect("in-memory progress store");
     let run = Store::open(":memory:").expect("in-memory run store");
     let driver = Driver {
-        bin: repo_root()
+        host: repo_root()
             .join("tests/fixtures/claude-code-argv-capture-agent.sh")
             .to_string_lossy()
-            .into_owned(),
+            .into_owned()
+            .into(),
         rigger_bin: RIGGER_BIN.to_string(),
         progress_store: &progress,
         run_store: &run,
@@ -78,8 +79,9 @@ fn launch_handing(
         hold_sink: None,
     };
     let mut opts = implementer_opts(SPAWN_ID);
-    opts.host = hooks::resolve_spawn_host(&rigger::config::Defaults::default(), &repo_root())
-        .expect("the repository's helper copies resolve");
+    opts.host =
+        hooks::resolve_spawn_host(&rigger::config::Defaults::default(), &repo_root(), "specs/")
+            .expect("the repository's helper copies resolve");
     opts.dir = dir.to_string_lossy().into_owned();
     opts.settings_json = settings_json.to_string();
     opts.env = vec![(
@@ -141,7 +143,7 @@ fn flag_json(argv: &[String], flag: &str) -> Value {
 /// here does, merged onto `base` by the same `hooks` installers `rigger setup` runs: the
 /// SessionStart prime hook and the status line.
 fn installed_session_settings(base: &[u8]) -> Value {
-    let primed = hooks::install_session_start(base, "rigger prime").unwrap();
+    let primed = hooks::install_session_start(base, hooks::PRIME_COMMAND).unwrap();
     let with_line = hooks::install_status_line(&primed, "rigger status --line").unwrap();
     serde_json::from_slice(&with_line).unwrap()
 }
@@ -150,7 +152,8 @@ fn installed_session_settings(base: &[u8]) -> Value {
 /// by the same `hooks` installer, under [`installed_session_settings`].
 fn installed_spawn_settings(base: &[u8], dir: &Path) -> Value {
     let roots = [dir.to_str().expect("a utf-8 path").to_string()];
-    let hooked = hooks::install_spawn_hooks(base, RIGGER_BIN, SPAWN_ID, &roots).unwrap();
+    let none = rigger::conductor::TreeDuty::None;
+    let hooked = hooks::install_spawn_hooks(base, RIGGER_BIN, SPAWN_ID, &roots, "", &none).unwrap();
     installed_session_settings(&hooked)
 }
 

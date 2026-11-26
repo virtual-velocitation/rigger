@@ -159,12 +159,14 @@
 //!
 //! - Row 1 (conflict detection), before-record|mutation boundary,
 //!   `a_crash_right_after_the_merge_attempt_record_resumes_and_completes_row_1`: call 1's
-//!   driver plants a stray untracked file at a path it also lands directly on the bare run
-//!   branch (mirrors GAP 8's `PermanentModifyDeleteConflictDriver`'s "mutate the bare repo
-//!   directly" technique) so `Worktree::merge_into_worktree`'s own merge is refused NON-content
-//!   (GAP 7's mechanism, relocated to the unit's OWN worktree) - proving the before-record
-//!   landed but not the after-record. Call 2 (stray file removed) proves resume completes and
-//!   the after-record lands exactly once, never duplicated.
+//!   driver lands a sibling path directly on the bare run branch (mirrors GAP 8's
+//!   `PermanentModifyDeleteConflictDriver`'s "mutate the bare repo directly" technique), and its
+//!   adjudicator, the last spawn before the integrate door, takes the unit worktree's index
+//!   lock, so `Worktree::merge_into_worktree`'s first git step dies unanswered (exit 128): a
+//!   halt no attempt of the unit caused, charged to nobody - proving the before-record landed
+//!   but not the after-record. A refusal of the unit's own work would not do here: it is charged
+//!   to the unit and retried, never resumed in place. Call 2 (lock released) proves resume
+//!   completes and the after-record lands exactly once, never duplicated.
 //! - Row 1's mutation|after-record boundary,
 //!   `a_crash_right_after_the_merge_succeeds_resumes_and_completes_row_1_after_record`: an
 //!   ordinary, conflict-free single-unit merge (`A_WORK_DRIVER`) - `merge_into_worktree`
@@ -289,16 +291,19 @@ use common::git::run_git;
 
 use common::cli::write_workflow;
 use common::fixtures::bare_deps;
+use common::fixtures::conductor_fault_hold;
 use common::fixtures::count_of_type;
 use common::fixtures::count_status_marker;
 use common::fixtures::gate_def;
 use common::fixtures::gate_outcomes;
 use common::fixtures::gated_scratch_cfg;
 use common::fixtures::has_status_marker;
+use common::fixtures::holds_in;
 use common::fixtures::mk_stage;
 use common::fixtures::payloads_of_type;
 use common::fixtures::review_or_adjudicate;
 use common::fixtures::scratch_cfg;
+use common::fixtures::wave_lessons;
 use common::fixtures::FailAppendContaining;
 use common::fixtures::FifoAtLandingDriver;
 use common::fixtures::A_WORK_DRIVER;
@@ -1123,6 +1128,7 @@ impl rigger::gate::Runner for RecordingGateRunner {
             pass: true,
             evidence: "fake runner: regenerated via the injected interface, never a raw shell"
                 .into(),
+            ..Default::default()
         })
     }
 }
@@ -1790,6 +1796,11 @@ fn a_non_content_merge_failure_surfaces_as_a_run_error_leaving_branches_intact()
          replaced by a fabricated message: {}",
         err.0
     );
+    assert!(
+        !err.0.contains('\u{1}'),
+        "the operator's message carries no class sentinel: {:?}",
+        err.0
+    );
 
     // unit-b's already-landed work is untouched by unit-a's LATER failure in the same wave -
     // the shared-state corruption the original finding warned a hard error could cause.
@@ -1816,10 +1827,10 @@ fn a_non_content_merge_failure_surfaces_as_a_run_error_leaving_branches_intact()
     );
 
     // unit-a's own durable branch keeps every prior commit (spec 88 criterion 1's own
-    // guarantee, extended here to a non-content failure): its worktree DIRECTORY is reclaimed
-    // (an ordinary terminal teardown, matching every other non-parked terminal exit), but the
-    // branch itself is untouched - a single-parent commit carrying exactly unit-a's own real
-    // work, never a partially-applied or corrupted merge.
+    // guarantee, extended here to a non-content failure): git refused the unit's own work, so
+    // the attempt is charged and its worktree kept for the next one, and the branch itself is
+    // untouched - a single-parent commit carrying exactly unit-a's own real work, never a
+    // partially-applied or corrupted merge.
     let branch_log = trimmed_stdout(&run_git(
         &repo_path,
         &["log", "--oneline", "rigger/u/unit-a"],
@@ -2022,16 +2033,13 @@ fn a_resumed_run_after_accept_incoming_fails_never_double_records_the_regenerate
 
 /// Call 1's driver for the row-1 fixture: plants a NEW path directly on the bare run branch
 /// (mirrors `PermanentModifyDeleteConflictDriver`'s "mutate the bare repo directly" technique
-/// above) AND leaves a stray FIFO at that same path in this unit's own worktree - a FIFO,
-/// exactly like GAP 7's `NonContentMergeFailureDriver`, because git flatly refuses to track a
-/// special file at all (unlike an ordinary untracked regular file, which the conductor's own
-/// pre-merge `git add -A` would silently sweep into the implementer's commit, turning this into
-/// an ordinary ADD/ADD content conflict instead of the NON-content refusal this fixture needs) -
-/// so `Worktree::merge_into_worktree`'s own `git merge --no-commit` is refused NON-content,
-/// reached only AFTER row 1's before-record already landed.
+/// above), and its adjudicator - the last spawn before the integrate door - takes the unit
+/// worktree's index lock, so the first git step of `Worktree::merge_into_worktree`, reached only
+/// AFTER row 1's before-record already landed, dies unanswered (git's exit 128): a fault no
+/// attempt of the unit caused, so the drive halts with nothing charged and resumes in place.
 struct Row1MergeCrashDriver {
     repo: String,
-    worktree_dir: Mutex<String>,
+    index_lock: Mutex<String>,
 }
 
 impl AgentDriver for Row1MergeCrashDriver {
@@ -2046,16 +2054,12 @@ impl AgentDriver for Row1MergeCrashDriver {
             std::fs::write(Path::new(&self.repo).join("shared.rs"), "SIBLING\n").unwrap();
             git_commit_all(&self.repo, "sibling landed directly on the run branch");
             std::fs::write(Path::new(&opts.dir).join("a.rs"), "A_WORK\n").unwrap();
-            assert!(
-                Command::new("mkfifo")
-                    .arg(Path::new(&opts.dir).join("shared.rs"))
-                    .status()
-                    .unwrap()
-                    .success(),
-                "test setup: mkfifo must succeed"
-            );
-            *self.worktree_dir.lock().unwrap() = opts.dir.clone();
+            let git_dir = trimmed_stdout(&run_git(&opts.dir, &["rev-parse", "--absolute-git-dir"]));
+            *self.index_lock.lock().unwrap() = format!("{git_dir}/index.lock");
             return Ok(AgentResult::default());
+        }
+        if opts.id.contains("/adjudicator#") {
+            std::fs::write(&*self.index_lock.lock().unwrap(), "").unwrap();
         }
         Ok(review_or_adjudicate(opts))
     }
@@ -2075,16 +2079,16 @@ fn a_crash_right_after_the_merge_attempt_record_resumes_and_completes_row_1() {
     let store = Store::open(":memory:").unwrap();
     let driver = Row1MergeCrashDriver {
         repo: repo_path.clone(),
-        worktree_dir: Mutex::new(String::new()),
+        index_lock: Mutex::new(String::new()),
     };
     {
         let deps = bare_deps(&store, &driver, &rigger::gate::ExecRunner, &repo_path);
         let err = run(&cfg, &deps)
             .err()
-            .expect("call 1 must fail - the stray untracked file refuses the merge");
+            .expect("call 1 must fail - the held index lock leaves the merge unanswered");
         assert!(
-            err.0.contains("shared.rs") || err.0.to_lowercase().contains("untracked"),
-            "call 1 must fail for the SIMULATED non-content reason, not some other defect; got: {}",
+            err.0.contains("index.lock"),
+            "call 1 must fail for the SIMULATED unanswered step, not some other defect; got: {}",
             err.0
         );
     }
@@ -2099,13 +2103,16 @@ fn a_crash_right_after_the_merge_attempt_record_resumes_and_completes_row_1() {
         "row 1's after-record must NOT land - the merge mutation itself failed; \
          events: {events_after_call_1:?}"
     );
+    assert_eq!(
+        count_of_type(&events_after_call_1, ledger::TYPE_UNIT_FAILED),
+        0,
+        "a step git never answered is no attempt of the unit's, so nothing is charged; \
+         events: {events_after_call_1:?}"
+    );
 
-    // Clear the obstruction exactly as an operator resolving a real non-content failure would -
-    // both the stray file this unit's own worktree carries and the untracked copy git itself
-    // may have left in the shared repo's working tree from the refused merge attempt.
-    let wt_dir = driver.worktree_dir.lock().unwrap().clone();
-    let _ = std::fs::remove_file(Path::new(&wt_dir).join("shared.rs"));
-    let _ = std::fs::remove_file(Path::new(&repo_path).join("shared.rs"));
+    // Release the lock exactly as an operator clearing a stale one would; the worktree's
+    // teardown may already have taken it with the worktree's admin directory.
+    let _ = std::fs::remove_file(&*driver.index_lock.lock().unwrap());
 
     let events_after_call_2 = resume_lands_unit_a(
         &cfg,
@@ -2399,6 +2406,7 @@ impl FailRegenerateOnceRunner {
         Self::answering_once(Ok(rigger::gate::GateResult {
             pass: false,
             evidence: "simulated crash: regenerate gate failed once".into(),
+            ..Default::default()
         }))
     }
 
@@ -2481,7 +2489,7 @@ fn a_confined_regenerate_command_failure_and_a_store_failure_each_resume_and_com
         let store = Store::open(":memory:").unwrap();
         let driver = confined_conflict_driver(&repo_path);
         let runner = FailRegenerateOnceRunner::red_once();
-        {
+        let fault = {
             let deps = bare_deps(&store, &driver, &runner, &repo_path);
             let err = run(&cfg, &deps)
                 .err()
@@ -2491,8 +2499,14 @@ fn a_confined_regenerate_command_failure_and_a_store_failure_each_resume_and_com
                 "call 1 must fail for the SIMULATED gate reason, not some other defect; got: {}",
                 err.0
             );
-        }
+            err.0
+        };
         let events_after_call_1 = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert_eq!(
+            wave_lessons(&events_after_call_1),
+            [format!("stage \"unit-a\" failed in its wave: {fault}")],
+            "a failed regenerate command is the unit's work, so its lesson names the unit"
+        );
         assert!(
             has_status_marker(
                 &events_after_call_1,
@@ -2607,7 +2621,7 @@ fn a_failed_guard_probe_on_the_regenerate_command_halts_the_step_and_a_resume_la
     let cfg = regenerating_cfg(&repo_path);
     let store = Store::open(":memory:").unwrap();
     let driver = confined_conflict_driver(&repo_path);
-    let fault = rigger::gate::ProbeFault {
+    let fault = rigger::gate::ProbeFault::Guard {
         guard: "/scratch/regenerate/cargo-target.lock".into(),
         error: "Permission denied (os error 13)".into(),
     };
@@ -2703,6 +2717,80 @@ fn a_failed_guard_probe_on_the_regenerate_command_halts_the_step_and_a_resume_la
         ),
         0,
         "the resumed step records no lesson for the earlier halt either"
+    );
+    let final_gen = std::fs::read_to_string(Path::new(&repo_path).join("gen.txt")).unwrap();
+    assert_eq!(final_gen, "REGENERATED\n");
+    drop(repo);
+}
+
+/// A regenerate commit git refuses is a content step: the commit carries the unit's regenerated
+/// tree, so a hook refusing it records the unit's lesson naming the refusal, charges no attempt,
+/// ends the drive and holds the run for the orchestrator, the hold's first line the refusal's.
+/// Released with the refusal gone, a resume regenerates and lands the unit.
+#[test]
+#[cfg(unix)]
+fn a_refused_regenerate_commit_records_the_units_lesson_and_holds_the_run() {
+    use std::os::unix::fs::PermissionsExt;
+    let repo = temp_git_project_with_commit();
+    let repo_path = repo.path().to_str().unwrap().to_string();
+    let elsewhere = tempfile::tempdir().unwrap();
+    let fired = elsewhere.path().join("fired");
+    let hook = repo
+        .path()
+        .join(".git")
+        .join("hooks")
+        .join("prepare-commit-msg");
+    std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+    std::fs::write(
+        &hook,
+        format!(
+            "#!/bin/sh\nif grep -qx 'rigger: regenerate conflicting artifacts for unit-a' \"$1\" \
+             && [ ! -e '{fired}' ]; then touch '{fired}'; echo 'hook: refusing the regeneration' \
+             >&2; exit 1; fi\nexit 0\n",
+            fired = fired.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let cfg = regenerating_cfg(&repo_path);
+    let store = Store::open(":memory:").unwrap();
+    let driver = confined_conflict_driver(&repo_path);
+
+    let err = run(
+        &cfg,
+        &bare_deps(&store, &driver, &rigger::gate::ExecRunner, &repo_path),
+    )
+    .err()
+    .expect("a refused regenerate commit ends the drive");
+
+    assert!(
+        err.0.contains("hook: refusing the regeneration"),
+        "the drive ends naming git's refusal: {}",
+        err.0
+    );
+    let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+    assert_eq!(
+        wave_lessons(&events),
+        [format!("stage \"unit-a\" failed in its wave: {}", err.0)],
+        "the regenerate commit is the unit's work, so its lesson names the unit"
+    );
+    assert_eq!(
+        count_of_type(&events, ledger::TYPE_UNIT_FAILED),
+        0,
+        "no attempt is charged"
+    );
+    assert_eq!(
+        holds_in(&events),
+        [conductor_fault_hold(&err.0)],
+        "the run is held for the orchestrator, naming the refusal"
+    );
+
+    resume_lands_unit_a(
+        &cfg,
+        &store,
+        &rigger::gate::ExecRunner,
+        &repo_path,
+        "released with the refusal gone, the resume regenerates and lands the unit",
     );
     let final_gen = std::fs::read_to_string(Path::new(&repo_path).join("gen.txt")).unwrap();
     assert_eq!(final_gen, "REGENERATED\n");
@@ -3101,23 +3189,23 @@ fn a_crash_right_after_landing_succeeds_with_owed_regeneration_completes_row_3_o
 // ============================================================================================
 
 /// An `EventStore` decorator: forwards every call to `inner` unchanged except `append`, which -
-/// on the FIRST append it sees carrying `STATUS_INTEGRATE_LANDING_INTENT`
+/// on each of the first `moves` appends it sees carrying `STATUS_INTEGRATE_LANDING_INTENT`
 /// ("integrate-landing-intent", row 4's before-record, written immediately before
-/// `Worktree::land` runs) - commits a brand-new, unrelated file directly onto `repo`'s current
-/// checkout BEFORE delegating, simulating exactly the race `Worktree::land`'s own doc comment
-/// names as its reason to exist: "the run branch MOVED between that merge and this call (an
-/// operator commit, a sibling's landing)". `repo` is the SAME directory `Worktree::land` itself
-/// runs `git merge --ff-only` against, so the very next `land` call hits a REAL `--ff-only`
-/// refusal, never a simulated one. `fired` gates this to ONCE: every later pass's own
-/// landing-intent record (the retry this fix exists to drive) must NOT re-trigger it, or the
-/// run would never converge inside `TIP_MOVED_PASS_BOUND`.
-struct MoveRunTipOnFirstLandingIntent<'a> {
+/// `Worktree::land` runs) - commits one more line of an unrelated file directly onto `repo`'s
+/// current checkout BEFORE delegating, simulating exactly the race `Worktree::land`'s own doc
+/// comment names as its reason to exist: "the run branch MOVED between that merge and this call
+/// (an operator commit, a sibling's landing)". `repo` is the SAME directory `Worktree::land`
+/// itself runs `git merge --ff-only` against, so the very next `land` call hits a REAL
+/// `--ff-only` refusal, never a simulated one. `moves` of 1 moves the tip under the first pass
+/// alone, so the retry this fix exists to drive converges inside `TIP_MOVED_PASS_BOUND`; a
+/// `moves` past the bound moves it under every pass.
+struct MoveRunTipOnLandingIntents<'a> {
     inner: &'a dyn EventStore,
     repo: String,
-    fired: Mutex<bool>,
+    moves: Mutex<u32>,
 }
 
-impl EventStore for MoveRunTipOnFirstLandingIntent<'_> {
+impl EventStore for MoveRunTipOnLandingIntents<'_> {
     fn append(
         &self,
         stream: &str,
@@ -3130,14 +3218,13 @@ impl EventStore for MoveRunTipOnFirstLandingIntent<'_> {
                     .contains("\"status\":\"integrate-landing-intent\"")
         });
         if is_landing_intent {
-            let mut fired = self.fired.lock().unwrap();
-            if !*fired {
-                *fired = true;
-                std::fs::write(
-                    Path::new(&self.repo).join("operator_side_note.txt"),
-                    "OPERATOR\n",
-                )
-                .unwrap();
+            let mut moves = self.moves.lock().unwrap();
+            if *moves > 0 {
+                *moves -= 1;
+                let note = Path::new(&self.repo).join("operator_side_note.txt");
+                let mut text = std::fs::read_to_string(&note).unwrap_or_default();
+                text.push_str("OPERATOR\n");
+                std::fs::write(&note, text).unwrap();
                 git_commit_all(
                     &self.repo,
                     "operator: an out-of-band commit races the landing window",
@@ -3166,10 +3253,10 @@ fn a_run_tip_moved_under_the_landing_window_is_recorded_and_retried_to_a_clean_l
         .insert("unit-a".into(), mk_stage("unit-a", "g"));
 
     let store = Store::open(":memory:").unwrap();
-    let moving_store = MoveRunTipOnFirstLandingIntent {
+    let moving_store = MoveRunTipOnLandingIntents {
         inner: &store,
         repo: repo_path.clone(),
-        fired: Mutex::new(false),
+        moves: Mutex::new(1),
     };
     let driver = A_WORK_DRIVER;
     let deps = bare_deps(
@@ -3229,6 +3316,67 @@ fn a_run_tip_moved_under_the_landing_window_is_recorded_and_retried_to_a_clean_l
     assert!(
         !Path::new(&repo_path).join(".git/MERGE_HEAD").exists(),
         "a refused --ff-only must never leave the repo mid-merge"
+    );
+
+    drop(repo);
+}
+
+/// A run branch that moves under every landing pass halts the run once the passes reach
+/// `TIP_MOVED_PASS_BOUND`: an outage of the run's infrastructure, never the unit's work, so the
+/// halt names the unit and the bound, no lesson names the unit, no attempt is charged, and the
+/// run is held for the orchestrator.
+#[test]
+fn a_run_tip_moved_under_every_landing_pass_halts_with_no_lesson_and_holds_the_run() {
+    let repo = temp_git_project_with_commit();
+    let repo_path = repo.path().to_str().unwrap().to_string();
+
+    let mut cfg = gated_scratch_cfg(&repo_path);
+    cfg.workflow
+        .stages
+        .insert("unit-a".into(), mk_stage("unit-a", "g"));
+
+    let store = Store::open(":memory:").unwrap();
+    let moving_store = MoveRunTipOnLandingIntents {
+        inner: &store,
+        repo: repo_path.clone(),
+        moves: Mutex::new(u32::MAX),
+    };
+    let driver = A_WORK_DRIVER;
+    let deps = bare_deps(
+        &moving_store,
+        &driver,
+        &rigger::gate::ExecRunner,
+        &repo_path,
+    );
+
+    let err = run(&cfg, &deps)
+        .err()
+        .expect("a run branch moving under every landing pass halts the run");
+
+    assert_eq!(
+        err.0,
+        "integrate unit-a: the run branch moved under every one of 8 landing passes"
+    );
+    let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+    assert_eq!(
+        count_status_marker(&events, "integrate-tip-moved"),
+        8,
+        "every pass the run branch moved under is recorded"
+    );
+    assert_eq!(
+        wave_lessons(&events),
+        Vec::<String>::new(),
+        "no lesson names the unit"
+    );
+    assert_eq!(
+        count_of_type(&events, ledger::TYPE_UNIT_FAILED),
+        0,
+        "no attempt is charged"
+    );
+    assert_eq!(
+        holds_in(&events),
+        [conductor_fault_hold(&err.0)],
+        "the run is held for the orchestrator, naming the halt"
     );
 
     drop(repo);

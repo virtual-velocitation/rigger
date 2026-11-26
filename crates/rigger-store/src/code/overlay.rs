@@ -24,29 +24,30 @@ use rigger_domain::resolve::{resettle, ProofCall};
 use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
-use std::sync::{LazyLock, Mutex, OnceLock};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 use std::time::SystemTime;
 
 /// The head of the code store at `root` read for a reader in `worktree`: the view of the head
 /// ([`open_compared`]), overlaid with the worktree's differing files when it differs. One
 /// comparison and one read of the differing files serve the whole answer. A worktree that cannot
 /// be compared, or a differing file that cannot be read, leaves the head's view alone and
-/// [`Compared::Uncomparable`], so every code fact is withheld (fail closed).
+/// [`Compared::Uncomparable`], so every code fact is withheld (fail closed). The head keeps
+/// `extract`, the extractor the store was opened with.
 pub fn open_head(
     root: &Path,
     source: &(dyn TreeSource + Sync),
-    extract: &dyn Extract,
+    extract: Arc<dyn Extract>,
     group: &dyn Group,
     worktree: &Path,
     memo: &Memo,
 ) -> Result<Head, String> {
-    let (opened, diff) = open_compared(root, source, extract, group, worktree)?;
+    let (opened, diff) = open_compared(root, source, &*extract, group, worktree)?;
     let behind = opened.behind.as_ref().map(ToString::to_string);
     let base: Box<dyn CodeView> = Box::new(opened.view);
     let compared = Compared::of(diff.as_ref().map_err(String::as_str));
     let (view, compared) = match diff {
         Ok(diff) if diff.files_in_scope().is_empty() => (base, compared),
-        Ok(diff) => match read_changed(root, source, (extract, group), worktree, &diff, memo) {
+        Ok(diff) => match read_changed(root, source, (&*extract, group), worktree, &diff, memo) {
             Ok(changed) => {
                 let overlay = Overlay::new(base, &diff, changed);
                 (Box::new(overlay) as Box<dyn CodeView>, compared)
@@ -60,6 +61,7 @@ pub fn open_head(
         compared,
         behind,
         worktree: worktree.to_path_buf(),
+        extract: Some(extract),
     })
 }
 
@@ -442,10 +444,11 @@ impl CodeView for Merged {
 mod tests {
     use super::*;
     use crate::code::doubles::{CountingGroup, MemSource, ToyExtract};
-    use crate::code::Store;
+    use crate::code::{encode, Snapshot, Store};
     use rigger_domain::code_view::{Tests, ViewFilter};
     use rigger_domain::composed::{Composed, Honesty, Indexed, WholeMemo};
     use rigger_domain::contextgraph::{ContextGraph, Graph};
+    use std::sync::Arc;
 
     /// What a worktree changes: each path with its bytes, or none when it deleted the file.
     type Changes<'a> = &'a [(&'a str, Option<&'a str>)];
@@ -459,7 +462,7 @@ mod tests {
     struct Fixture {
         root: tempfile::TempDir,
         source: MemSource,
-        extract: ToyExtract,
+        extract: Arc<ToyExtract>,
         group: CountingGroup,
         commit: String,
     }
@@ -467,9 +470,9 @@ mod tests {
     impl Fixture {
         fn new(files: &[(&str, &str)]) -> Self {
             let (root, source) = (tempfile::tempdir().unwrap(), MemSource::default());
-            let (extract, group) = (ToyExtract::new(1), CountingGroup::default());
+            let (extract, group) = (Arc::new(ToyExtract::new(1)), CountingGroup::default());
             let tip = source.commit("c1", files);
-            (Store::new(root.path()).advance(&source, &extract, &group, &tip)).unwrap();
+            (Store::new(root.path()).advance(&source, &*extract, &group, &tip)).unwrap();
             Self {
                 root,
                 source,
@@ -486,7 +489,7 @@ mod tests {
 
         /// The head the extractor `extract` reads once the worktree holds `changes`: another
         /// binary's read of the same store when `extract` is of another fingerprint.
-        fn head_as(&self, extract: &ToyExtract, changes: Changes, memo: &Memo) -> Head {
+        fn head_as(&self, extract: &Arc<ToyExtract>, changes: Changes, memo: &Memo) -> Head {
             self.source.worktree(changes);
             self.open_as(extract, memo).unwrap()
         }
@@ -495,9 +498,9 @@ mod tests {
             self.open_as(&self.extract, memo)
         }
 
-        fn open_as(&self, extract: &ToyExtract, memo: &Memo) -> Result<Head, String> {
+        fn open_as(&self, extract: &Arc<ToyExtract>, memo: &Memo) -> Result<Head, String> {
             let (root, wt) = (self.root.path(), Path::new("W"));
-            open_head(root, &self.source, extract, &self.group, wt, memo)
+            open_head(root, &self.source, extract.clone(), &self.group, wt, memo)
         }
 
         /// How many files reading the head extracts once the worktree holds `changes`.
@@ -525,16 +528,21 @@ mod tests {
     /// What a store advanced to a commit of `FILES` with `changes` applied answers whole, less its
     /// groupings: the fresh extraction an overlaid answer of that worktree must equal.
     fn fresh(changes: Changes) -> String {
-        let mut files: std::collections::BTreeMap<&str, &str> = FILES.iter().copied().collect();
+        let (_store, head) = committed(&applied(FILES, changes));
+        ungrouped(&answer(&head).0)
+    }
+
+    /// The files of `base` with `changes` applied, by path: a path given text holds it, one given
+    /// none is deleted.
+    fn applied<'f>(base: &[(&'f str, &'f str)], changes: Changes<'f>) -> Vec<(&'f str, &'f str)> {
+        let mut files: std::collections::BTreeMap<&str, &str> = base.iter().copied().collect();
         for &(path, text) in changes {
             match text {
                 Some(text) => files.insert(path, text),
                 None => files.remove(path),
             };
         }
-        let files: Vec<(&str, &str)> = files.into_iter().collect();
-        let (_store, head) = committed(&files);
-        ungrouped(&answer(&head).0)
+        files.into_iter().collect()
     }
 
     /// What a store advanced to a commit of `files` answers, with the store it reads from.
@@ -544,17 +552,22 @@ mod tests {
         let store = Store::new(root.path());
         let group = CountingGroup::default();
         let snap = store.advance(&source, &ToyExtract::new(1), &group, &tip);
-        let head = Head {
-            view: Box::new(snap.unwrap()),
+        (root, matched(snap.unwrap()))
+    }
+
+    /// The head a reader in the worktree `W` reads when `W` matches the snapshot `snap`.
+    fn matched(snap: Snapshot) -> Head {
+        Head {
+            view: Box::new(snap),
             compared: Compared::Overlaid(0),
             behind: None,
             worktree: "W".into(),
-        };
-        (root, head)
+            extract: None,
+        }
     }
 
-    /// The graph `head` answers whole with every test shown, and its label.
-    fn answer(head: &Head) -> (Graph, String) {
+    /// The filter a read of `head` shows every test under, and the label of its worktree `W`.
+    fn shown(head: &Head) -> (ViewFilter, Honesty) {
         let honesty = Honesty {
             worktree: "W".into(),
             compared: head.compared,
@@ -563,6 +576,12 @@ mod tests {
         let filter = ViewFilter {
             tests: Tests::Include,
         };
+        (filter, honesty)
+    }
+
+    /// The graph `head` answers whole with every test shown, and its label.
+    fn answer(head: &Head) -> (Graph, String) {
+        let (filter, honesty) = shown(head);
         let records = Indexed::default();
         let graph = Composed::new(&records, &*head.view, filter, honesty).unwrap();
         let whole = graph.whole().unwrap();
@@ -571,14 +590,7 @@ mod tests {
 
     /// What `head` answers read whole with every test shown, through `held` when one is given.
     fn whole_read(head: &Head, held: Option<&WholeMemo>) -> String {
-        let honesty = Honesty {
-            worktree: "W".into(),
-            compared: head.compared,
-            behind: head.behind.clone(),
-        };
-        let filter = ViewFilter {
-            tests: Tests::Include,
-        };
+        let (filter, honesty) = shown(head);
         let (records, resolution) = (
             Indexed::default(),
             rigger_domain::community::DEFAULT_RESOLUTION,
@@ -878,11 +890,11 @@ mod tests {
     #[test]
     fn two_fingerprints_alternating_reads_extract_once_each() {
         let fx = Fixture::new(FILES);
-        let other = ToyExtract::new(2);
+        let other = Arc::new(ToyExtract::new(2));
         fx.head_as(&other, &[], &one_shot());
         let a: Changes = &[("src/a.rs", Some("def alpha\ndef gamma\n"))];
         // (the reader, the files its read extracts), in order.
-        let reads: [(&ToyExtract, usize); 6] = [
+        let reads: [(&Arc<ToyExtract>, usize); 6] = [
             (&fx.extract, 1),
             (&other, 1),
             (&fx.extract, 0),
@@ -898,6 +910,27 @@ mod tests {
             assert_eq!(ungrouped(&answer(&head).0), fresh(a), "read {read}");
         }
         assert_eq!(fx.entries().len(), 2, "{:?}", fx.entries());
+    }
+
+    /// A head carries the extractor the store opened it with: GIVEN a store, WHEN a reader opens
+    /// its head from a worktree matching it and from one differing from it, THEN each head holds
+    /// that very extractor, the one a doc read takes a span's text from.
+    #[test]
+    fn a_head_carries_the_extractor_the_store_opened_with() {
+        let fx = Fixture::new(FILES);
+        let opened: Arc<dyn Extract> = fx.extract.clone();
+        let cases: [(&str, Changes); 2] = [
+            ("a matching worktree", &[]),
+            ("a differing worktree", &[("src/a.rs", Some("def alpha\n"))]),
+        ];
+        for (case, changes) in cases {
+            let head = fx.head(changes, &one_shot());
+            let held = head.extract.as_ref();
+            assert!(
+                held.is_some_and(|held| Arc::ptr_eq(held, &opened)),
+                "{case}"
+            );
+        }
     }
 
     /// An open that extracts a file reaps the memo, whether or not its entry is written: GIVEN a
@@ -922,7 +955,7 @@ mod tests {
                 std::fs::create_dir(&own[0]).unwrap();
                 std::fs::write(own[0].join("held"), b"a file").unwrap();
             }
-            let other = fingerprint(&fx.extract, &fx.group) ^ 1;
+            let other = fingerprint(&*fx.extract, &fx.group) ^ 1;
             let dir = Store::new(fx.root.path()).memo_dir();
             std::fs::write(dir.join(format!("{other:016x}-other.facts")), b"an entry").unwrap();
             let before = fx.extract.calls();
@@ -972,7 +1005,10 @@ mod tests {
     /// nothing defines, and a test that calls `run`, WHEN the worktree adds an untracked file that
     /// defines `helper`, THEN the call's tier moves from ambiguous to inferred and the test's
     /// proof of `run` holds; WHEN it also adds a second candidate `run`, THEN the untouched
-    /// test's call proves nothing.
+    /// test's call proves nothing. Only the head of a worktree matching its commit offers the
+    /// code half the store settled whole, and a neighbourhood read under the default filter, which
+    /// reads that half when it is offered, answers the call's tier alike: an overlay's change to a
+    /// file moves the edges of an id in a file it leaves alone.
     #[test]
     fn resolution_over_the_overlay_describes_the_worktree() {
         let files = [
@@ -985,23 +1021,31 @@ mod tests {
             ("src/h.rs", Some("def helper\n")),
             ("src/r.rs", Some("def run\n")),
         );
-        // (the worktree's changes, the tier of the call to `helper`, the proof of `run`)
+        // (the worktree's changes, whether the head offers the settled code half, the tier of
+        // the call to `helper`, the proof of `run`)
         let proved = Some(r#"["tests/t.rs:2"]"#);
-        let cases: [(Changes, &str, Option<&str>); 3] = [
-            (&[], "ambiguous", proved),
-            (&[helper], "inferred", proved),
-            (&[helper, second], "inferred", None),
+        let cases: [(Changes, bool, &str, Option<&str>); 3] = [
+            (&[], true, "ambiguous", proved),
+            (&[helper], false, "inferred", proved),
+            (&[helper, second], false, "inferred", None),
         ];
-        for (changes, want_tier, want_proof) in cases {
-            let (graph, _) = answer(&fx.head(changes, &memo));
-            let call = tier(&graph, "src/a.rs::run", "src/a.rs::%helper");
-            assert_eq!(call, Some(want_tier), "{changes:?}");
-            let run = graph
-                .nodes
-                .iter()
-                .find(|n| n.id == "src/a.rs::run")
-                .unwrap();
-            let proof = run.attrs.get("proof_evidence").map(String::as_str);
+        let (run, call) = ("src/a.rs::run", "src/a.rs::%helper");
+        for (changes, offers, want_tier, want_proof) in cases {
+            let head = fx.head(changes, &memo);
+            let offered = (head.view.settled()).is_some_and(|settled| settled.half().is_some());
+            assert_eq!(
+                offered, offers,
+                "{changes:?}: the settled code half offered"
+            );
+            let (_, honesty) = shown(&head);
+            let records = Indexed::default();
+            let near = Composed::near(&records, &*head.view, ViewFilter::default(), honesty, None);
+            let seen = near.unwrap().subgraph(&[run.to_string()], 1).unwrap();
+            assert_eq!(tier(&seen, run, call), Some(want_tier), "{changes:?}: near");
+            let (graph, _) = answer(&head);
+            assert_eq!(tier(&graph, run, call), Some(want_tier), "{changes:?}");
+            let node = graph.nodes.iter().find(|n| n.id == run).unwrap();
+            let proof = node.attrs.get("proof_evidence").map(String::as_str);
             assert_eq!(proof, want_proof, "{changes:?}");
         }
     }
@@ -1076,6 +1120,146 @@ mod tests {
         }
     }
 
+    /// A QUALIFIED PROOF RESETTLES under the overlay: GIVEN a commit whose tests call `new`
+    /// qualified by `Cursor`, `Store`, `Reader` or `AtomicU64`, WHEN the worktree adds a second
+    /// `impl Cursor` holding `new`, adds a file holding only the type `AtomicU64`, or renames an
+    /// `impl` mention over unchanged method ids, THEN each `new` is proved by exactly the test
+    /// calls the proof rule credits it with, its qualifier narrowing each, those of a test file the
+    /// worktree leaves alone included; the head's test files and proof calls are a fresh advance's
+    /// of the worktree's content, its whole graph too; and the whole and near reads carry each
+    /// `new` the worktree defines, with its proofs.
+    #[test]
+    fn a_qualified_proof_resettles_under_the_overlay() {
+        let cursor = (
+            "src/cursor.rs",
+            "def cursor_impl impl\nuse impl Cursor\n def new\n",
+        );
+        let qualified = [
+            cursor,
+            (
+                "src/store.rs",
+                "def store_impl impl\nuse impl Store\n def new\n",
+            ),
+            ("tests/read.rs", "def reads\ncall Reader::new\n"),
+            (
+                "tests/seq.rs",
+                "def steps\ncall Cursor::new\ncall Store::new\n",
+            ),
+        ];
+        let atomic = [
+            cursor,
+            ("tests/count.rs", "def counts\ncall AtomicU64::new\n"),
+        ];
+        let (cursor_new, store_new, ext_new) = (
+            "src/cursor.rs::cursor_impl::new",
+            "src/store.rs::store_impl::new",
+            "src/cursor_ext.rs::cursor_ext_impl::new",
+        );
+        let (steps, reads, counts) = (
+            "tests/seq.rs::steps",
+            "tests/read.rs::reads",
+            "tests/count.rs::counts",
+        );
+        let both = [
+            (cursor_new, "tests/seq.rs:2", steps),
+            (store_new, "tests/seq.rs:3", steps),
+        ];
+        type Proved<'a> = &'a [(&'a str, &'a str, &'a str)];
+        // (case, the commit's files, the worktree's changes, the proof calls at the commit and in
+        // the worktree, each as (target, evidence, caller) in proof order)
+        type Row<'a> = (
+            &'a str,
+            &'a [(&'a str, &'a str)],
+            Changes<'a>,
+            Proved<'a>,
+            Proved<'a>,
+        );
+        let rows: [Row; 3] = [
+            (
+                "a second impl Cursor holding new",
+                &qualified,
+                &[(
+                    "src/cursor_ext.rs",
+                    Some("def cursor_ext_impl impl\nuse impl Cursor\n def new\n"),
+                )],
+                &both,
+                &[(store_new, "tests/seq.rs:3", steps)],
+            ),
+            (
+                "a file holding only the type AtomicU64",
+                &atomic,
+                &[("src/atomic.rs", Some("def AtomicU64 type\n"))],
+                &[],
+                &[(cursor_new, "tests/count.rs:2", counts)],
+            ),
+            (
+                "an impl mention renamed over unchanged method ids",
+                &qualified,
+                &[(
+                    "src/cursor.rs",
+                    Some("def cursor_impl impl\nuse impl Reader\n def new\n"),
+                )],
+                &both,
+                &[
+                    (cursor_new, "tests/read.rs:2", reads),
+                    (store_new, "tests/seq.rs:3", steps),
+                ],
+            ),
+        ];
+        // The proof attrs of the node `id` in `graph`, or none when the graph holds no such node.
+        let attrs = |graph: &Graph, id: &str| -> Option<[Option<String>; 2]> {
+            let node = graph.nodes.iter().find(|n| n.id == id)?;
+            let attr = |key: &str| node.attrs.get(key).cloned();
+            Some([attr("proven_by"), attr("proof_evidence")])
+        };
+        for (case, files, changes, at_commit, in_worktree) in rows {
+            let (fx, memo) = (Fixture::new(files), Memo::new(Memo::BOUND));
+            for (changes, want) in [(&[][..], at_commit), (changes, in_worktree)] {
+                let case = format!("{case}, {changes:?}");
+                let head = fx.head(changes, &memo);
+                let settled = head.view.settled().expect("the head holds settled rows");
+                let got: Vec<(String, String, Option<String>)> = (settled.proofs(Proofs::All))
+                    .into_iter()
+                    .map(|c| (c.target, c.evidence, c.caller))
+                    .collect();
+                let owned = |&(target, evidence, caller): &(&str, &str, &str)| {
+                    (target.into(), evidence.into(), Some(caller.into()))
+                };
+                assert_eq!(got, want.iter().map(owned).collect::<Vec<_>>(), "{case}");
+                let worktree = applied(files, changes);
+                let (_store, fresh) = committed(&worktree);
+                let rows_of = |settled: &dyn Settled| {
+                    (settled.test_files().join(" "), settled.proofs(Proofs::All))
+                };
+                let full = fresh.view.settled().expect("a snapshot holds settled rows");
+                assert_eq!(rows_of(settled), rows_of(full), "{case}: the settled rows");
+                let whole = answer(&head).0;
+                assert_eq!(ungrouped(&whole), ungrouped(&answer(&fresh).0), "{case}");
+                let (filter, honesty) = shown(&head);
+                let records = Indexed::default();
+                let near = Composed::near(&records, &*head.view, filter, honesty, None).unwrap();
+                for id in [cursor_new, store_new, ext_new] {
+                    let held =
+                        (worktree.iter()).any(|(path, _)| id.starts_with(&format!("{path}::")));
+                    let evidence: Vec<String> = (want.iter())
+                        .filter(|(target, ..)| *target == id)
+                        .map(|(_, evidence, _)| format!("{evidence:?}"))
+                        .collect();
+                    let proof = (!evidence.is_empty()).then(|| {
+                        [
+                            evidence.len().to_string(),
+                            format!("[{}]", evidence.join(",")),
+                        ]
+                    });
+                    let want = held.then(|| proof.map_or([None, None], |p| p.map(Some)));
+                    assert_eq!(attrs(&whole, id), want, "{case}: {id} read whole");
+                    let seen = near.subgraph(&[id.to_string()], 0).unwrap();
+                    assert_eq!(attrs(&seen, id), want, "{case}: {id} read near");
+                }
+            }
+        }
+    }
+
     /// A worktree whose differing file cannot be read, or that cannot be compared at all, is
     /// uncomparable: GIVEN either, WHEN the head is read for it, THEN no file is overlaid, every
     /// code fact is withheld, and the label says the worktree cannot be compared.
@@ -1094,6 +1278,230 @@ mod tests {
             assert!(label.starts_with(&want), "{case}: {label}");
             let code = ids(&graph).into_iter().filter(|id| id.starts_with("src/"));
             assert_eq!(code.count(), 0, "{case}: {:?}", ids(&graph));
+        }
+    }
+
+    /// A MODULE ROOT IS DECIDED AT READ through the store: GIVEN facts whose module declarations
+    /// place a module apart as a root (`as_root`) and as a child (`as_child`), with a code file at
+    /// the first path of both lists where they differ, WHEN they are encoded to a snapshot and the
+    /// head over it is read whole and near with every test shown, THEN the CONTAINS edges into each
+    /// file come from exactly the declarations that reach it: those of a root (`src/bin/tool.rs`,
+    /// `src/lib.rs`, and `src/p/y.rs`, which `src/lib.rs` loads by `#[path]`) read `as_root`, and
+    /// those of a file a plain declaration reaches (`src/code/mod.rs`, `src/a.rs`) read `as_child`;
+    /// and the snapshot settled as test files exactly the files its test-only declarations reach.
+    #[test]
+    fn a_module_root_is_decided_at_read_through_the_store() {
+        use crate::code::snapshot::tests::{proving_file, stamp};
+        use rigger_domain::code_facts::Scope;
+        use rigger_domain::contextgraph::REL_CONTAINS;
+        // A module declaration: its name, test mark, `as_root` and `as_child` lists, and whether
+        // it carries a `#[path]` attribute.
+        type Decl<'a> = (&'a str, bool, &'a [&'a str], &'a [&'a str], bool);
+        // A code file at `path` declaring each of `decls` by a definition of its name.
+        let declaring = |path: &str, decls: &[Decl]| {
+            let names: Vec<&str> = decls.iter().map(|d| d.0).collect();
+            let list = |paths: &[&str]| paths.iter().map(|p| p.to_string()).collect();
+            FileFacts {
+                modules: (decls.iter().enumerate())
+                    .map(
+                        |(def, &(name, test, as_root, as_child, path_attr))| ModuleDecl {
+                            name: name.into(),
+                            def: def as u32,
+                            test,
+                            as_root: list(as_root),
+                            as_child: list(as_child),
+                            path_attr,
+                        },
+                    )
+                    .collect(),
+                ..proving_file(path, Scope::Product, &names, &[], &[])
+            }
+        };
+        let declarations = [
+            declaring(
+                "src/bin/tool.rs",
+                &[
+                    (
+                        "x",
+                        false,
+                        &["src/bin/x.rs", "src/bin/x/mod.rs"],
+                        &["src/bin/tool/x.rs", "src/bin/tool/x/mod.rs"],
+                        false,
+                    ),
+                    (
+                        "tests",
+                        true,
+                        &["src/bin/tests.rs", "src/bin/tests/mod.rs"],
+                        &["src/bin/tool/tests.rs", "src/bin/tool/tests/mod.rs"],
+                        false,
+                    ),
+                ],
+            ),
+            declaring(
+                "src/lib.rs",
+                &[
+                    ("y", false, &["src/p/y.rs"], &["src/p/y.rs"], true),
+                    (
+                        "code",
+                        false,
+                        &["src/code.rs", "src/code/mod.rs"],
+                        &["src/code.rs", "src/code/mod.rs"],
+                        false,
+                    ),
+                    (
+                        "a",
+                        false,
+                        &["src/a.rs", "src/a/mod.rs"],
+                        &["src/a.rs", "src/a/mod.rs"],
+                        false,
+                    ),
+                ],
+            ),
+            declaring(
+                "src/p/y.rs",
+                &[(
+                    "z",
+                    false,
+                    &["src/p/z.rs", "src/p/z/mod.rs"],
+                    &["src/p/y/z.rs", "src/p/y/z/mod.rs"],
+                    false,
+                )],
+            ),
+            declaring(
+                "src/code/mod.rs",
+                &[(
+                    "advance",
+                    false,
+                    &["src/code/advance.rs", "src/code/advance/mod.rs"],
+                    &["src/code/advance.rs", "src/code/advance/mod.rs"],
+                    false,
+                )],
+            ),
+            declaring(
+                "src/a.rs",
+                &[
+                    (
+                        "b",
+                        false,
+                        &["src/b.rs", "src/b/mod.rs"],
+                        &["src/a/b.rs", "src/a/b/mod.rs"],
+                        false,
+                    ),
+                    (
+                        "tests",
+                        true,
+                        &["src/tests.rs", "src/tests/mod.rs"],
+                        &["src/a/tests.rs", "src/a/tests/mod.rs"],
+                        false,
+                    ),
+                ],
+            ),
+        ];
+        // (the case, a file, the definitions whose CONTAINS edges reach it); a file no row of
+        // `declarations` holds is a code file that declares nothing.
+        let cases: [(&str, &str, &[&str]); 14] = [
+            (
+                "a root's declaration reaches its `as_root` file",
+                "src/bin/x.rs",
+                &["src/bin/tool.rs::x"],
+            ),
+            (
+                "a root's declaration reaches no file at its `as_child` path",
+                "src/bin/tool/x.rs",
+                &[],
+            ),
+            (
+                "a root's test-only declaration reaches its `as_root` file",
+                "src/bin/tests.rs",
+                &["src/bin/tool.rs::tests"],
+            ),
+            (
+                "a root's test-only declaration reaches no file at its `as_child` path",
+                "src/bin/tool/tests.rs",
+                &[],
+            ),
+            (
+                "the library root's `#[path]` declaration reaches its file",
+                "src/p/y.rs",
+                &["src/lib.rs::y"],
+            ),
+            (
+                "a file the library root loads by `#[path]` declares as a root",
+                "src/p/z.rs",
+                &["src/p/y.rs::z"],
+            ),
+            (
+                "a file the library root loads by `#[path]` reaches no file at its `as_child` path",
+                "src/p/y/z.rs",
+                &[],
+            ),
+            (
+                "the library root reaches a `mod.rs` file plain",
+                "src/code/mod.rs",
+                &["src/lib.rs::code"],
+            ),
+            (
+                "a reached `mod.rs` file declares",
+                "src/code/advance.rs",
+                &["src/code/mod.rs::advance"],
+            ),
+            (
+                "the library root reaches a file plain",
+                "src/a.rs",
+                &["src/lib.rs::a"],
+            ),
+            (
+                "a file reached plain declares as a child",
+                "src/a/b.rs",
+                &["src/a.rs::b"],
+            ),
+            (
+                "a file reached plain reaches no file at its `as_root` path",
+                "src/b.rs",
+                &[],
+            ),
+            (
+                "a child's test-only declaration reaches its `as_child` file",
+                "src/a/tests.rs",
+                &["src/a.rs::tests"],
+            ),
+            (
+                "a child's test-only declaration reaches no file at its `as_root` path",
+                "src/tests.rs",
+                &[],
+            ),
+        ];
+        let leaves = (cases.iter())
+            .filter(|(_, file, _)| declarations.iter().all(|d| d.path != *file))
+            .map(|(_, file, _)| declaring(file, &[]));
+        let files = declarations.iter().cloned().chain(leaves).collect();
+        let view = FactsView::new(stamp(None, 1), files);
+        let bytes = encode(&view, &Groupings::default()).expect("encodes");
+        let head = matched(Snapshot::decode(bytes).expect("decodes"));
+        let settled = head.view.settled().expect("a snapshot settles");
+        assert_eq!(
+            settled.test_files(),
+            ["src/a/tests.rs", "src/bin/tests.rs"],
+            "the test files a test-only declaration reaches"
+        );
+        let whole = answer(&head).0;
+        let (filter, honesty) = shown(&head);
+        let records = Indexed::default();
+        let near = Composed::near(&records, &*head.view, filter, honesty, None).unwrap();
+        // The definitions whose CONTAINS edges in `graph` reach `file`, sorted.
+        let into = |graph: &Graph, file: &str| {
+            let mut from: Vec<String> = (graph.edges.iter())
+                .filter(|e| e.to == file && e.rel.as_str() == REL_CONTAINS)
+                .map(|e| e.from.clone())
+                .collect();
+            from.sort();
+            from
+        };
+        for (case, file, want) in cases {
+            let seen = near.subgraph(&[file.to_string()], 1).unwrap();
+            for (read, graph) in [("whole", &whole), ("near", &seen)] {
+                assert_eq!(into(graph, file), want, "{case}: {file} read {read}");
+            }
         }
     }
 }

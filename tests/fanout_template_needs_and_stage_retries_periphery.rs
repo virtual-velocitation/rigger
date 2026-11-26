@@ -173,7 +173,6 @@ fn write_fan_out_workflow(root: &Path, planned: bool, template_gate: &str) {
         format!(
             r#"defaults:
   grounder: nop
-  budget: 60
   max_retries: 1
 gates:
   ok: {{ run: "true", kind: core }}
@@ -516,6 +515,7 @@ fn checkin_integrates_after_a_real_planner_supersede_of_a_fanout_baseline_lands_
         store: &store,
         driver: &driver,
         gates: &ExecRunner,
+        run_branch: common::fixtures::branch_of(repo.path().to_str().unwrap()),
         repo: repo.path().to_str().unwrap().to_string(),
         grounder: None,
         graph: None,
@@ -605,7 +605,6 @@ fn a_stages_own_max_retries_bounds_the_attempts(default: u32, stage: u32) {
         format!(
             r#"defaults:
   grounder: nop
-  budget: 60
   max_retries: {default}
 gates:
   bad: {{ run: "false", kind: core }}

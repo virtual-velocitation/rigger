@@ -26,6 +26,7 @@
 here=$(dirname "$0")
 self=$(readlink "$0") || self=$0
 . "$(dirname "$self")/launch-args.sh"
+answer_version "$@"
 sid=$(launched_session arms "$@")
 sp_file=$(system_prompt_file "$@")
 sp=""

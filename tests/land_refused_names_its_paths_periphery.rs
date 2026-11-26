@@ -17,7 +17,9 @@
 use crate::common;
 use common::git::run_git;
 
+use common::fixtures::conductor_fault_hold;
 use common::fixtures::gated_scratch_cfg;
+use common::fixtures::holds_in;
 use common::fixtures::mk_stage;
 use common::fixtures::review_or_adjudicate;
 use common::fixtures::test_spawn_host;
@@ -79,6 +81,7 @@ fn a_land_refused_for_local_changes_names_the_blocking_path_and_charges_no_attem
         store: &store,
         driver: &driver,
         gates: &rigger::gate::ExecRunner,
+        run_branch: common::fixtures::branch_of(&repo_path),
         repo: repo_path.clone(),
         grounder: None,
         graph: None,
@@ -143,6 +146,11 @@ fn a_land_refused_for_local_changes_names_the_blocking_path_and_charges_no_attem
         lessons[0].contains("new.txt"),
         "the lesson names the blocking path: {}",
         lessons[0]
+    );
+    assert_eq!(
+        holds_in(&events),
+        [conductor_fault_hold(&err.0)],
+        "the refused landing holds the run for the orchestrator, naming the refusal"
     );
 
     // The unit's own branch keeps exactly its own real work - untouched by the refused
@@ -228,6 +236,7 @@ fn a_land_refused_names_a_unit_branch_whose_tip_already_holds_identical_content(
         store: &store,
         driver: &driver,
         gates: &rigger::gate::ExecRunner,
+        run_branch: common::fixtures::branch_of(&repo_path),
         repo: repo_path.clone(),
         grounder: None,
         graph: None,
@@ -277,6 +286,7 @@ fn a_land_refused_for_a_fifo_blocking_path_never_hangs_and_still_names_it() {
         store: &store,
         driver: &driver,
         gates: &rigger::gate::ExecRunner,
+        run_branch: common::fixtures::branch_of(&repo_path),
         repo: repo_path.clone(),
         grounder: None,
         graph: None,

@@ -48,6 +48,12 @@ path = "src/main.rs"
 name = "all"
 path = "tests/all.rs"
 
+# A suite that proves an OS's own behaviour: its own executable, so a run on that OS builds and
+# runs it alone, never the whole of `all`.
+[[test]]
+name = "bare_rigger_hooks_resolve_periphery"
+path = "tests/bare_rigger_hooks_resolve_periphery.rs"
+
 [[test]]
 name = "boundary_audit"
 path = "tests/boundary_audit.rs"
@@ -104,9 +110,19 @@ path = "tests/kurrentdb_store_threads.rs"
 name = "product_binary_authority_periphery"
 path = "tests/product_binary_authority_periphery.rs"
 
+# A suite that times the release binary: its own executable, so no sibling suite shares the
+# machine while it measures.
+[[test]]
+name = "read_budgets"
+path = "tests/read_budgets.rs"
+
 [[test]]
 name = "registry_refresh_driver_courier_convergence_periphery"
 path = "tests/registry_refresh_driver_courier_convergence_periphery.rs"
+
+[[test]]
+name = "repo_less_run_leaves_its_working_directory_alone"
+path = "tests/repo_less_run_leaves_its_working_directory_alone.rs"
 
 [[test]]
 name = "spawn_target_dir_periphery"
@@ -134,7 +150,7 @@ default = ["symbols", "store"]
 store = ["rigger-domain/store", "rigger-store-sqlite/store", "rigger-graph-sqlite/store", "rigger-process/store", "rigger-worktree-git/store", "rigger-gates-shell/store", "rigger-driver/store", "rigger-grounder/store", "rigger-config-files/store", "rigger-conductor/store", "rigger-console/store", "rigger-dash/store", "rigger-store/store"]
 # THE PURE SUBSET (spec 93, criterion 1): a `core` module imports none of `std::fs`,
 # `std::process`, `std::net`, `std::time::SystemTime::now`, `rusqlite`, `tokio`,
-# `rustix`, `fs2`, `ignore` or `uuid` - every time and age it needs is an input. Every
+# `rustix`, `ignore` or `uuid` - every time and age it needs is an input. Every
 # `store`-gated module's `#[cfg]` excludes it whenever `core` alone is requested (see
 # the `store` feature's own doc above), so `--no-default-features --features core`
 # builds only the pure subset, natively and for `wasm32-unknown-unknown`. Carries no
@@ -212,10 +228,10 @@ serde_path_to_error = "0.1"
 serde_yaml = "0.9"
 thiserror = "2"
 
-# THE CORE LANE IS PURE (spec 93, criterion 1): these seven crates are exactly the ones
+# THE CORE LANE IS PURE (spec 93, criterion 1): these crates are exactly the ones
 # the `store`-gated modules need and the pure `core` subset must never see - each is
 # either a native-only binding (`rusqlite`'s bundled sqlite C code, `rustix`'s Linux
-# syscalls, `fs2`'s `flock`) or fails to even COMPILE for `wasm32-unknown-unknown`
+# syscalls) or fails to even COMPILE for `wasm32-unknown-unknown`
 # without extra opt-in (`tokio`'s `mio` epoll backend, `kurrentdb`'s tonic/TLS stack,
 # `uuid`'s `getrandom` entropy source). Cargo resolves a target-cfg'd dependency table
 # ahead of any feature flag, so this is what actually keeps the nested wasm build (spec
@@ -224,7 +240,7 @@ thiserror = "2"
 # own native build, but only a target-cfg'd table stops the wasm target from trying to
 # build the crates themselves. `not(target_arch = "wasm32")` is unconditional on every
 # other target, so `default` and `--no-default-features` (native) are byte-for-byte
-# unaffected: these seven are exactly as mandatory there as they were before this split.
+# unaffected: these are exactly as mandatory there as they were before this split.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rusqlite = { version = "0.32", features = ["bundled"] }
 uuid = { version = "1", features = ["v4"] }
@@ -239,12 +255,6 @@ uuid = { version = "1", features = ["v4"] }
 # never delegated to the type; 1.1.4 is already resolved transitively in `Cargo.lock`, so
 # adding it direct at that version is a no-op for dependency resolution.
 rustix = { version = "1.1", default-features = false, features = ["std", "process"] }
-# Cross-process advisory file lock (`flock(2)` on unix, `LockFileEx` on Windows) on the shared
-# build cache's guard file: `reclaim_shared_build_cache` takes it exclusively, without waiting,
-# so `reset --build-cache` never renames the cache away under a build holding its shared lock.
-# The lock is released explicitly once the rename lands, or by the process ending however it
-# ends. (`rigger step`'s serialization lock is the store crate's `lockfile::HeldLock`.)
-fs2 = "0.4"
 # The KurrentDB EventStore adapter (the trait's server-backed implementation) is part of
 # the product, compiled into every NATIVE build: the shared-store capability (many rigger
 # instances appending to one KurrentDB so agent context is shared across a team) is

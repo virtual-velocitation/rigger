@@ -63,6 +63,52 @@ pub fn run_held_event(body: &rigger::run::RunHeld) -> Event {
     body.to_event().unwrap()
 }
 
+/// The hold the conductor writes on a fault of its own that ended the run's drive, held for the
+/// orchestrator: `error`, the fault's text, as its detail
+/// ([`fault_detail`](rigger_domain::run::fault_detail)), under the conductor-fault row's action.
+pub fn conductor_fault_hold(error: &str) -> rigger::run::RunHeld {
+    use rigger_domain::agent::{cause_row, CONDUCTOR_FAULT};
+    let row = cause_row(CONDUCTOR_FAULT);
+    rigger::run::RunHeld {
+        detail: rigger_domain::run::fault_detail(error),
+        needs_person: row.needs_person,
+        ..hold_naming(CONDUCTOR_FAULT, row.action, "conductor")
+    }
+}
+
+/// The hold the conductor writes when `error` holds the run again after a release of the same
+/// fault in the same run: [`conductor_fault_hold`] for a person, the orchestrator's fix not
+/// having held ([`FAULT_RECURRED`](rigger_domain::agent::FAULT_RECURRED)).
+pub fn recurred_fault_hold(error: &str) -> rigger::run::RunHeld {
+    let row = rigger_domain::agent::FAULT_RECURRED;
+    rigger::run::RunHeld {
+        action: row.action.to_string(),
+        needs_person: row.needs_person,
+        ..conductor_fault_hold(error)
+    }
+}
+
+/// The hold the conductor writes when git refused a unit's own work and the unit was charged
+/// the attempt: [`conductor_fault_hold`] under the unit-work row's action, whose release retries
+/// the unit ([`UNIT_WORK_REFUSED`](rigger_domain::agent::UNIT_WORK_REFUSED)).
+pub fn unit_work_hold(error: &str) -> rigger::run::RunHeld {
+    let row = rigger_domain::agent::UNIT_WORK_REFUSED;
+    rigger::run::RunHeld {
+        action: row.action.to_string(),
+        needs_person: row.needs_person,
+        ..conductor_fault_hold(error)
+    }
+}
+
+/// Every `RunHeld` body among `events`, oldest first.
+pub fn holds_in(events: &[Event]) -> Vec<rigger::run::RunHeld> {
+    events
+        .iter()
+        .filter(|e| e.type_ == rigger::run::TYPE_RUN_HELD)
+        .filter_map(Event::decode::<rigger::run::RunHeld>)
+        .collect()
+}
+
 /// A `RunReleased` event by `by`, the hold having stood `held_for_s` seconds.
 pub fn released_event(by: &str, held_for_s: u64) -> Event {
     rigger::run::RunReleased {
@@ -424,6 +470,16 @@ pub fn isolated(
     run(&cfg, deps)
 }
 
+/// The run branch a test's run over `repo` names ([`Deps::run_branch`]): the branch the checkout
+/// holds when the deps are built, as `rigger run` names the branch it checked out; None without a
+/// repo or on a detached HEAD.
+pub fn branch_of(repo: &str) -> Option<String> {
+    if repo.is_empty() {
+        return None;
+    }
+    rigger::worktree::current_branch(repo).unwrap()
+}
+
 /// The conductor's interfaces for one run over `repo`: no grounder, no graph and no criteria.
 pub fn bare_deps<'a>(
     store: &'a dyn EventStore,
@@ -436,6 +492,7 @@ pub fn bare_deps<'a>(
         driver,
         gates,
         repo: repo.to_string(),
+        run_branch: branch_of(repo),
         grounder: None,
         graph: None,
         criteria: Vec::new(),

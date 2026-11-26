@@ -8,7 +8,8 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::code_view::{Head, ViewFilter};
+use crate::code_facts::MentionKind;
+use crate::code_view::{Head, Tests, ViewFilter};
 use crate::eventstore::{Event, Position};
 
 // THE QUERY ENGINE MOVES WITH THE OPS (spec 93 criterion 5): the pure graph query functions
@@ -46,8 +47,10 @@ pub const KIND_FINDING: &str = "finding";
 /// LANGUAGE'S PATH: `T::new`, `S.field`, a file-level definition's own name); its attrs carry the
 /// name, its leaf, the rigger `Kind` string, the 1-based line, and the language it was parsed as.
 pub const KIND_CODE_ENTITY: &str = "code-entity";
-/// The sigil that marks a placeholder's leaf in its id, `<file>::%<leaf>` (spec 119): `%`
-/// begins no identifier in any registered grammar. [`query::leaf_of`] strips exactly one.
+/// The sigil that marks a placeholder's leaf in its id, `<file>::%<leaf>` (spec 119), or the
+/// qualified name a call keeping several candidates writes, `<file>::%<Q>::<leaf>` or
+/// `<file>::%<Q>.<leaf>` (spec 117): `%` begins no identifier in any registered grammar.
+/// [`query::leaf_of`] strips exactly one.
 pub const PLACEHOLDER_SIGIL: char = '%';
 /// The code kind (a code entity's `kind` attr) of a constructor: function-like, so a reference
 /// inside one has it as caller.
@@ -300,7 +303,8 @@ pub const REL_REVIEWS_LIGHT: &str = "REVIEWS_LIGHT";
 
 // Edge confidence tiers (spec 29a, addendum 6.2). Every folded edge carries one, the
 // `precise`/`safe` split of the two-view blast radius made a first-class edge attribute. The
-// three tiers partition the call-reference set, so the graph keeps EVERY call reference (a
+// three tiers partition the call-reference set, so the graph keeps EVERY call reference but one
+// a path qualifier naming no product type or trait gives no link (spec 117, RESOLVER AT READ; a
 // tagged reference, one carrying a `ref_kind`, folds no edge - spec 117): a later traversal
 // reads the EXTRACTED sub-graph as the precise prompt seed and the structural reach
 // EXTRACTED u INFERRED as the blast radius's safe view (addendum 2.4).
@@ -317,12 +321,16 @@ pub const TIER_EXTRACTED: &str = "extracted";
 /// define: in another file, more than once in its own, or once in its own when that definition
 /// folded after the reference (the definition arm's upgrade promotes it). The reference is
 /// inferred to reach a definition - real, but one confidence step below an EXTRACTED reference.
+/// A tagged reference lands on the definition itself (spec 117, RESOLVER AT READ): the one
+/// candidate of its tag's kinds in the view, which lies in another file, or, for a `field`
+/// reference, the one field or property in the view, its own file included.
 pub const TIER_INFERRED: &str = "inferred";
 /// A text-only occurrence: a reference whose name no call target ([`is_call_target`]) defines
 /// ANYWHERE the graph knows - a macro body, a reflection string, a dynamic name, an external
-/// symbol, or a name only a data member or a declaration carries. It is kept on the graph (never
-/// dropped) but tiered lowest: the structural pass cannot confirm it resolves to any definition,
-/// so the blast radius never crosses it (addendum 2.4).
+/// symbol, or a name only a data member or a declaration carries. It is kept on the graph,
+/// dropped only when a path qualifier naming no product type or trait gives it no link (spec 117,
+/// RESOLVER AT READ), but tiered lowest: the structural pass cannot confirm it resolves to any
+/// definition, so the blast radius never crosses it (addendum 2.4).
 pub const TIER_AMBIGUOUS: &str = "ambiguous";
 
 /// The metadata key carrying the acting agent on an event (the DECIDED source).
@@ -545,7 +553,9 @@ pub enum Located {
 /// the graph and the attrs it carries, those built by [`entity_site`] alone, so every show surface
 /// prints the entries [`site_fields`] gives, the MCP `around` less its `summary`, and the CLI
 /// bounds the body it reads from the working tree. Only the adapter's site read fills its
-/// [`unresolved`](EntitySite::unresolved) leaves (spec 117, READERS).
+/// [`unresolved`](EntitySite::unresolved) leaves, and only the composed graph's
+/// [`ContextGraph::locate`] its [`doc_comment`](EntitySite::doc_comment) and
+/// [`referrers`](EntitySite::referrers) (spec 117, READERS).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EntitySite {
     /// The node id (`<file>::<path>` for a definition).
@@ -564,15 +574,38 @@ pub struct EntitySite {
     pub degree: usize,
     /// The node's attrs, whole; [`site_fields`] gives the closed list of them a surface prints.
     pub attrs: BTreeMap<String, String>,
-    /// A `file` node's unresolved references (spec 117, READERS): the sorted distinct leaves of
-    /// its live `type`, `const` and `use` rows that resolve to nothing, read at its site read;
-    /// empty for any other node and for a site [`entity_site`] builds.
+    /// A `file` node's unresolved reference leaves (spec 117, READERS), as
+    /// [`Neighbors::unresolved`] answers them at its site read; empty for any other node and for a
+    /// site [`entity_site`] builds. No half records reference rows, so every half answers none.
     pub unresolved: Vec<String>,
+    /// The node's doc (spec 117, READERS), as [`ContextGraph::doc`] reads it at the composed
+    /// graph's [`ContextGraph::locate`]: a definition's doc comment or a file's leading doc,
+    /// stripped of its markers. `None` for a node with none and for a site [`entity_site`] builds.
+    pub doc_comment: Option<String>,
+    /// The node's referrers (spec 117, READERS), as [`ContextGraph::referrers`] reads them at the
+    /// composed graph's [`ContextGraph::locate`] under the tests mode the graph was opened under;
+    /// empty for a site [`entity_site`] builds.
+    pub referrers: Vec<Referrer>,
 }
 
 /// The one separator a list-valued [`site_fields`] entry joins its items by (spec 117), so a
 /// surface prints a list one way.
 pub const LIST_SEP: &str = ", ";
+
+/// The first `cap` of `items`, each as `text` writes it, joined by `sep`, then ` (+N more)` for
+/// the `N` left out: the one spelling of a capped list a surface prints.
+pub fn capped<T>(items: &[T], cap: usize, sep: &str, text: impl Fn(&T) -> String) -> String {
+    let shown = items.len().min(cap);
+    let mut listed = items[..shown]
+        .iter()
+        .map(text)
+        .collect::<Vec<_>>()
+        .join(sep);
+    if items.len() > shown {
+        listed.push_str(&format!(" (+{} more)", items.len() - shown));
+    }
+    listed
+}
 
 /// The attrs [`site_fields`] gives after the site entries, in their order: the closed list a show
 /// surface prints (`title` and `doc` a knowledge node's, `by`, `unit` and `summary` a finding's,
@@ -588,6 +621,7 @@ const SITE_ATTRS: [&str; 8] = [
 /// attrs whole. The adapter's `site_of` calls it over the row it read with that row's one-hop
 /// degree, and the MCP `around` over each node of the `Graph` it loaded with the node's edge count
 /// there, so neither reads a node twice. It lists no unresolved leaf, which the adapter's site read
+/// alone adds, and no doc and no referrer, which the composed graph's [`ContextGraph::locate`]
 /// alone adds (spec 117).
 pub fn entity_site(node: &Node, degree: usize) -> EntitySite {
     let attr = |key: &str| node.attrs.get(key).map(String::as_str);
@@ -602,17 +636,22 @@ pub fn entity_site(node: &Node, degree: usize) -> EntitySite {
         degree,
         attrs: node.attrs.clone(),
         unresolved: Vec::new(),
+        doc_comment: None,
+        referrers: Vec::new(),
     }
 }
 
 /// The ordered closed list of entries a show surface prints for `site` (spec 119, SHOW IS ONE
-/// RENDERER): `file`, `line`, `kind`, `degree`, then [`SITE_ATTRS`]' order, then `unresolved`
+/// RENDERER): `file`, `line`, `kind`, `degree`, then [`SITE_ATTRS`]' order, then `doc_comment`,
+/// `unresolved` and one `referenced by <label>` entry per [`REFERRER_LABELS`] label in its order
 /// (spec 117) - `line` and `degree` JSON numbers, `unresolved` the site's unresolved leaves joined
-/// by [`LIST_SEP`], every other entry its recorded value verbatim. A node with no `file` has no
-/// `line` entry either; `kind` and `degree` are always given; an attr whose value is empty, and an
-/// empty unresolved list, give no entry. The CLI prints it (its live healed line and a value's
-/// newlines collapsed at print only), the MCP `show` carries it as keys beside the node's `id`,
-/// and the MCP `around` the same less its `summary` entry.
+/// by [`LIST_SEP`], a `referenced by` entry the label's first [`REFERRERS_SHOWN`] referrers as the
+/// lookup lists them, joined by [`LIST_SEP`], then `(+N more)` for the rest ([`capped`]), and
+/// every other entry its recorded value verbatim. A node with no `file` has no `line` entry
+/// either; `kind` and `degree` are always given; an attr whose value is empty, an absent or empty
+/// doc, an empty unresolved list and a label no referrer is under give no entry. The CLI prints it
+/// (its live healed line and a value's newlines collapsed at print only), the MCP `show` carries
+/// it as keys beside the node's `id`, and the MCP `around` the same less its `summary` entry.
 pub fn site_fields(site: &EntitySite) -> Vec<(&'static str, serde_json::Value)> {
     let located = site.file.iter().flat_map(|file| {
         [
@@ -630,14 +669,35 @@ pub fn site_fields(site: &EntitySite) -> Vec<(&'static str, serde_json::Value)> 
             .filter(|value| !value.is_empty())
             .map(|value| (key, serde_json::Value::from(value.as_str())))
     });
+    let doc = (site.doc_comment.as_deref())
+        .filter(|doc| !doc.is_empty())
+        .map(|doc| ("doc_comment", doc.into()));
     let unresolved = (!site.unresolved.is_empty())
         .then(|| ("unresolved", site.unresolved.join(LIST_SEP).into()));
+    let referred = REFERRER_LABELS
+        .iter()
+        .zip(REFERRED_BY)
+        .filter_map(|((_, label), key)| {
+            let listed: Vec<&Referrer> = (site.referrers.iter())
+                .filter(|r| r.label == *label)
+                .collect();
+            if listed.is_empty() {
+                return None;
+            }
+            let text = capped(&listed, REFERRERS_SHOWN, LIST_SEP, |r| referrer_text(r));
+            Some((key, text.into()))
+        });
     located
         .chain(graph)
         .chain(attrs)
+        .chain(doc)
         .chain(unresolved)
+        .chain(referred)
         .collect()
 }
+
+/// The most referrers a `referenced by` entry of [`site_fields`] lists (spec 117, READERS).
+const REFERRERS_SHOWN: usize = 50;
 
 /// One disambiguation candidate for an ambiguous query (spec 58): the full node id and its file.
 /// [`crate::composed::locate`] returns these SORTED by id, so the listing is deterministic.
@@ -1027,9 +1087,10 @@ pub trait ContextGraph: Send + Sync {
     /// follows - [`TIER_INFERRED`] (the default the route passes) excludes the unresolved
     /// [`TIER_AMBIGUOUS`] tier, and passing [`TIER_AMBIGUOUS`] opts it in. A hop that lands on a
     /// BARE placeholder node, or on a named field, property or declaration, resolves by the leaf
-    /// its id names onto the call-target definition(s) of that leaf alone ([`is_call_target`]): a
-    /// hop with EXACTLY ONE is auto-followed, a hop with more becomes a marked frontier the walk
-    /// does NOT descend (honest by construction). Reached nodes dedup into a
+    /// its id names onto the call-target definition(s) of that leaf alone ([`is_call_target`]), a
+    /// placeholder keyed by a qualified name onto those of its leaf the resolver's narrowed
+    /// down-hop keeps: a hop with EXACTLY ONE is auto-followed, a hop with more becomes a marked
+    /// frontier the walk does NOT descend (honest by construction). Reached nodes dedup into a
     /// layered DAG; a recursion edge is marked ([`CallEdge::back`]) rather than duplicated.
     ///
     /// The default returns an empty [`CallGraph`], so a graph with no directed-walk support (a
@@ -1059,7 +1120,9 @@ pub trait ContextGraph: Send + Sync {
     /// FINDS A LEAF OR PATH); and the three outcomes ([`Located`]) are never a guess among
     /// candidates. The default returns `Located::None`, so a graph with no locate support (a test
     /// double) degrades honestly rather than erroring;
-    /// [`Composed`](crate::composed::Composed) overrides it ([`crate::composed::locate`]).
+    /// [`Composed`](crate::composed::Composed) overrides it ([`crate::composed::locate`]), its one
+    /// site carrying the node's doc ([`Self::doc`]) and its referrers ([`Self::referrers`]) under
+    /// the tests mode the graph was opened under (spec 117, READERS).
     fn locate(&self, _entity: &str) -> Result<Located, Error> {
         Ok(Located::None)
     }
@@ -1071,6 +1134,26 @@ pub trait ContextGraph: Send + Sync {
     /// facts; the caller then bounds the body itself. The default answers `None`.
     fn definition_end(&self, _site: &EntitySite) -> Result<Option<u32>, Error> {
         Ok(None)
+    }
+
+    /// The doc comment of `node`, a code file or the production definition a code entity records
+    /// (a test definition reads none), when the file facts this graph was read
+    /// from hold its doc span and describe the caller's tree: the span's lines read from the
+    /// caller's worktree ([`crate::code_view::SourceLines`]) as the extractor the store was opened
+    /// with gives their text ([`crate::code_view::Extract::doc_text`]). `None` when the graph
+    /// read no such span, withholds its code facts or reads no doc, and when the span reaches past
+    /// the file's end or the file cannot be opened. The default answers `None`.
+    fn doc(&self, _node: &Node) -> Option<String> {
+        None
+    }
+
+    /// The referrers of the code entity `id` (spec 117, READERS): one per mention whose own rule
+    /// lists it under `id`, in path then mention order (the order a file's extraction lists its
+    /// mentions, which need not be line order), a test mention only when `tests` shows tests
+    /// (include or only) and a product mention under every setting. None when the graph withholds
+    /// its code facts, and by default (a graph that holds no code, a test double).
+    fn referrers(&self, _id: &str, _tests: Tests) -> Vec<Referrer> {
+        Vec::new()
     }
 
     /// Every node of `kind` this graph holds, ordered by id: the names the combined lookup
@@ -1114,8 +1197,9 @@ pub trait ContextGraph: Send + Sync {
     }
 
     /// The distinct test entities the graph's `tests` filter hides whose calls land on a
-    /// placeholder bound to the leaf of a definition of `ids`, in id order: the hidden tests a
-    /// callers walk stepping from those nodes reaches through a placeholder rather than by a
+    /// placeholder bound to the leaf of a definition of `ids`, a placeholder keyed by a qualified
+    /// name only when its narrowed down-hop holds that definition, in id order: the hidden tests
+    /// a callers walk stepping from those nodes reaches through a placeholder rather than by a
     /// proof. None when tests are shown, the worktree cannot be compared, or by default (a graph
     /// that holds no code, a test double).
     fn hidden_placeholder_callers(&self, _ids: &[String]) -> Result<Vec<String>, Error> {
@@ -1280,7 +1364,9 @@ pub trait Neighbors: Send + Sync {
     /// The nodes whose [`query::member_file`] is `file` (THE MEMBER RULE).
     fn members(&self, file: &str) -> Result<Vec<Node>, Error>;
     /// The nodes a leaf binds: those whose [`query::node_name`] is `leaf`, and those whose id's
-    /// text after its first `::` is `leaf` or `leaf` behind the [`PLACEHOLDER_SIGIL`].
+    /// text after its first `::` is `leaf` or a name behind the [`PLACEHOLDER_SIGIL`] that is
+    /// `leaf` or whose leaf ([`query::path_leaf`]) is: a placeholder keyed by a qualified name
+    /// (`<file>::%T.leaf`) binds its leaf.
     fn leaf_nodes(&self, leaf: &str) -> Result<Vec<Node>, Error>;
     /// Every node of `kind`, ordered by id.
     fn of_kind(&self, kind: &str) -> Result<Vec<Node>, Error>;
@@ -1478,12 +1564,16 @@ impl CodeEntityExtracted {
 }
 
 /// The [`EdgeInferred::ref_kind`] of a TYPE reference (spec 117): a Rust type name, an uppercase
-/// path segment, a struct literal's or pattern's name, or an impl header's trait.
+/// path segment, or a struct literal's or pattern's name, and, in any language, a
+/// `@reference.class`, `@reference.type` or `@reference.interface` capture of its tags query.
 pub const REF_KIND_TYPE: &str = "type";
-/// The [`EdgeInferred::ref_kind`] of a CONST read (spec 117): an all-caps Rust identifier read in
-/// expression position, or the final identifier of a whole expression path.
+/// The [`EdgeInferred::ref_kind`] of a CONST read (spec 117): an all-caps Rust identifier, or the
+/// final identifier of a whole path, read in expression position or matched in a refutable
+/// pattern, or a format string's inline capture so spelled, and, in any language, a
+/// `@reference.constant` capture of its tags query.
 pub const REF_KIND_CONST: &str = "const";
-/// The [`EdgeInferred::ref_kind`] of a USE (spec 117): one imported leaf of a Rust `use`.
+/// The [`EdgeInferred::ref_kind`] of a USE (spec 117): one imported leaf of a Rust `use`, and, in
+/// any language, a `@reference.import` capture of its tags query.
 pub const REF_KIND_USE: &str = "use";
 /// The [`EdgeInferred::ref_kind`] of a FIELD reference (spec 117, NEW TAGS): a member read or
 /// written without a call.
@@ -1527,6 +1617,97 @@ pub fn reference_candidate_kinds(ref_kind: &str) -> Vec<&'static str> {
     }
 }
 
+/// The label a referrer is listed under, by its mention's tag (spec 117, READERS): one row per
+/// tag, in the spec's order, a call carrying no tag (`None`, as an [`EdgeInferred::ref_kind`] is
+/// absent for one).
+pub const REFERRER_LABELS: [(Option<&str>, &str); 8] = [
+    (None, "called by"),
+    (Some(REF_KIND_CONST), "reads"),
+    (Some(REF_KIND_TYPE), "type use"),
+    (Some(REF_KIND_IMPL), "implemented by"),
+    (Some(REF_KIND_FIELD), "field use"),
+    (Some(REF_KIND_VARIANT), "variant use"),
+    (Some(REF_KIND_USE), "imported by"),
+    (Some(REF_KIND_MODULE), "declared by"),
+];
+
+/// The [`site_fields`] key of each [`REFERRER_LABELS`] label, `referenced by <label>`, in the
+/// table's order (spec 117, READERS); a unit test holds each to its label.
+const REFERRED_BY: [&str; REFERRER_LABELS.len()] = [
+    "referenced by called by",
+    "referenced by reads",
+    "referenced by type use",
+    "referenced by implemented by",
+    "referenced by field use",
+    "referenced by variant use",
+    "referenced by imported by",
+    "referenced by declared by",
+];
+
+/// The label a referrer whose mention is of `kind` is listed under ([`REFERRER_LABELS`]); `None`
+/// for a tag the table holds no row for.
+pub fn referrer_label(kind: &MentionKind) -> Option<&'static str> {
+    REFERRER_LABELS
+        .iter()
+        .find(|(row, _)| *row == kind.tag())
+        .map(|(_, label)| *label)
+}
+
+/// One referrer of a code entity (spec 117, READERS): a mention whose own rule lists it under the
+/// entity ([`crate::resolve::Resolver::referrers`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Referrer {
+    /// The id of the definition the mention sits in, or of its file when none encloses it.
+    pub site: String,
+    /// The kind of the definition that settles `site`, or [`KIND_FILE`] for a file.
+    pub kind: String,
+    /// The label it is listed under, by its mention's tag ([`referrer_label`]).
+    pub label: &'static str,
+    /// The mention's own line.
+    pub line: u32,
+    /// Whether the mention is test code, by its own mark, its file's scope or the test-module
+    /// closure: what the view filter hides a code edge by.
+    pub test: bool,
+    /// Whether the mention gave the entity no single edge: it lists under each of several
+    /// candidates, which the lookup marks `?`.
+    pub ambiguous: bool,
+}
+
+/// `referrer` as a `referenced by` entry of [`site_fields`] lists it, the line the lookup prints
+/// for it ([`site_text`]), its file the one its site id names.
+fn referrer_text(referrer: &Referrer) -> String {
+    let file = query::split_id(&referrer.site).0;
+    let (site, kind) = (&referrer.site, &referrer.kind);
+    site_text(
+        Some((file, referrer.line)),
+        site,
+        kind,
+        referrer.test,
+        referrer.ambiguous,
+    )
+}
+
+/// A site as a surface lists it: `<file>:<line> <id> (<kind>)`, the `:<line>` left out at line 0
+/// and the `<file> ` when the site names no file, then ` [test]` for test code and ` ?` for a
+/// referrer whose mention gave the entity no single edge: the one spelling a `referenced by`
+/// entry ([`referrer_text`]) and the lookup's referrer and callee lines print a site by.
+pub fn site_text(
+    file: Option<(&str, u32)>,
+    id: &str,
+    kind: &str,
+    test: bool,
+    ambiguous: bool,
+) -> String {
+    let at = match file {
+        Some((file, 0)) => format!("{file} "),
+        Some((file, line)) => format!("{file}:{line} "),
+        None => String::new(),
+    };
+    let test = if test { " [test]" } else { "" };
+    let ambiguous = if ambiguous { " ?" } else { "" };
+    format!("{at}{id} ({kind}){test}{ambiguous}")
+}
+
 /// Whether a `rel` edge onto a node of kind `target_kind` declares a module (spec 117, MODULE
 /// ROOTS AT READ): a [`REL_CONTAINS`] onto a [`KIND_FILE`] node, the edge a `mod x;` reaches its
 /// file by. A declaration is not coupling, so no community or label degree counts it,
@@ -1567,10 +1748,10 @@ pub struct EdgeInferred {
     /// index persisted before criterion 8 lowers none, loading as absent since criterion 9 bumped
     /// the index version to `ts-tags-v4`), same-file, the innermost
     /// enclosing function before any other definition (spec 116). `None` for a top-level
-    /// reference outside every definition (an import or a module-level call; a file-level impl
-    /// header's trait and type attribute to the impl block, a definition of its own, and its
-    /// trait's tagged `type` row to the self type's definition when the file defines that once,
-    /// spec 117). The emit pass carries what extraction attributed onto the `SymRef`; the fold,
+    /// reference outside every definition (an import or a module-level call; an impl header's
+    /// `impl` mentions of its trait and self type attribute to the impl block, a definition of its
+    /// own, even inside a function, spec 117 RUST TAGS IMPL HEADERS). The emit pass carries what
+    /// extraction attributed onto the `SymRef`; the fold,
     /// when it is present on a call reference (no `ref_kind`), adds a `<file>::<caller> --CALLS-->
     /// <callee>` edge ALONGSIDE the existing file-level `REFERENCES` edge (a later criterion owns
     /// that fold). Serde-defaulted and omitted when `None`, so a pre-37 log folds as caller-less
@@ -1872,6 +2053,24 @@ mod reference_candidate_kinds_rule {
         );
     }
 
+    /// Every tag a stored mention may carry has a label: the kinds of [`ASKED`] the rule names
+    /// candidates for, which the declared protocol accepts as tags, with a module row's tag and a
+    /// call's absent one, are the tags [`REFERRER_LABELS`] holds a row for.
+    #[test]
+    fn every_tag_the_rule_resolves_has_a_referrer_label() {
+        let resolved = ASKED
+            .into_iter()
+            .filter(|tag| !reference_candidate_kinds(tag).is_empty());
+        let tags: std::collections::BTreeSet<Option<&str>> = [None, Some(REF_KIND_MODULE)]
+            .into_iter()
+            .chain(resolved.map(Some))
+            .collect();
+        assert_eq!(
+            tags,
+            REFERRER_LABELS.map(|(tag, _)| tag).into_iter().collect()
+        );
+    }
+
     /// A module is declared by a `CONTAINS` onto a `file` node alone: never by another relation
     /// onto one, nor by a `CONTAINS` onto a code entity or an absent node.
     #[test]
@@ -1887,6 +2086,54 @@ mod reference_candidate_kinds_rule {
     #[test]
     fn a_module_rows_candidates_are_newline_joined_on_the_log() {
         assert_eq!(MODULE_CANDIDATE_SEPARATOR, "\n");
+    }
+}
+
+/// Spec 117, READERS: the label a referrer is listed under, by its mention's tag.
+#[cfg(test)]
+mod referrer_label_rule {
+    use super::*;
+    use crate::code_facts::MentionKind;
+
+    /// Every tag has its label: the table holds one row per tag in the spec's order, a call
+    /// carrying no tag; each tag's mention reads its row's label, and a tag the table holds no
+    /// row for (a call's name spelled as a tag, the empty tag, a label) reads none.
+    #[test]
+    fn each_tag_has_its_label_in_the_readers_order_and_an_unlisted_tag_none() {
+        let listed = [
+            (None, "called by"),
+            (Some("const"), "reads"),
+            (Some("type"), "type use"),
+            (Some("impl"), "implemented by"),
+            (Some("field"), "field use"),
+            (Some("variant"), "variant use"),
+            (Some("use"), "imported by"),
+            (Some("module"), "declared by"),
+        ];
+        assert_eq!(
+            REFERRER_LABELS, listed,
+            "one row per tag, in the spec's order"
+        );
+        let kind = MentionKind::from_tag;
+        assert_eq!(
+            listed.map(|(tag, _)| referrer_label(&kind(tag))),
+            listed.map(|(_, label)| Some(label)),
+            "each tag's mention reads its row's label"
+        );
+        assert_eq!(
+            [Some("call"), Some(""), Some("reads")].map(|tag| referrer_label(&kind(tag))),
+            [None, None, None],
+            "a tag the table holds no row for reads no label"
+        );
+    }
+
+    /// Each label names its show entry `referenced by <label>`, in the table's order.
+    #[test]
+    fn each_label_names_its_referenced_by_entry() {
+        assert_eq!(
+            REFERRED_BY.map(String::from),
+            REFERRER_LABELS.map(|(_, label)| format!("referenced by {label}"))
+        );
     }
 }
 
@@ -2362,6 +2609,8 @@ mod site_renderer {
                 degree: 3,
                 attrs: all.attrs.clone(),
                 unresolved: vec![],
+                doc_comment: None,
+                referrers: vec![],
             },
             "an extensionless file's definition names its file and keeps every attr"
         );
@@ -2456,6 +2705,154 @@ mod site_renderer {
                 ("unresolved", json!("Quill, Rook")),
             ]
         );
+    }
+
+    /// Spec 117, READERS: a site's doc gives the entry `doc_comment` after `partial` and before
+    /// `unresolved`, verbatim. After `unresolved`, its referrers give one `referenced by <label>`
+    /// entry per label holding any, in the label table's order whatever order they come in. Each
+    /// entry lists its sites in their order, joined by [`LIST_SEP`], each as `<file>:<line> <id>
+    /// (<kind>)`, the `:<line>` left out at line 0, and marked ` [test]` for a test referrer and
+    /// ` ?` for an ambiguous one. It holds at most 50 sites, then `(+N more)` for the rest. An
+    /// absent or empty doc, and a label with no referrer, give no entry.
+    #[test]
+    fn site_fields_gives_the_doc_before_unresolved_and_each_labels_referrers_after_it() {
+        let referrer = |label: &'static str, line: u32, test: bool, ambiguous: bool| Referrer {
+            site: format!("src/r.rs::f{line}"),
+            kind: CODE_KIND_FUNCTION.to_string(),
+            label,
+            line,
+            test,
+            ambiguous,
+        };
+        let reading = |count: u32| -> Vec<Referrer> {
+            (1..=count)
+                .map(|line| referrer("reads", line, false, false))
+                .collect()
+        };
+        let listed = |count: u32| -> String {
+            (1..=count)
+                .map(|line| format!("src/r.rs:{line} src/r.rs::f{line} (function)"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let partial = ("partial", json!("true"));
+        let unresolved = ("unresolved", json!("Quill"));
+        let reads = |text: String| ("referenced by reads", json!(text));
+        // (case, the doc, the referrers, the entries from `partial` on)
+        let cases = vec![
+            (
+                "no doc and no referrer",
+                None,
+                vec![],
+                vec![partial.clone(), unresolved.clone()],
+            ),
+            (
+                "an empty doc",
+                Some(""),
+                vec![],
+                vec![partial.clone(), unresolved.clone()],
+            ),
+            (
+                "a doc",
+                Some("first\nsecond"),
+                vec![],
+                vec![
+                    partial.clone(),
+                    ("doc_comment", json!("first\nsecond")),
+                    unresolved.clone(),
+                ],
+            ),
+            (
+                "labels in the table's order, sites in theirs",
+                None,
+                vec![
+                    referrer("reads", 4, false, false),
+                    referrer("called by", 9, false, false),
+                    referrer("reads", 2, false, false),
+                ],
+                vec![
+                    partial.clone(),
+                    unresolved.clone(),
+                    (
+                        "referenced by called by",
+                        json!("src/r.rs:9 src/r.rs::f9 (function)"),
+                    ),
+                    reads(
+                        "src/r.rs:4 src/r.rs::f4 (function), src/r.rs:2 src/r.rs::f2 (function)"
+                            .to_string(),
+                    ),
+                ],
+            ),
+            (
+                "a test, an ambiguous, and a test ambiguous referrer",
+                None,
+                vec![
+                    referrer("reads", 1, true, false),
+                    referrer("reads", 2, false, true),
+                    referrer("reads", 3, true, true),
+                ],
+                vec![
+                    partial.clone(),
+                    unresolved.clone(),
+                    reads(
+                        "src/r.rs:1 src/r.rs::f1 (function) [test], \
+                         src/r.rs:2 src/r.rs::f2 (function) ?, \
+                         src/r.rs:3 src/r.rs::f3 (function) [test] ?"
+                            .to_string(),
+                    ),
+                ],
+            ),
+            (
+                "a referrer at line 0",
+                None,
+                vec![referrer("reads", 0, false, false)],
+                vec![
+                    partial.clone(),
+                    unresolved.clone(),
+                    reads("src/r.rs src/r.rs::f0 (function)".to_string()),
+                ],
+            ),
+            (
+                "49 sites",
+                None,
+                reading(49),
+                vec![partial.clone(), unresolved.clone(), reads(listed(49))],
+            ),
+            (
+                "50 sites",
+                None,
+                reading(50),
+                vec![partial.clone(), unresolved.clone(), reads(listed(50))],
+            ),
+            (
+                "51 sites",
+                None,
+                reading(51),
+                vec![
+                    partial.clone(),
+                    unresolved.clone(),
+                    reads(format!("{} (+1 more)", listed(50))),
+                ],
+            ),
+            (
+                "53 sites",
+                None,
+                reading(53),
+                vec![
+                    partial.clone(),
+                    unresolved.clone(),
+                    reads(format!("{} (+3 more)", listed(50))),
+                ],
+            ),
+        ];
+        let file = node_with_attrs("src/lister.rs", KIND_FILE, &[("partial", "true")]);
+        for (case, doc, referrers, from_partial) in cases {
+            let mut site = entity_site(&file, 2);
+            site.unresolved = vec!["Quill".to_string()];
+            site.doc_comment = doc.map(str::to_string);
+            site.referrers = referrers;
+            assert_eq!(&site_fields(&site)[4..], from_partial.as_slice(), "{case}");
+        }
     }
 
     /// A node with no file gives neither a `file` nor a `line` entry whatever its `line` attr, an

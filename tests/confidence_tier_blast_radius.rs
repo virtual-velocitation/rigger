@@ -60,7 +60,7 @@ impl Grounder for StampedGrounder {
         }]
     }
 
-    fn blast_radius(&self, _query: &str, _k: usize) -> BlastRadius {
+    fn blast_radius(&self, _query: &str) -> BlastRadius {
         // The grep floor: the seed file plus a file the graph traversal never reaches. The tier
         // filter must UNION this in, so `grep_only.rs` survives into the recorded `safe`.
         BlastRadius {
@@ -69,11 +69,11 @@ impl Grounder for StampedGrounder {
         }
     }
 
-    fn blast_radius_stamped(&self, query: &str, k: usize) -> StampedRadius {
+    fn blast_radius_stamped(&self, query: &str) -> StampedRadius {
         // Non-empty: the structural-active signal that makes the conductor emit the audit at all.
         StampedRadius {
-            seed: self.seed(query, k),
-            radius: self.blast_radius(query, k),
+            seed: self.seed(query),
+            radius: self.blast_radius(query),
             stamp: "test-index-stamp/v1".into(),
         }
     }
@@ -145,6 +145,7 @@ fn recorded_blast_radius(graph: Option<&Projector>) -> Option<Value> {
         store: &store,
         driver: &driver,
         gates: &ExecRunner,
+        run_branch: None,
         repo: String::new(),
         grounder: Some(&grounder),
         graph: graph.map(|g| g as _),

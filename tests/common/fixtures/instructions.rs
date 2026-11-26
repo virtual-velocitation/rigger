@@ -7,7 +7,7 @@
 //! communication body's sentences that state the cadence the task prompts leave to it; the
 //! critique method the adversary and adjudicator personas
 //! hold under their `## When you critique a spec or a plan` section and each persona's share of
-//! it; the unit size cap's scope sentence the planner and both critiquing personas state; the rule the sdet-author persona states for a documentation-only round and the fact its
+//! it; the rule the sdet-author persona states for a documentation-only round and the fact its
 //! prompt states instead; the sdet-author persona `rigger init` seeds, which states that rule; the
 //! headings a composed system prompt carries, the handbook chapter that lists the built-in entries
 //! and their checked-in sources, each entry's body by name, a near name that shadows no
@@ -115,27 +115,14 @@ pub const WHEN_YOU_REVIEW: [&str; 10] = [
 /// The section heading a critiquing persona holds the critique method under.
 pub const WHEN_YOU_CRITIQUE_HEADING: &str = "## When you critique a spec or a plan";
 
-/// The unit size cap's scope sentence, spelled once for [`UNIT_SIZE_CAP_SCOPE`] and the unit-size
-/// rule of [`CRITIQUE_METHOD`].
-macro_rules! unit_size_cap_scope {
-    () => {
-        "The cap measures review scope - how much one review round must read - never code shape."
-    };
-}
-
-/// The unit size cap's scope sentence, which no prompt carries: the planner persona states it
-/// after its split sentence, and each critiquing persona after its unit-size rule.
-pub const UNIT_SIZE_CAP_SCOPE: &str = unit_size_cap_scope!();
-
 /// The critique sentences both the adversary's and the adjudicator's section hold: the section's
 /// scope, how a plan critique reads the text, Rules 7 and 8, the blast-radius note, the ownership
-/// defects, the numberless unit-size rule with the cap's scope sentence after it, and the overlap
-/// rule.
-pub const CRITIQUE_METHOD: [&str; 8] = [
+/// defects and the overlap rule.
+pub const CRITIQUE_METHOD: [&str; 7] = [
     "In a spec or plan critique this section's rules decide which finding blocks; the working \
      discipline's review rule decides a unit diff's findings.",
     "In a plan critique this section's criterion reads as a unit (twin and bundled criteria are \
-     twin and bundled units), and Rules 7 and 8 and the unit-size rule read as written.",
+     twin and bundled units), and Rules 7 and 8 read as written.",
     "- Rule 7 (mitigation ownership): every demanded mitigation must be owned by exactly one unit, \
      with the exclusion named on its neighbors; an unassigned or ambiguously-owned mitigation - \
      two units that will fight over the same concern through the shared context graph - is a \
@@ -152,10 +139,6 @@ pub const CRITIQUE_METHOD: [&str; 8] = [
      concern cleanly - not for mechanical overlap.",
     "Ownership defects: twin criteria (two checkboxes claiming one concern) and bundling (one \
      checkbox carrying two mitigations) are each a BLOCKING finding.",
-    concat!(
-        "- Unit size: a unit over the cap your prompt states is a BLOCKING finding. ",
-        unit_size_cap_scope!()
-    ),
     "- Overlap: judge ownership/coherence, not the overlap.",
 ];
 
@@ -163,7 +146,7 @@ pub const CRITIQUE_METHOD: [&str; 8] = [
 /// in, the stance, the two hunts and the ban.
 pub const ADVERSARY_CRITIQUE_METHOD: [&str; 6] = [
     "These rules fall in three classes. To a spec only: the two hunts and the ban. To a DAG only: \
-     the unit-size rule and the overlap rule. To both a spec and a DAG: the stance, Rules 7 and 8, \
+     the overlap rule. To both a spec and a DAG: the stance, Rules 7 and 8, \
      the blast-radius note and the ownership defects.",
     "Default to skepticism: assume the author missed something, and try to prove the spec \
      self-contradictory or undecided; never soften a finding to converge. Cite the criterion \
@@ -182,13 +165,13 @@ pub const ADVERSARY_CRITIQUE_METHOD: [&str; 6] = [
 /// The critique sentences the adjudicator's section alone holds: its judging rule, the one home of
 /// the "Reject ONLY for" scope, what that scope reads as, and the fix a reject's cause selects.
 pub const ADJUDICATOR_JUDGING_RULE: [&str; 3] = [
-    "Reject ONLY for a rule 7 (ownership) or rule 8 (open disposition) defect, a unit over the \
-     size cap, or a defect in a criterion's own text that no decomposition can remove - never for \
-     mechanical blast-radius overlap alone.",
+    "Reject ONLY for a rule 7 (ownership) or rule 8 (open disposition) defect, or a defect in a \
+     criterion's own text that no decomposition can remove - never for mechanical blast-radius \
+     overlap alone.",
     "A finding stands when it names a Rule 7 ownership defect, a Rule 8 open disposition, a \
-     bundled or twin criterion, a unit over the cap the prompt states, or a defect in a \
-     criterion's own text that no decomposition can remove; mechanical file overlap alone never \
-     does; twin and bundled units count as Rule 7 defects.",
+     bundled or twin criterion, or a defect in a criterion's own text that no decomposition can \
+     remove; mechanical file overlap alone never does; twin and bundled units count as Rule 7 \
+     defects.",
     "The fix is the cause rule's: a re-plan for `decomposition-conflict`, the run stopping for \
      `spec-ambiguity`.",
 ];

@@ -27,10 +27,10 @@ pub(crate) const INDEX: &str = "index";
 /// The one git command every git the source starts itself is built from: git in `dir`
 /// ([`git_in`]) with optional locks off, so a read takes no lock it can do without. A diff
 /// refreshes the index it reads all the same, so the diff reads an [`IndexCopy`].
-fn read_git(dir: &Path) -> Command {
-    let mut git = git_in(dir);
+fn read_git(dir: &Path) -> std::io::Result<Command> {
+    let mut git = git_in(dir)?;
     git.arg("--no-optional-locks");
-    git
+    Ok(git)
 }
 
 /// A private copy of a worktree's index, in a directory of its own in the OS temp directory,
@@ -107,7 +107,11 @@ impl GitTreeSource {
     /// The standard output of `git <args>` run in `dir`, or the failure naming the command and
     /// what git said.
     fn git(dir: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
-        Self::finish(dir, args, start_command(read_git(dir), args))
+        Self::finish(
+            dir,
+            args,
+            read_git(dir).and_then(|git| start_command(git, args)),
+        )
     }
 
     /// [`Self::git`]'s answer for the run of `git <args>` in `dir` that `started` began.
@@ -129,7 +133,7 @@ impl GitTreeSource {
     /// for git's quiet no, and the failure naming the command and what git said for any other
     /// failure.
     fn query(&self, args: &[&str]) -> Result<Option<String>, String> {
-        finish_git_query(start_command(read_git(&self.root), args))
+        finish_git_query(read_git(&self.root).and_then(|git| start_command(git, args)))
             .map(|out| out.as_deref().map(trimmed))
             .map_err(|said| failed(&self.root, args, &said))
     }
@@ -261,11 +265,13 @@ impl TreeSource for GitTreeSource {
             ":/",
         ];
         let checkout = self.checkout_of(worktree)?;
-        let listing_started = start_command(read_git(worktree), &listing);
+        let listing_started = read_git(worktree).and_then(|git| start_command(git, &listing));
         let status = IndexCopy::of(&checkout).and_then(|copy| {
-            let mut git = read_git(worktree);
-            git.env(INDEX_FILE, copy.path());
-            Self::finish(worktree, &diff, start_command(git, &diff))
+            let started = read_git(worktree).and_then(|mut git| {
+                git.env(INDEX_FILE, copy.path());
+                start_command(git, &diff)
+            });
+            Self::finish(worktree, &diff, started)
         });
         let others = Self::finish(worktree, &listing, listing_started);
         let (status, others) = (status?, others?);
@@ -338,7 +344,8 @@ impl TreeSource for GitTreeSource {
         blobs: &[String],
         sink: &mut dyn FnMut(&str, &[u8]),
     ) -> Result<(), String> {
-        let mut batch = crate::worktree::BlobBatch::start(&self.root, read_git(&self.root))
+        let git = read_git(&self.root).map_err(|e| e.to_string())?;
+        let mut batch = crate::worktree::BlobBatch::start(&self.root, git)
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("{} is in no git repository", self.root.display()))?;
         for blob in blobs {
@@ -1005,7 +1012,7 @@ mod tests {
     /// off.
     #[test]
     fn the_sources_git_runs_with_optional_locks_off() {
-        let git = read_git(Path::new("/r"));
+        let git = read_git(Path::new("/r")).unwrap();
         let args: Vec<_> = git.get_args().collect();
         assert_eq!(args, ["-C", "/r", "--no-optional-locks"]);
     }

@@ -21,6 +21,7 @@
 here=$(dirname "$0")
 self=$(readlink "$0") || self=$0
 . "$(dirname "$self")/launch-args.sh"
+answer_version "$@"
 sid=$(launched_session "" "$@")
 record_launch "$here/critique-launches" "$@"
 if [ -s "$here/critique-spawns" ]; then

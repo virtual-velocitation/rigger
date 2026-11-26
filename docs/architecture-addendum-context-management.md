@@ -106,8 +106,9 @@ identifier or a `::` path (a symbol), or a path the tree holds (a file, indexed 
 multi-word span (a command line), a directory fragment, a path the tree does not hold and a
 language keyword name nothing; a criterion naming no code has the empty radius. The `safe` view is
 uncapped and holds:
-- every file that defines or references a named symbol the index defines (the index records the
-  references its grammar parses, so a call written inside a macro invocation is not one);
+- every file that defines a named symbol the index defines, calls it or names it in an
+  implementation header (the index records the references its grammar parses, so a call written
+  inside a macro invocation is not one; no other reference places a file);
 - every file a named path holds;
 - for a named symbol the index does NOT define (a string-literal event name, a name nothing defines
   yet), every file holding it as a whole identifier - a name ending in `_` is a family prefix
@@ -115,8 +116,8 @@ uncapped and holds:
   resolved name is not a reference a unit edits through.
 
 When the knowledge graph is present the radius is widened over it: the traversal is seeded from
-the first k files of the structural view - the files the named code resolves to, capped at
-`GROUNDED_SEED_K` (never the prompt seed, which reads the whole criterion) - it expands
+the structural view - every file the named code resolves to (never the prompt seed, which reads
+the whole criterion) - it expands
 `BLAST_RADIUS_GRAPH_DEPTH` (2) hops, and it crosses STRUCTURAL edges only - `EXTRACTED ∪ INFERRED`; an `AMBIGUOUS` edge is a text-only
 mention and is never crossed, for the same reason. A criterion naming no code keeps the empty
 radius with or without the graph.

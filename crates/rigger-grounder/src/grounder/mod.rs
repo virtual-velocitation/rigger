@@ -263,13 +263,11 @@ mod tests {
     }
 
     /// The DEFAULT `blast_radius` (the one a non-symbols grounder inherits) is EXACTLY the
-    /// grounder's own top-`k` radius: `precise == safe` = the distinct files it grounds. This is
-    /// the contract that keeps unit 3's symbols-inactive `grounded_seed`
-    /// (which reads `precise`) byte-for-byte unchanged - it is the same `ground(query, k)` file set.
+    /// grounder's own radius: `precise == safe` = the distinct files of every hit it grounds.
     /// This test is ungated: it holds identically in both feature lanes because the default impl
     /// touches no structural index.
     #[test]
-    fn default_blast_radius_is_the_grounders_own_top_k_radius_in_both_views() {
+    fn default_blast_radius_is_every_file_the_grounder_grounds_in_both_views() {
         let dir = tempfile::tempdir().unwrap();
         // Two files both matching the needle so the radius has more than one file.
         std::fs::write(dir.path().join("combat.rs"), "fn apply_damage() {}\n").unwrap();
@@ -282,7 +280,7 @@ mod tests {
             root: dir.path().to_string_lossy().into_owned(),
         };
 
-        let br = g.blast_radius("apply_damage", 8);
+        let br = g.blast_radius("apply_damage");
         // The default radius is EXACTLY these two grep-matched files - a CONCRETE expected list, not
         // a re-run of the impl's own dedup loop (which would pass tautologically for any impl). Grep
         // walks the tree in unsorted `read_dir` order, so compare the SET (sorted); the two views'
@@ -301,8 +299,8 @@ mod tests {
             "the default safe view equals the precise view (grep radius, a trivial superset)"
         );
 
-        // An empty query / k=0 grounds nothing, so both views are empty (the empty fail-safe).
-        let empty = g.blast_radius("apply_damage", 0);
+        // An empty query grounds nothing, so both views are empty (the empty fail-safe).
+        let empty = g.blast_radius("");
         assert!(empty.precise.is_empty() && empty.safe.is_empty());
     }
 
@@ -422,11 +420,11 @@ mod tests {
             root: dir.path().to_string_lossy().into_owned(),
         };
         assert!(
-            g.blast_radius_stamped("foo", 8).stamp.is_empty(),
+            g.blast_radius_stamped("foo").stamp.is_empty(),
             "grep is not structural; an empty stamp keeps the default path byte-for-byte unchanged"
         );
         assert!(
-            Nop.blast_radius_stamped("foo", 8).stamp.is_empty(),
+            Nop.blast_radius_stamped("foo").stamp.is_empty(),
             "nop grounds nothing and stamps nothing"
         );
     }

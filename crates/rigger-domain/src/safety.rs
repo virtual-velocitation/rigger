@@ -1,15 +1,8 @@
-//! The conductor's rails: a budget breaker and bounded remediation that
-//! escalates rather than spinning. Every failure escalates or is bounded-retried,
+//! The conductor's rails: bounded remediation that escalates rather than spinning. Every failure escalates or is bounded-retried,
 //! never silently dropped and never infinite. Pure functions the conductor calls.
 
 /// The default remediation bound before escalation.
 pub const MAX_RETRIES: u32 = 3;
-
-/// BudgetExhausted reports whether a token budget is spent. A non-positive
-/// threshold means no limit.
-pub fn budget_exhausted(threshold: i64, spent: i64) -> bool {
-    threshold > 0 && spent >= threshold
-}
 
 /// Decision after a failed unit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -47,12 +40,5 @@ mod tests {
         assert_eq!(remediate(0, MAX_RETRIES).decision, Decision::Retry);
         assert_eq!(remediate(1, MAX_RETRIES).decision, Decision::Retry);
         assert_eq!(remediate(2, MAX_RETRIES).decision, Decision::Escalate);
-    }
-
-    #[test]
-    fn budget() {
-        assert!(budget_exhausted(100, 100));
-        assert!(!budget_exhausted(100, 99));
-        assert!(!budget_exhausted(0, 1_000_000)); // no limit
     }
 }

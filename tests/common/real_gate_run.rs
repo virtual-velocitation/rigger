@@ -149,6 +149,7 @@ fn deps<'a>(store: &'a Store, driver: &'a RealDriverSpy) -> Deps<'a> {
         store,
         driver,
         gates: &ExecRunner,
+        run_branch: None,
         repo: String::new(),
         grounder: None,
         graph: None,

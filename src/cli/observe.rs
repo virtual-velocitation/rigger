@@ -357,7 +357,7 @@ pub(crate) fn cmd_status(args: &[String]) -> Res {
     // renders, spec 19a), the needs-you dock, the statusline and the run's open hold (spec 105) -
     // so `rigger status` prints exactly what the future console page will render from the
     // identical stream, never a second, independently-composed copy of any of the five. Computed
-    // even when no agent is parked, so an escalated unit or a budget halt (which have no live
+    // even when no agent is parked, so an escalated unit (which has no live
     // spawn) is still surfaced.
     let console_state = console::fold(run_events, max_retries)?;
 
@@ -377,9 +377,13 @@ pub(crate) fn cmd_status(args: &[String]) -> Res {
 
     // WHAT A PERSON SEES (spec 105): a held run's status opens with its HELD line, ahead of
     // every other line, so the hold is the first thing an operator reads.
+    // The hold's detail follows, each line indented: what whoever resolves it reads first.
     if let Some(hold) = &console_state.hold {
         let latest_beat = rigger::liveness::beat_times(&prog_events).last().copied();
         println!("{}", held_line(hold, latest_beat, now));
+        for line in hold.latest.detail.lines() {
+            println!("  {line}");
+        }
     }
 
     // The auto-started dash's URL for this run (spec 19b, unit 1 discoverability): shown
@@ -633,9 +637,9 @@ mod tests {
         use std::time::{Duration, SystemTime, UNIX_EPOCH};
         let now = UNIX_EPOCH + Duration::from_secs(10_000);
         let ago = |millis: u64| now - Duration::from_millis(millis);
-        let hold = |cause: &str, operator: bool, since: SystemTime| ledger::Hold {
+        let hold = |cause: &str, manual: bool, since: SystemTime| ledger::Hold {
             since,
-            operator,
+            manual,
             latest: runscope::RunHeld {
                 cause: cause.to_string(),
                 action: "wait it out".to_string(),
@@ -1037,7 +1041,7 @@ mod tests {
     /// a temp dir so the real project's `.rigger/` is untouched.
     #[test]
     // Mutates the process-global CWD (`set_current_dir` below). Shares the `cwd` serial
-    // key with `shipped_workflows_carry_a_non_zero_spawn_budget` (which reads relative
+    // key with `shipped_workflows_load_and_validate` (which reads relative
     // paths) so the two never run concurrently: the restore guard prevents LEAKING a
     // changed CWD past this test, but only mutual exclusion prevents the other test from
     // OBSERVING the changed CWD mid-window.

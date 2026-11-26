@@ -1,14 +1,14 @@
-//! Name resolution over the graph's entity names: an `fst` map from each name's normalised form
-//! ([`super::normalise`]) to the names that carry it, searched exactly, then by prefix, then by
-//! fst's Levenshtein automaton, so a term misspelt, abbreviated or written in another case still
-//! reaches its entity, and a term that reaches none names its nearest names. The index holds names
-//! only: a name reaches the entities the graph answers it with, read when a search reaches the
-//! name ([`Held`]), and a name the graph answers with none is passed over as though unlisted.
+//! Name resolution over the graph's entity names: each name's normalised form
+//! ([`super::normalise`]), sorted, with the names that carry it, searched exactly, then by prefix,
+//! then by fst's Levenshtein automaton, so a term misspelt, abbreviated or written in another case
+//! still reaches its entity, and a term that reaches none names its nearest names. The index holds
+//! names only: a name reaches the entities the graph answers it with, read when a search reaches
+//! the name ([`Held`]), and a name the graph answers with none is passed over as though unlisted.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap};
 
 use fst::automaton::{Levenshtein, Str};
-use fst::{Automaton, IntoStreamer, Map, Streamer};
+use fst::Automaton;
 
 use super::normalise;
 use crate::contextgraph::Error;
@@ -80,8 +80,9 @@ impl<'a> Held<'a> {
 
 /// The graph's entity names, indexed by normalised name.
 pub(crate) struct Names {
-    map: Map<Vec<u8>>,
-    /// Per fst value: the names sharing that normalised name, in order.
+    /// The distinct normalised names, in byte order.
+    keys: Vec<String>,
+    /// Per key, at its place: the names sharing that normalised name, in order.
     groups: Vec<Vec<String>>,
 }
 
@@ -89,20 +90,21 @@ impl Names {
     /// The index over `names`, each under its normalised form; a name that normalises to nothing
     /// is left out.
     pub(crate) fn build(names: impl IntoIterator<Item = String>) -> Names {
-        let mut keyed: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-        for name in names {
-            let key = normalise(&name);
-            if !key.is_empty() {
-                keyed.entry(key).or_default().insert(name);
+        let mut keyed: Vec<(String, String)> = (names.into_iter())
+            .map(|name| (normalise(&name), name))
+            .filter(|(key, _)| !key.is_empty())
+            .collect();
+        keyed.sort_unstable();
+        keyed.dedup();
+        let (mut keys, mut groups) = (Vec::<String>::new(), Vec::<Vec<String>>::new());
+        for (key, name) in keyed {
+            if keys.last() != Some(&key) {
+                keys.push(key);
+                groups.push(Vec::new());
             }
+            groups.last_mut().expect("a group per key").push(name);
         }
-        let mut groups = Vec::with_capacity(keyed.len());
-        let map = Map::from_iter(keyed.into_iter().map(|(key, names)| {
-            groups.push(names.into_iter().collect());
-            (key, (groups.len() - 1) as u64)
-        }))
-        .expect("keys from a BTreeMap are sorted and distinct");
-        Names { map, groups }
+        Names { keys, groups }
     }
 
     /// Resolve `term`: its leaf (the segment after its last `::`) normalised, matched exactly, then
@@ -132,9 +134,9 @@ impl Names {
         if key.is_empty() {
             return Ok(None);
         }
-        if let Some(value) = self.map.get(&key) {
+        if let Ok(value) = self.keys.binary_search(&key) {
             let mut exact = false;
-            for name in &self.groups[value as usize] {
+            for name in &self.groups[value] {
                 let ids = held.ids(name)?;
                 exact |= !ids.is_empty() && (name == leaf || ids.iter().any(|id| id == term));
             }
@@ -169,7 +171,7 @@ impl Names {
             if !found.is_empty() {
                 let mut names = BTreeSet::new();
                 for value in ranked(found, key) {
-                    for name in &self.groups[value as usize] {
+                    for name in &self.groups[value] {
                         if !held.ids(name)?.is_empty() {
                             names.insert(name.clone());
                         }
@@ -184,18 +186,17 @@ impl Names {
         Ok(Vec::new())
     }
 
-    /// The (key, value) pairs `automaton` accepts whose names `held` answers some entity with,
-    /// at most [`GATHER`].
+    /// The keys `automaton` accepts, in key order, with their places, whose names `held` answers
+    /// some entity with, at most [`GATHER`].
     fn gather<A: Automaton>(
         &self,
         automaton: A,
         held: &mut Held,
-    ) -> Result<Vec<(String, u64)>, Error> {
-        let mut stream = self.map.search(automaton).into_stream();
+    ) -> Result<Vec<(String, usize)>, Error> {
         let mut found = Vec::new();
-        while let Some((key, value)) = stream.next() {
-            if !self.ids(&[value], held)?.is_empty() {
-                found.push((String::from_utf8_lossy(key).into_owned(), value));
+        for (value, key) in self.keys.iter().enumerate() {
+            if accepts(&automaton, key) && !self.ids(&[value], held)?.is_empty() {
+                found.push((key.clone(), value));
                 if found.len() >= GATHER {
                     break;
                 }
@@ -204,12 +205,12 @@ impl Names {
         Ok(found)
     }
 
-    /// The ids of the entities under `values`, in id order within each value.
-    fn ids(&self, values: &[u64], held: &mut Held) -> Result<Vec<String>, Error> {
+    /// The ids of the entities under the keys at `values`, in id order within each key.
+    fn ids(&self, values: &[usize], held: &mut Held) -> Result<Vec<String>, Error> {
         let mut all = Vec::new();
         for &v in values {
             let mut ids = Vec::new();
-            for name in &self.groups[v as usize] {
+            for name in &self.groups[v] {
                 ids.extend(held.ids(name)?.iter().cloned());
             }
             ids.sort_unstable();
@@ -224,8 +225,20 @@ fn leaf(term: &str) -> &str {
     term.rsplit("::").next().unwrap_or(term)
 }
 
+/// Whether `automaton` accepts `key`, read byte by byte until no match can follow.
+fn accepts(automaton: &impl Automaton, key: &str) -> bool {
+    let mut state = automaton.start();
+    for &byte in key.as_bytes() {
+        if !automaton.can_match(&state) {
+            return false;
+        }
+        state = automaton.accept(&state, byte);
+    }
+    automaton.is_match(&state)
+}
+
 /// `found`'s values, the name closest to `key` in length first, then in name order.
-fn ranked(mut found: Vec<(String, u64)>, key: &str) -> Vec<u64> {
+fn ranked(mut found: Vec<(String, usize)>, key: &str) -> Vec<usize> {
     let len = key.chars().count();
     found.sort_by(|(a, _), (b, _)| {
         let gap = |s: &str| s.chars().count().abs_diff(len);

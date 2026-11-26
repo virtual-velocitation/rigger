@@ -382,17 +382,19 @@ _Code:_ `crates/rigger-dash/src/dash.html`.
 
 ### 4.5 No orphaned processes
 
-**Problem.** A run starts long-lived `rigger` children — the MCP `rigger serve` the shim
-spawns, the peers sidecar (`Sidecar::start` in `run_workflow`), the dashboard. At least
-one is not reaped when the driving agent finishes, leaving an orphaned `rigger` process
-that never ends; across a multi-unit campaign these accumulate.
+**Problem.** A run starts long-lived children: the auto-started dashboard (`rigger dash`)
+and each agent's headless session on the agent host, which runs its own bound MCP server
+(`rigger mcp --spawn <id>`). A child that outlives the run that started it is an orphaned
+process that never ends; across a multi-unit campaign these accumulate.
 
-**Fix.** Give every long-lived rigger child a supervised lifecycle — a process-group or
-kill-on-drop / kill-on-parent-exit guard — so a normally-finishing or crashing agent
-leaves no orphan.
+**Fix.** Every long-lived child a run spawns is held by one supervised guard,
+`ReapedChild`, whose drop ends the child and waits for it, on a normal exit and on an
+unwinding panic alike, so a normally-finishing or crashing run leaves no orphan. A child
+that must not outlive a run that ends without unwinding is also bound to it by a pipe: the
+dash runs with `--exit-on-stdin-close` on a stdin pipe the run's guard holds.
 
-_Code:_ `run_workflow` / `cmd_serve` / `Sidecar::start` (`src/cli/run.rs`), the shim
-(`shim/shim.mjs`), the dash lifecycle (`crates/rigger-dash/src/dash.rs`).
+_Code:_ `ReapedChild` (`crates/rigger-driver/src/reaped_child.rs`), `spawn_run_dashboard`
+and `RunDash` (`src/cli/run.rs`), the agent host (`crates/rigger-driver/src/driver/claude_code.rs`).
 
 ### 4.6 A wedged run surfaces as a loud error
 

@@ -36,7 +36,7 @@
 use crate::common;
 use common::fixtures::test_spawn_host;
 use common::fixtures::workflow_cfg;
-use common::git::git_ok;
+use common::git::{git_ok, strand_worktree_at};
 
 use rigger::worktree::branch_exists;
 
@@ -134,6 +134,7 @@ impl PostmergeFixture {
             store,
             driver: &driver,
             gates: &ExecRunner,
+            run_branch: common::fixtures::branch_of(&self.repo_path),
             repo: self.repo_path.clone(),
             grounder: None,
             graph: None,
@@ -162,18 +163,17 @@ fn init_base_repo(repo: &Path) -> String {
 /// Forces the FIRST git-orchestration step in `integrate_and_emit`'s post-merge setup
 /// (`Worktree::create`, the `git worktree add <pm_dir> <pm_branch>` immediately after
 /// `Worktree::create_branch_at` has already minted `pm_branch` as a real ref) to fail, via a
-/// dangling symlink planted at the deterministic worktree path: `Path::exists` follows a
-/// symlink and reports `false` for a dangling one, so the pre-create leftover check and
-/// `Worktree::discard` both skip it and `create_branch_at` succeeds exactly as in the real
-/// leak window - but the path is still OCCUPIED on disk, so `git worktree add` at that exact
-/// path hard-fails with "already exists" (a deterministic filesystem property, not a race).
+/// missing but locked worktree registered at the deterministic worktree path
+/// ([`strand_worktree_at`]): nothing sits at the path, so the pre-create leftover clear and
+/// `Worktree::discard` find nothing to remove, and no prune clears a locked registration, so
+/// `create_branch_at` succeeds exactly as in the real leak window - but `git worktree add` at
+/// that exact path is refused (a deterministic property of git's worktree registry, not a race).
 /// Proves `adv-u103c7-r3-createbranch-then-create-leaks-branch` stays fixed: the just-minted
 /// `rigger/postmerge/<unit>-<attempt>` branch must not survive.
 #[test]
 fn worktree_create_err_during_postmerge_regate_leaves_no_branch_behind() {
     let pm = PostmergeFixture::new();
-    std::os::unix::fs::symlink("/nonexistent-sdet-u103c7-r3-target", &pm.dir)
-        .expect("plant the dangling symlink that occupies pm_dir without `exists()`-ing");
+    assert!(strand_worktree_at(&pm.repo_path, &pm.dir));
 
     let store = Store::open(":memory:").unwrap();
     assert!(

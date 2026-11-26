@@ -4,10 +4,15 @@
 //! supervised child guard. They know `std::process`, the filesystem, the stores and the domain;
 //! the root `rigger` crate re-exports every module under its historical path.
 
-/// The one reader of `claude auth status --json`: whether the operator's session is logged in,
-/// and the auth method it reports.
+/// The session host, which binary it is and how it is started, and the one reader of `claude
+/// auth status --json`: whether the operator's session is logged in, and the auth method it
+/// reports.
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod claude_auth;
+/// The one reader of `claude --version`: the session host's version and whether the installed
+/// hooks need a newer one.
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub mod claude_version;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod driver;
 #[cfg(any(feature = "store", not(feature = "core")))]
@@ -55,7 +60,7 @@ use rigger_domain::test_cases;
 // The root-crate vocabulary the tests and the shared fixtures name (see the manifest's
 // `rigger-root` dev-dependency).
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
-use rigger_root::{conductor, config, contextgraph, gate};
+use rigger_root::{conductor, config, contextgraph, gate, worktree};
 
 /// The fixtures an inline `#[cfg(test)]` module shares with the root crate's tests, compiled
 /// here from the same files. They name the crate as `rigger::...`, which

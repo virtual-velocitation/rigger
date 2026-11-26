@@ -12,11 +12,10 @@ use super::{canonical_root_bytes, root_digest};
 /// The gate socket path for the project rooted at `repo_root`, the one rule the driver binds by
 /// and `rigger gate` asks by when no driver addressed it
 /// ([`socket_to_ask`](super::socket_to_ask)): [`socket_path_under`] the runtime directory,
-/// `$XDG_RUNTIME_DIR` when it is set to an absolute path and the OS temp directory otherwise.
+/// `$XDG_RUNTIME_DIR` when [`crate::home::xdg_dir`] takes it (an absolute path) and the OS temp
+/// directory otherwise.
 pub fn socket_path(repo_root: &Path) -> io::Result<PathBuf> {
-    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .filter(|dir| dir.is_absolute())
+    let runtime = crate::home::xdg_dir(std::env::var_os("XDG_RUNTIME_DIR"))
         .unwrap_or_else(std::env::temp_dir);
     socket_path_under(&runtime, repo_root)
 }
@@ -147,9 +146,10 @@ impl GateChannel for GateSocket {
     fn serve(&self, answer: &(dyn Fn(GateRequest) -> GateReply + Sync)) -> io::Result<()> {
         use std::sync::atomic::Ordering;
         // The listener is non-blocking, so the loop sees the flag within one poll whether or
-        // not any connection can reach the socket.
+        // not any connection can reach the socket. Ending clears the flag, so a later drive on
+        // this socket serves again.
         std::thread::scope(|s| {
-            while !self.closed.load(Ordering::SeqCst) {
+            while !self.closed.swap(false, Ordering::SeqCst) {
                 match self.listener.accept() {
                     Ok((stream, _)) => {
                         // A connection taken from a non-blocking listener may inherit that mode.
@@ -494,6 +494,39 @@ mod tests {
         // A loop that never ends is reported by the wait, not by hanging the test.
         let result = wait.recv_timeout(std::time::Duration::from_secs(5));
         assert!(result.is_ok(), "the serving loop did not end after close");
+    }
+
+    /// A CLOSED SOCKET SERVES AGAIN: GIVEN one bound socket served, closed and joined, as a
+    /// drive ends, WHEN it is served again, as the next drive after a released hold does, THEN a
+    /// request is answered both times. A request nothing answers waits on its reply forever, so
+    /// each one is asked on a thread of its own and a missing reply fails the wait instead.
+    #[test]
+    fn a_socket_served_and_closed_serves_again_on_the_next_drive() {
+        let (runtime, repo) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let path = socket_path_under(runtime.path(), repo.path()).unwrap();
+        let socket = std::sync::Arc::new(GateSocket::bind(&path).unwrap());
+        for drive in 1..=2 {
+            let serving = {
+                let socket = std::sync::Arc::clone(&socket);
+                std::thread::spawn(move || {
+                    let answer = |_: GateRequest| GateReply::Refused { reason: "x".into() };
+                    socket.serve(&answer)
+                })
+            };
+            let (replied, reply) = std::sync::mpsc::channel();
+            let asking = path.clone();
+            std::thread::spawn(move || {
+                let _ = replied.send(ask(&asking, &request()).ok().flatten());
+            });
+            let got = reply.recv_timeout(std::time::Duration::from_secs(5));
+            assert_eq!(
+                got,
+                Ok(Some(GateReply::Refused { reason: "x".into() })),
+                "drive {drive}: the request is answered"
+            );
+            socket.close();
+            serving.join().unwrap().unwrap();
+        }
     }
 
     /// A BOUND SOCKET NAMES ITSELF: the address a socket hands the run's spawns is the absolute

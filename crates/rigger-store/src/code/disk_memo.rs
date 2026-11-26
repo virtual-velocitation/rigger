@@ -2,12 +2,13 @@
 //! under the code store by the store's fingerprint, the file's path and its content, so a
 //! one-shot read extracts each content once.
 //!
-//! An entry is a one-file snapshot ([`encode`]) at `memo/<fingerprint>-<path hash>-<content
-//! id>.facts`, stamped with the store's fingerprint and the content's identity (its content id,
-//! crc32 and length), published atomically and unsynced ([`write_atomic_as`]) once it reads back
-//! as the facts it holds. A read takes an entry only when it decodes whole with that stamp and
-//! holds the facts of that one path; any other entry is absent and removed, and the file is
-//! extracted again. The key is the content, so an entry is never stale; it is only unused.
+//! An entry is a one-file snapshot with an empty code half ([`encode_without_half`]) at
+//! `memo/<fingerprint>-<path hash>-<content id>.facts`, stamped with the store's fingerprint and
+//! the content's identity (its content id, crc32 and length), published atomically and unsynced
+//! ([`write_atomic_as`]) once it reads back as the facts it holds. A read takes an entry only when
+//! it decodes whole with that stamp and holds the facts of that one path; any other entry is
+//! absent and removed, and the file is extracted again. The key is the content, so an entry is
+//! never stale; it is only unused.
 //!
 //! The memo is bounded by [`MemoCap::STATED`]: 64 MiB of entries, each counted in whole 4 KiB
 //! blocks, none unread for more than three days. Its reaper ([`reap`]) runs with the store's on
@@ -18,10 +19,10 @@
 //! removes the whole memo, and `rigger validate` reports its size.
 
 use crate::code::dir_source::content_id;
-use crate::code::snapshot::{encode, Snapshot};
+use crate::code::snapshot::{encode_without_half, Snapshot};
 use crate::format::{crc32, write_atomic_as, Durability, TEMP};
 use rigger_domain::code_facts::{FileFacts, Stamp, Tip};
-use rigger_domain::code_view::{CodeView, FactsView, Groupings};
+use rigger_domain::code_view::{CodeView, FactsView};
 use rigger_domain::playbooks::fnv1a_64;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
@@ -89,7 +90,7 @@ impl DiskMemo {
         std::fs::create_dir_all(&self.dir)
             .map_err(|e| format!("create {}: {e}", self.dir.display()))?;
         let view = FactsView::new(self.stamp(bytes), vec![facts.clone()]);
-        let snap = Snapshot::decode(encode(&view, &Groupings::default())?)?;
+        let snap = Snapshot::decode(encode_without_half(&view)?)?;
         if self.facts_in(&snap, &facts.path, bytes).as_ref() != Some(facts) {
             return Err(format!(
                 "the memo entry of {} does not read back",
@@ -200,6 +201,7 @@ mod tests {
                 end_line: at as u32 + 1,
                 parent: None,
                 test: false,
+                doc: None,
             })
             .collect();
         FileFacts {
@@ -278,6 +280,48 @@ mod tests {
         let entry = memo.name("src/a.rs", bytes);
         assert_eq!(names(&root.path().join(DIR)), vec![entry]);
         assert_eq!(memo.get("src/a.rs", bytes), Some(facts));
+    }
+
+    /// DOC SPANS AND MODULE LISTS SURVIVE THE MEMO: GIVEN
+    /// [`code_file`](crate::code::snapshot::tests::code_file)'s facts for the file holding some
+    /// bytes, which carry a file doc span, a definition's doc span beside an absent one and module
+    /// declarations with distinct `as_root` and `as_child` lists, one with `path_attr`, WHEN they
+    /// are put and a memo opened afresh on the same directory and fingerprint reads that file,
+    /// THEN the put succeeds and the read answers the facts as put.
+    #[test]
+    fn doc_spans_and_module_lists_survive_the_memo() {
+        use crate::code::snapshot::tests::code_file;
+        let root = tempfile::tempdir().unwrap();
+        let bytes = b"//! a module\npub struct Outer;\n";
+        let facts = FileFacts {
+            blob: content_id(bytes),
+            ..code_file()
+        };
+        let put = DiskMemo::new(root.path().join(DIR), 7).put(bytes, &facts);
+        assert_eq!(put, Ok(()), "the put");
+        let read = DiskMemo::new(root.path().join(DIR), 7).get(&facts.path, bytes);
+        assert_eq!(read, Some(facts), "the read of a memo opened afresh");
+    }
+
+    /// A MEMO ENTRY SETTLES NO CODE HALF: GIVEN the facts of a file defining two functions put in
+    /// the memo, WHEN its entry is decoded, THEN its code half holds neither the file nor either
+    /// function, since a read takes only the file's facts from it.
+    #[test]
+    fn a_memo_entry_settles_no_code_half() {
+        use rigger_domain::code_view::Settled;
+        let root = tempfile::tempdir().unwrap();
+        let memo = DiskMemo::new(root.path().join(DIR), 7);
+        let bytes = b"alpha\nbeta\n";
+        memo.put(bytes, &facts_of("src/a.rs", bytes)).unwrap();
+        let entry = root.path().join(DIR).join(memo.name("src/a.rs", bytes));
+        let snap = Snapshot::decode(std::fs::read(entry).unwrap()).unwrap();
+        let half = snap.half().expect("a snapshot answers its half");
+        let members: Vec<String> = half.members("src/a.rs").into_iter().map(|n| n.id).collect();
+        assert_eq!(
+            (half.node("src/a.rs").map(|n| n.id), members),
+            (None, Vec::<String>::new()),
+            "the entry's code half holds neither the file nor its functions"
+        );
     }
 
     /// The block the reap counts an entry's bytes in.

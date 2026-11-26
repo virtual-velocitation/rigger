@@ -221,35 +221,93 @@ pub fn split_id(id: &str) -> (&str, Option<&str>) {
 }
 
 /// The leaf an id alone names (spec 119): [`split_id`]'s rest half less exactly one leading
-/// [`PLACEHOLDER_SIGIL`] (`<file>::%x` gives `x`, `<file>::%%x` gives `%x`), `None` for an id
-/// holding no `::` and for a rest half not beginning with the sigil (`<file>::x`, a definition's
-/// or a bare node's id): the one decision of what is a placeholder. Read only where an id is all
-/// a reader holds; a reader holding a node reads [`node_leaf`].
+/// [`PLACEHOLDER_SIGIL`] (`<file>::%x` gives `x`, `<file>::%%x` gives `%x`), the qualified name as
+/// written for a placeholder keyed by one (spec 117: `<file>::%T.x` gives `T.x`, whose leaf is
+/// [`path_leaf`]'s `x`), `None` for an id holding no `::` and for a rest half not beginning with
+/// the sigil (`<file>::x`, a definition's or a bare node's id): the one decision of what is a
+/// placeholder. Read only where an id is all a reader holds; a reader holding a node reads
+/// [`node_leaf`].
 pub fn leaf_of(id: &str) -> Option<&str> {
     split_id(id).1?.strip_prefix(PLACEHOLDER_SIGIL)
 }
 
+/// The name a placeholder `id` is keyed by ([`leaf_of`]) cut into its qualifier and its leaf
+/// ([`split_path`]): `<file>::%T.x` gives `T` and `x`, `<file>::%x` gives none and `x`; `None`
+/// for an id that is no placeholder. The one home of a placeholder's leaf and of whether a
+/// qualified name keys it (spec 117, RESOLVER AT READ).
+pub(crate) fn placeholder_cut(id: &str) -> Option<(Option<&str>, &str)> {
+    leaf_of(id).map(split_path)
+}
+
 /// The leaf a path query names (spec 119, A BARE SHOW FINDS A LEAF OR PATH): [`split_path`]'s
 /// leaf, the text after its last `::` or `.`, the whole text when it holds neither (`T::new` and
-/// `a.rs::T::new` give `new`, `S.field` gives `field`). The show lookup's path form and the
-/// grounder's symbol of a path-shaped term both read it.
+/// `a.rs::T::new` give `new`, `S.field` gives `field`). The show lookup's path form, the
+/// grounder's symbol of a path-shaped term and [`is_path_qualified`] read it.
 pub fn path_leaf(path: &str) -> &str {
     split_path(path).1
+}
+
+/// The separator of a path qualifier, `T::new`. Its home, with [`MEMBER_SEPARATOR`]'s (spec 117,
+/// CAPTURES); which qualifier kind each writes is paired once, in [`separator_of`].
+pub const PATH_SEPARATOR: &str = "::";
+
+/// The separator of a member qualifier, `S.field`.
+pub const MEMBER_SEPARATOR: &str = ".";
+
+/// The separator a qualifier writes before its leaf: [`PATH_SEPARATOR`] for a path qualifier
+/// (`path`), [`MEMBER_SEPARATOR`] for a member qualifier. The one pairing of a separator with its
+/// qualifier kind: [`qualified_name`] writes by it and [`separator_is_path`] reads it back.
+fn separator_of(path: bool) -> &'static str {
+    if path {
+        PATH_SEPARATOR
+    } else {
+        MEMBER_SEPARATOR
+    }
+}
+
+/// Whether `separator` writes a path qualifier, the inverse of [`separator_of`]: `::` gives
+/// true, `.` false, any other text none.
+pub fn separator_is_path(separator: &str) -> Option<bool> {
+    [true, false]
+        .into_iter()
+        .find(|&path| separator_of(path) == separator)
 }
 
 /// A path cut at its last `::` or `.` into its qualifier and its leaf: the text before that
 /// separator, none when the path holds neither, and the text after it, the whole path when it
 /// holds neither (`a::b.c` gives `a::b` and `c`, `new` gives none and `new`). The one cut of a
 /// path: [`path_leaf`] reads its leaf, and the resolver a qualified mention's qualifier (spec
-/// 117, RESOLVER AT READ).
+/// 117, RESOLVER AT READ). [`qualified_name`] is its inverse for a leaf holding neither
+/// separator and, after a path qualifier's `::`, not starting with `:`.
 pub(crate) fn split_path(path: &str) -> (Option<&str>, &str) {
     let (head, tail) = path
-        .rsplit_once("::")
+        .rsplit_once(PATH_SEPARATOR)
         .map_or((None, path), |(head, tail)| (Some(head), tail));
-    match tail.rsplit_once('.') {
-        Some((_, leaf)) => (Some(&path[..path.len() - leaf.len() - 1]), leaf),
+    match tail.rsplit_once(MEMBER_SEPARATOR) {
+        Some((_, leaf)) => (
+            Some(&path[..path.len() - leaf.len() - MEMBER_SEPARATOR.len()]),
+            leaf,
+        ),
         None => (head, tail),
     }
+}
+
+/// The ONE join of a qualified name: `qualifier`, then `::` for a path qualifier or `.` for a
+/// member qualifier ([`separator_of`]), then `leaf` (`T`, a path, and `new` give `T::new`; `S`, a
+/// member, and `field` give `S.field`). The facts layer writes a qualified mention's name with it
+/// (spec 117, CAPTURES). It is the inverse of [`split_path`] for a `leaf` holding neither `::` nor
+/// `.` and, after a path qualifier, not starting with `:`; the cut reads any other leaf back under
+/// another qualifier (`Q`, a path, and `:b` give `Q:::b`, cut into `Q:` and `b`), so the extractor
+/// protocol refuses a declared extractor's qualified ref whose name the cut does not give back.
+pub fn qualified_name(qualifier: &str, path: bool, leaf: &str) -> String {
+    format!("{qualifier}{}{leaf}", separator_of(path))
+}
+
+/// Whether [`split_path`] cuts `path` at a `::`, a path qualifier (`T::new`, `a.b::c`), rather
+/// than at a `.`, a member qualifier (`S.field`, `a::b.c`); false when it holds neither. The
+/// resolver reads it for a qualifier that keeps no candidate (spec 117, RESOLVER AT READ).
+pub(crate) fn is_path_qualified(path: &str) -> bool {
+    path[..path.len() - path_leaf(path).len()].ends_with(PATH_SEPARATOR)
 }
 
 /// The ONE join of a code-entity id (spec 119), the inverse of [`split_id`]: `<file>::<rest>`,
@@ -270,30 +328,68 @@ fn joined_id(file: &str, rest: &[&str]) -> String {
     id
 }
 
-/// The id of the placeholder a reference to `leaf` from `file` lands on when the file holds no
-/// one candidate for it (spec 119): `<file>::%<leaf>` ([`entity_id`]), the leaf behind one
-/// [`PLACEHOLDER_SIGIL`], so [`leaf_of`] gives `leaf` back whatever it begins with.
-pub fn placeholder_id(file: &str, leaf: &str) -> String {
+/// The id of the placeholder a reference to `name` from `file` lands on when the file holds no
+/// one candidate for it (spec 119), `name` a leaf or, for a call whose qualifier keeps several
+/// candidates, the qualified name as written (spec 117): `<file>::%<name>` ([`entity_id`]), the
+/// name behind one [`PLACEHOLDER_SIGIL`], so [`leaf_of`] gives `name` back whatever it begins with.
+pub fn placeholder_id(file: &str, name: &str) -> String {
     let mut sigil = [0; 4];
-    joined_id(file, &[PLACEHOLDER_SIGIL.encode_utf8(&mut sigil), leaf])
+    joined_id(file, &[PLACEHOLDER_SIGIL.encode_utf8(&mut sigil), name])
 }
 
-/// The `name` attr a node carries when it is non-empty: an empty `name` reads as absent, the one
-/// in-memory spelling of the name-presence test every reader keying a definition by its leaf
-/// applies (spec 119).
-pub fn node_name(node: &Node) -> Option<&str> {
-    node.attrs
+/// The `name` attr a node's `attrs` carry when it is non-empty: an empty `name` reads as absent,
+/// the one in-memory spelling of the name-presence test every reader keying a definition by its
+/// leaf applies (spec 119), over a node's attrs ([`node_name`]) or an entity site's.
+pub fn attrs_name(attrs: &BTreeMap<String, String>) -> Option<&str> {
+    attrs
         .get("name")
         .map(String::as_str)
         .filter(|name| !name.is_empty())
 }
 
+/// The `name` attr a node carries when it is non-empty ([`attrs_name`]).
+pub fn node_name(node: &Node) -> Option<&str> {
+    attrs_name(&node.attrs)
+}
+
 /// A node's leaf (spec 119): its non-empty `name` attr whatever it holds ([`node_name`]: `new` for
 /// `a.rs::T::new`, `A.B`, `a::b`, a C# `operator %`'s `%`, so a named node is never read as a
-/// placeholder), else [`leaf_of`] its id. The store's pinned twin is the adapter's
-/// `node_leaf_sql()`, NULL exactly where this reads the id.
+/// placeholder), else the leaf of [`placeholder_cut`] its id, the text after the last `::` or
+/// `.` of the name a placeholder is keyed by (spec 117: `<file>::%T.x` and `<file>::%x` both give
+/// `x`). The store's pinned twin is the adapter's `node_leaf_sql()`, NULL exactly where this
+/// reads the id.
 pub fn node_leaf(node: &Node) -> Option<&str> {
-    node_name(node).or_else(|| leaf_of(&node.id))
+    node_name(node).or_else(|| Some(placeholder_cut(&node.id)?.1))
+}
+
+/// The attribute a placeholder keyed by a qualified name carries (spec 117, RESOLVER AT READ):
+/// the ids of the candidates its down-hop keeps, a JSON array, so a reader holding the graph
+/// alone keeps what the walk keeps.
+pub const CANDIDATES_ATTR: &str = "candidates";
+
+/// `cands` less those `kept` does not hold, when it is given: of the call-target definitions of
+/// a leaf, those a placeholder reaches.
+pub fn kept_of<C: AsRef<str> + Clone>(cands: &[C], kept: Option<&[String]>) -> Vec<C> {
+    let reached = cands
+        .iter()
+        .filter(|c| kept.is_none_or(|k| k.iter().any(|id| id == c.as_ref())));
+    reached.cloned().collect()
+}
+
+/// The call-target definitions a bare placeholder `node` resolves over, of `defs_by_suffix`
+/// ([`defs_by_entity_suffix`]): those of its leaf ([`node_leaf`]), less those its
+/// [`CANDIDATES_ATTR`] does not name when it carries one that parses ([`kept_of`]); none when it
+/// names no leaf.
+pub fn placeholder_candidates<'g>(
+    node: &Node,
+    defs_by_suffix: &BTreeMap<&str, Vec<&'g str>>,
+) -> Vec<&'g str> {
+    let kept: Option<Vec<String>> = node
+        .attrs
+        .get(CANDIDATES_ATTR)
+        .and_then(|ids| serde_json::from_str(ids).ok());
+    let cands = node_leaf(node).and_then(|leaf| defs_by_suffix.get(leaf));
+    kept_of(cands.map_or(&[], Vec::as_slice), kept.as_deref())
 }
 
 /// Index every code-entity DEFINITION a call resolves onto (a non-empty `name` attr,
@@ -761,7 +857,8 @@ pub fn clustered_overview(graph: &Graph, lens: &Lens) -> ClusterOverview {
 /// and a code entity folds by [`node_file`] - its OWN FILE - rather than [`cluster_key`]'s directory
 /// fold. A REAL definition (a non-empty `name` attr, [`node_name`], a data member's included) takes
 /// [`node_file`] of its own id directly; a BARE placeholder resolves FIRST by its leaf
-/// ([`node_leaf`]) over [`Buckets::defs_by_suffix`], the call targets alone.
+/// ([`node_leaf`]) over [`Buckets::defs_by_suffix`], the call targets alone, those its down-hop
+/// keeps for one keyed by a qualified name ([`placeholder_candidates`]).
 pub(crate) fn whole_graph_lens_key(buckets: &Buckets, node: &Node) -> Option<String> {
     match buckets.lens {
         Lens::Code { .. } => {
@@ -783,20 +880,18 @@ pub(crate) fn whole_graph_lens_key(buckets: &Buckets, node: &Node) -> Option<Str
             }
             // A real definition (a non-empty `name` attr), a data member or a declaration as much
             // as a fn, folds under its OWN file. A BARE placeholder (no `name`, or an
-            // empty one) resolves by its leaf ([`node_leaf`]) over `buckets.defs_by_suffix`, the
-            // call targets, FIRST - the same honest resolution `reproject_files` performs - since
-            // its raw id names the REFERENCING file, not its true definition file: EXACTLY ONE
-            // candidate resolves to that definition's file; ZERO or MORE THAN ONE cannot be
-            // honestly attributed to any one file, so the fold excludes it entirely (never
-            // mis-attributed to the referencing file its own id encodes).
+            // empty one) resolves by its leaf over `buckets.defs_by_suffix`, the call targets,
+            // those its down-hop keeps for one keyed by a qualified name
+            // ([`placeholder_candidates`]), FIRST - the same honest resolution `reproject_files`
+            // performs - since its raw id names the REFERENCING file, not its true definition
+            // file: EXACTLY ONE candidate resolves to that definition's file; ZERO or MORE THAN
+            // ONE cannot be honestly attributed to any one file, so the fold excludes it entirely
+            // (never mis-attributed to the referencing file its own id encodes).
             if node_name(node).is_some() {
                 return node_file(&node.kind, &node.id).map(str::to_string);
             }
-            match node_leaf(node)
-                .and_then(|leaf| buckets.defs_by_suffix.get(leaf))
-                .map(Vec::as_slice)
-            {
-                Some([only]) => node_file(KIND_CODE_ENTITY, only).map(str::to_string),
+            match placeholder_candidates(node, &buckets.defs_by_suffix).as_slice() {
+                [only] => node_file(KIND_CODE_ENTITY, only).map(str::to_string),
                 _ => None,
             }
         }
@@ -2866,24 +2961,49 @@ mod leaf_tests {
 
     #[test]
     fn a_path_query_is_looked_up_by_the_text_after_its_last_separator() {
-        // (the path, its qualifier, its leaf)
+        // (the path, its qualifier, its leaf, whether it is cut at a `::`); a path with a
+        // qualifier is also joined back from its three parts, the cut's inverse.
         let cases = [
-            ("T::new", Some("T"), "new"),
-            ("S.field", Some("S"), "field"),
-            ("a::b.c", Some("a::b"), "c"),
-            ("a.b::c", Some("a.b"), "c"),
-            ("a.rs::T::new", Some("a.rs::T"), "new"),
-            ("new", None, "new"),
-            ("T::%", Some("T"), "%"),
-            ("T::", Some("T"), ""),
-            ("::x", Some(""), "x"),
+            ("T::new", Some("T"), "new", true),
+            ("S.field", Some("S"), "field", false),
+            ("a::b.c", Some("a::b"), "c", false),
+            ("a.b::c", Some("a.b"), "c", true),
+            ("a.rs::T::new", Some("a.rs::T"), "new", true),
+            ("new", None, "new", false),
+            ("T::%", Some("T"), "%", true),
+            ("T::", Some("T"), "", true),
+            ("::x", Some(""), "x", true),
+            ("T:new", None, "T:new", false),
         ];
-        for (path, qualifier, leaf) in cases {
+        for (path, qualifier, leaf, path_qualified) in cases {
             assert_eq!(
-                (split_path(path), path_leaf(path)),
-                ((qualifier, leaf), leaf),
+                (split_path(path), path_leaf(path), is_path_qualified(path)),
+                ((qualifier, leaf), leaf, path_qualified),
                 "{path}"
             );
+            if let Some(qualifier) = qualifier {
+                assert_eq!(qualified_name(qualifier, path_qualified, leaf), path);
+            }
+        }
+    }
+
+    #[test]
+    fn a_separator_is_read_back_as_the_qualifier_kind_it_writes() {
+        // (the separator, whether it writes a path qualifier, none for no qualifier kind); a
+        // kind is also written back by qualified_name, the pairing's other direction.
+        let cases = [
+            ("::", Some(true)),
+            (".", Some(false)),
+            (":", None),
+            ("", None),
+            ("::.", None),
+            ("->", None),
+        ];
+        for (separator, path) in cases {
+            assert_eq!(separator_is_path(separator), path, "{separator:?}");
+            if let Some(path) = path {
+                assert_eq!(qualified_name("Q", path, "x"), format!("Q{separator}x"));
+            }
         }
     }
 
@@ -2905,8 +3025,17 @@ mod leaf_tests {
                 node_leaf(&def_node("f.ts::%", "%")),
                 node_leaf(&unnamed),
                 node_leaf(&plain("x", KIND_CODE_ENTITY)),
+                node_leaf(&plain("b.rs::%T.new", KIND_CODE_ENTITY)),
+                node_leaf(&plain("b.rs::%T::new", KIND_CODE_ENTITY)),
             ],
-            [Some("new"), Some("%"), Some("new"), None]
+            [
+                Some("new"),
+                Some("%"),
+                Some("new"),
+                None,
+                Some("new"),
+                Some("new")
+            ]
         );
     }
 
@@ -2925,6 +3054,81 @@ mod leaf_tests {
         let mut g = nested_and_placeholder();
         g.nodes.push(empty_named_node("c.rs::%new"));
         assert_eq!(files_lens_keys(&g), vec![Some("a.rs".to_string()); 3]);
+    }
+}
+
+/// Spec 117, SEVERAL NARROWED CANDIDATES NEVER PREFER THEIR FILE, at the files lens: a
+/// placeholder keyed by a qualified name binds by its leaf.
+#[cfg(test)]
+mod qualified_placeholder_tests {
+    use super::lens_views::files_lens_keys;
+    use super::*;
+    use crate::test_support::{def_node, node_with_optional_attrs};
+
+    /// One row: what the row shows, each definition with its file, the down-hop carried, the
+    /// placeholder's key.
+    type Row<'a> = (
+        &'a str,
+        &'a [(&'a str, &'a str)],
+        Option<&'a str>,
+        Option<&'a str>,
+    );
+
+    /// Each row: the definitions of the leaf `new` the graph holds, the `candidates` attribute
+    /// the placeholder `b.rs::%T.new` carries, and the file the files lens folds it under. It
+    /// keeps the definitions of its leaf its attribute names, the resolver's down-hop, and every
+    /// one when it carries none or one that does not parse: exactly one kept gives its file.
+    #[test]
+    fn the_files_lens_folds_a_qualified_placeholder_by_its_leaf_over_its_down_hop() {
+        let both = [("a.rs::T::new", "a.rs"), ("c.rs::U::new", "c.rs")];
+        let cases: [Row; 6] = [
+            (
+                "a down-hop of both definitions",
+                &both,
+                Some(r#"["a.rs::T::new","c.rs::U::new"]"#),
+                None,
+            ),
+            (
+                "a down-hop of one shown definition and one the graph does not hold",
+                &both,
+                Some(r#"["c.rs::U::new","tests/t.rs::T::new"]"#),
+                Some("c.rs"),
+            ),
+            (
+                "a down-hop of none the graph holds",
+                &both,
+                Some(r#"["tests/t.rs::T::new"]"#),
+                None,
+            ),
+            ("no down-hop carried, two definitions", &both, None, None),
+            (
+                "no down-hop carried, one definition",
+                &both[1..],
+                None,
+                Some("c.rs"),
+            ),
+            (
+                "a down-hop that does not parse, one definition",
+                &both[1..],
+                Some("c.rs::U::new"),
+                Some("c.rs"),
+            ),
+        ];
+        for (case, defs, carried, want) in cases {
+            let mut nodes = vec![node_with_optional_attrs(
+                "b.rs::%T.new",
+                KIND_CODE_ENTITY,
+                &[("candidates", carried)],
+            )];
+            nodes.extend(defs.iter().map(|(d, _)| def_node(d, "new")));
+            let g = Graph {
+                nodes,
+                edges: Vec::new(),
+            };
+            let mut want = vec![want.map(str::to_string)];
+            want.extend(defs.iter().map(|(_, file)| Some(file.to_string())));
+            assert_eq!(files_lens_keys(&g), want, "{case}");
+        }
     }
 }
 

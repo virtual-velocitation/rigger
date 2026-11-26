@@ -63,7 +63,7 @@ fn unrelated_keys_never_break_the_probe_even_when_they_would_fail_a_full_config_
     let (_tmp, dir) = rigger_dir();
     write_workflow(
         &dir,
-        "defaults:\n  workdir: /scratch/here\n  budget: 5\nstages:\n  a:\n    agent: nonexistent-agent\n    gates: [also-nonexistent]\n",
+        "defaults:\n  workdir: /scratch/here\nstages:\n  a:\n    agent: nonexistent-agent\n    gates: [also-nonexistent]\n",
     );
     let workdir = read_scratch_workdir(&dir)
         .expect("unrelated stage/gate references a full config::load would refuse must not break this probe");

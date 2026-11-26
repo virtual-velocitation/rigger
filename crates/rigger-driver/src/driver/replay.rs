@@ -802,6 +802,7 @@ mod tests {
                 store: &store,
                 driver: &driver,
                 gates: &ExecRunner,
+                run_branch: None,
                 repo: String::new(),
                 grounder: None,
                 graph: None,
@@ -875,6 +876,7 @@ mod tests {
             store: &store,
             driver: &driver,
             gates: &ExecRunner,
+            run_branch: None,
             repo: String::new(),
             grounder: None,
             graph: None,
@@ -968,6 +970,7 @@ mod tests {
             store: &store,
             driver: &driver,
             gates: &ExecRunner,
+            run_branch: None,
             repo: String::new(),
             grounder: None,
             graph: None,
@@ -1006,6 +1009,7 @@ mod tests {
                 store: &store,
                 driver: &driver,
                 gates: &ExecRunner,
+                run_branch: None,
                 repo: String::new(),
                 grounder: None,
                 graph: None,
@@ -1035,6 +1039,7 @@ mod tests {
                 store: &store,
                 driver: &driver,
                 gates: &ExecRunner,
+                run_branch: None,
                 repo: String::new(),
                 grounder: None,
                 graph: None,
@@ -1077,6 +1082,7 @@ mod tests {
             store: &store,
             driver: &driver,
             gates: &ExecRunner,
+            run_branch: None,
             repo: String::new(),
             grounder: None,
             graph: None,
@@ -1103,334 +1109,6 @@ mod tests {
             spawn::recorded(&events).unwrap().len(),
             2,
             "both disjoint units parked in the same step"
-        );
-    }
-
-    #[test]
-    fn the_budget_breaker_binds_across_driver_processes() {
-        // spec 04, criterion 5 / finding adv-budget-per-step-resets: the spawn-budget
-        // breaker counts spawn requests from the LOG, so it binds across the separate
-        // processes one run's log spans (a resumed run is one). An earlier step already
-        // parked (and recorded a result for) one spawn, spending a budget of 1. A FRESH
-        // process - its in-memory counter starting at zero - must still fold that spent spawn
-        // from the log and refuse the next unit's spawn, aborting with BudgetExhausted. If the
-        // count reset per process, the new unit would park and the run would spawn
-        // unboundedly across steps.
-        let store = Store::open(":memory:").unwrap();
-        // Run scoping (spec 06, unit 1): the earlier step's spawn belongs to THIS run, so
-        // begin the run before parking it - otherwise it sits before the boundary and the
-        // cross-step budget fold never counts it.
-        crate::run_store::ensure_started(&store, &[]).unwrap();
-        let prior =
-            crate::spawn::test_request("earlier", "earlier", ROLE_IMPLEMENTER, 0, "prior work");
-        spawn_store::park_in_run(&store, &prior, "", "").unwrap();
-        spawn_store::record_result(&store, &spawn::SpawnResult::ok(&prior.id, "done")).unwrap();
-
-        let mut cfg = config_with(vec![stage("u", "worker")]);
-        cfg.workflow.defaults.budget = 1;
-
-        let driver = ReplayDriver::new(&store);
-        let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &ExecRunner,
-            repo: String::new(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-            log: &|_| {},
-            check_emit: &crate::contextgraph::check_emit,
-            spawn_host: test_spawn_host(),
-            code_store: None,
-            context: None,
-        };
-        run_isolated(&cfg, &deps).expect("a tripped budget halts the run, it does not error");
-
-        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
-        assert!(
-            events
-                .iter()
-                .any(|e| e.type_ == crate::conductor::TYPE_BUDGET_EXHAUSTED),
-            "a fresh step folds the prior step's spawn from the log and trips the budget"
-        );
-        // The over-budget unit's spawn was REFUSED, never parked: the budget was already
-        // fully spent by the earlier step.
-        assert!(
-            !spawn::is_recorded(&events, &spawn_id("u", ROLE_IMPLEMENTER, 0)),
-            "the over-budget unit's spawn is refused, not parked"
-        );
-    }
-
-    #[test]
-    fn a_budget_halt_records_its_breaker_events_once_across_resumes() {
-        // Gap 13 / finding adv-budget-exhausted-dup-across-steps: the cross-step spawn
-        // fold makes a resume DETERMINISTICALLY re-reach the spent budget and RE-TRIP the
-        // breaker every step. A non-keyed emit would append a DUPLICATE `BudgetExhausted`
-        // and `TaskAborted` on each re-tripping step, double-reporting the one halt in the
-        // audit trail. The breaker must record its events IDEMPOTENTLY (keyed, like the
-        // green/verified/reviewed lifecycle), so the halt lands EXACTLY ONCE for the run.
-        //
-        // The finding's exact MIXED-FRONTIER trigger: budget 1, two independent units ready
-        // in the same wave. Step 1 admits and PARKS one implementer (spending the budget)
-        // and REFUSES the other, tripping the breaker; the parked unit is unanswered so the
-        // step is not done and the driver resumes. Step 2 replays the parked spawn for FREE
-        // (its id is already recorded) and, since the whole budget folds from that recorded
-        // spawn across steps (all in THIS run's slice - both spawns land after this run's
-        // `RunStarted`, so run-scoping keeps them in `base_spawns`), re-reaches the still-
-        // unrecorded sibling and REFUSES it again - re-tripping the breaker, which must
-        // append no SECOND `BudgetExhausted`/`TaskAborted`.
-        let store = Store::open(":memory:").unwrap();
-        let mut cfg = config_with(vec![stage("u1", "worker"), stage("u2", "worker")]);
-        cfg.workflow.defaults.budget = 1;
-
-        for _ in 0..2 {
-            let driver = ReplayDriver::new(&store);
-            let deps = Deps {
-                store: &store,
-                driver: &driver,
-                gates: &ExecRunner,
-                repo: String::new(),
-                grounder: None,
-                graph: None,
-                criteria: Vec::new(),
-                log: &|_| {},
-                check_emit: &crate::contextgraph::check_emit,
-                spawn_host: test_spawn_host(),
-                code_store: None,
-                context: None,
-            };
-            run_isolated(&cfg, &deps).expect("a tripped budget halts the run, it does not error");
-        }
-
-        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
-        // The mixed frontier really happened: exactly ONE of the two implementers was
-        // admitted+parked (its spawn recorded), the other was refused over budget - so the
-        // breaker tripped on a genuine over-budget refusal, not a degenerate empty wave.
-        let parked_implementers = ["u1", "u2"]
-            .iter()
-            .filter(|u| spawn::is_recorded(&events, &spawn_id(u, ROLE_IMPLEMENTER, 0)))
-            .count();
-        assert_eq!(
-            parked_implementers, 1,
-            "budget 1 admits exactly one implementer spawn; the sibling is refused over budget"
-        );
-        let budget_exhausted = events
-            .iter()
-            .filter(|e| e.type_ == crate::conductor::TYPE_BUDGET_EXHAUSTED)
-            .count();
-        let task_aborted = events
-            .iter()
-            .filter(|e| e.type_ == crate::conductor::TYPE_TASK_ABORTED)
-            .count();
-        assert_eq!(
-            budget_exhausted, 1,
-            "the breaker records BudgetExhausted exactly once across resumes, not once per re-trip"
-        );
-        assert_eq!(
-            task_aborted, 1,
-            "the breaker records TaskAborted exactly once across resumes, not once per re-trip"
-        );
-    }
-
-    #[test]
-    fn a_run_that_spends_its_whole_budget_still_replays_its_recorded_work() {
-        // The cross-step count must not ABORT a resume before it can assemble already-paid
-        // work: a run that spent exactly its budget of 1 (one parked, then answered,
-        // implementer) must still replay that recorded spawn on the next step and advance
-        // the unit - NOT trip a spurious BudgetExhausted because the recorded count equals
-        // the budget. This is the completion case the `spawns > base_spawns` pre-wave
-        // guard protects.
-        let store = Store::open(":memory:").unwrap();
-        let cfg = {
-            let mut c = config_with(vec![stage("u", "worker")]);
-            c.workflow.defaults.budget = 1;
-            c
-        };
-
-        // Step 1: the single unit's implementer parks (spending the whole budget of 1).
-        {
-            let driver = ReplayDriver::new(&store);
-            let deps = Deps {
-                store: &store,
-                driver: &driver,
-                gates: &ExecRunner,
-                repo: String::new(),
-                grounder: None,
-                graph: None,
-                criteria: Vec::new(),
-                log: &|_| {},
-                check_emit: &crate::contextgraph::check_emit,
-                spawn_host: test_spawn_host(),
-                code_store: None,
-                context: None,
-            };
-            run_isolated(&cfg, &deps).unwrap();
-        }
-        let id = spawn_id("u", ROLE_IMPLEMENTER, 0);
-        assert!(
-            spawn::is_recorded(
-                &store.read_stream(STREAM, 0, Direction::Forward).unwrap(),
-                &id
-            ),
-            "step 1 parked the implementer, spending the budget"
-        );
-        // A recorded result answers it.
-        spawn_store::record_result(&store, &spawn::SpawnResult::ok(&id, "implemented")).unwrap();
-
-        // Step 2: a fresh process whose folded count already equals the budget. The
-        // recorded spawn must still REPLAY (it is free) and the unit must advance to
-        // `verified` - the breaker must not abort this replay-only step.
-        {
-            let driver = ReplayDriver::new(&store);
-            let deps = Deps {
-                store: &store,
-                driver: &driver,
-                gates: &ExecRunner,
-                repo: String::new(),
-                grounder: None,
-                graph: None,
-                criteria: Vec::new(),
-                log: &|_| {},
-                check_emit: &crate::contextgraph::check_emit,
-                spawn_host: test_spawn_host(),
-                code_store: None,
-                context: None,
-            };
-            run_isolated(&cfg, &deps).unwrap();
-        }
-
-        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
-        assert!(
-            !events
-                .iter()
-                .any(|e| e.type_ == crate::conductor::TYPE_BUDGET_EXHAUSTED),
-            "replaying a spawn already paid for must not trip the budget"
-        );
-        assert!(
-            events.iter().any(|e| {
-                e.type_ == crate::ledger::TYPE_UNIT_STATUS
-                    && String::from_utf8_lossy(&e.data).contains("\"status\":\"verified\"")
-            }),
-            "the recorded spawn replayed and the unit advanced past implement"
-        );
-    }
-
-    #[test]
-    fn a_resume_at_a_spent_budget_aborts_at_the_review_tier_with_budgetexhausted() {
-        // Criterion 5, the review-tier arm the cross-step fold makes load-bearing
-        // (findings adv-budget-guard-cannot-assemble-reviewed-unit,
-        // budget-review-tier-no-exhausted, adv-confirm-review-tier-no-budgetexhausted).
-        //
-        // A run spends its whole budget of 1 on the implementer, then resumes. The
-        // review-LESS completion test above passes because an empty panel needs no review
-        // spawn; adding ONE lens exposes the real dogfood shape (every unit reviews itself
-        // with a panel). On the resume the implementer replays FREE to `verified`, then the
-        // unit's first review tier - the lens - is a genuinely NEW spawn the spent budget
-        // refuses. That refusal must abort with BudgetExhausted, SYMMETRIC with the
-        // implementer's Ok(false) refusal, NOT propagate a raw "spawn budget exhausted"
-        // error out of run() before the breaker records it (the pre-fix behavior).
-        let store = Store::open(":memory:").unwrap();
-        let cfg = {
-            let mut c = Config::default();
-            c.agents.insert("worker".into(), worker());
-            c.agents
-                .insert("reviewer".into(), sonnet_agent("reviewer", &["Read"]));
-            c.workflow.defaults.budget = 1;
-            // A one-lens panel: assembling this unit needs a NEW lens spawn, unlike the
-            // review-less stage the completion test uses.
-            c.workflow.defaults.review = crate::config::ReviewPanel {
-                lenses: vec!["reviewer".into()],
-                ..Default::default()
-            };
-            c.workflow.stages.insert(
-                "u".into(),
-                Stage {
-                    name: "u".into(),
-                    agent: "worker".into(),
-                    on_pass: "none".into(),
-                    ..Default::default()
-                },
-            );
-            c
-        };
-
-        // Step 1: the implementer parks, spending the whole budget of 1.
-        {
-            let driver = ReplayDriver::new(&store);
-            let deps = Deps {
-                store: &store,
-                driver: &driver,
-                gates: &ExecRunner,
-                repo: String::new(),
-                grounder: None,
-                graph: None,
-                criteria: Vec::new(),
-                log: &|_| {},
-                check_emit: &crate::contextgraph::check_emit,
-                spawn_host: test_spawn_host(),
-                code_store: None,
-                context: None,
-            };
-            run_isolated(&cfg, &deps).unwrap();
-        }
-        let impl_id = spawn_id("u", ROLE_IMPLEMENTER, 0);
-        assert!(
-            spawn::is_recorded(
-                &store.read_stream(STREAM, 0, Direction::Forward).unwrap(),
-                &impl_id
-            ),
-            "step 1 parked the implementer, spending the budget"
-        );
-        // A recorded result answers the implementer.
-        spawn_store::record_result(&store, &spawn::SpawnResult::ok(&impl_id, "implemented"))
-            .unwrap();
-
-        // Step 2: a fresh process whose folded count already equals the budget. The
-        // implementer replays free to `verified`, then the review-tier lens is refused.
-        {
-            let driver = ReplayDriver::new(&store);
-            let deps = Deps {
-                store: &store,
-                driver: &driver,
-                gates: &ExecRunner,
-                repo: String::new(),
-                grounder: None,
-                graph: None,
-                criteria: Vec::new(),
-                log: &|_| {},
-                check_emit: &crate::contextgraph::check_emit,
-                spawn_host: test_spawn_host(),
-                code_store: None,
-                context: None,
-            };
-            // The run HALTS cleanly - the review-tier refusal is not a run error.
-            run_isolated(&cfg, &deps)
-                .expect("a review-tier budget refusal halts the run, it does not error");
-        }
-
-        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
-        assert!(
-            events
-                .iter()
-                .any(|e| e.type_ == crate::conductor::TYPE_BUDGET_EXHAUSTED),
-            "the review-tier refusal trips the breaker: a run over budget at a review \
-             spawn aborts with BudgetExhausted, like the implementer path"
-        );
-        // The implementer replayed and the unit advanced past implement to `verified`
-        // before the review tier was reached.
-        assert!(
-            events.iter().any(|e| {
-                e.type_ == crate::ledger::TYPE_UNIT_STATUS
-                    && String::from_utf8_lossy(&e.data).contains("\"status\":\"verified\"")
-            }),
-            "the recorded implementer replays free and the unit reaches verified"
-        );
-        // The over-budget lens spawn was REFUSED, never parked: only the implementer is
-        // recorded, so the resume never expanded the durable spawn set beyond the budget.
-        assert_eq!(
-            spawn::recorded(&events).unwrap().len(),
-            1,
-            "the refused lens is not parked - only the implementer spawn is recorded"
         );
     }
 
@@ -1478,6 +1156,7 @@ mod tests {
             store,
             driver: &driver,
             gates: &ExecRunner,
+            run_branch: None,
             repo: String::new(),
             grounder: None,
             graph: None,
@@ -1789,7 +1468,7 @@ mod tests {
         // Reject-fix guard (spec 18, unit 3): the store-sourced backstop must correlate the
         // emitted approve to THIS spawn's OWN emit by its [`META_SPAWN`] stamp, NEVER to a
         // shared-stream position window a CONCURRENT sibling can fall inside. `run_wave` runs
-        // up to MAX_CONCURRENCY sibling units in parallel, all emitting to the ONE store, so a
+        // sibling units in parallel, all emitting to the ONE store, so a
         // sibling adjudicator's approve can be recorded BETWEEN this unit's own adjudicator park
         // and result. This promotes the differential repro the adversary proved
         // (adv-u18-3r-cross-unit-approve-pollutes-window): a unit `u` whose adjudicator returned

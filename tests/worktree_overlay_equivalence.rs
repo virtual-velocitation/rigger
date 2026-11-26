@@ -9,11 +9,12 @@ use common::fixtures::{git_commit_all, init_repo, write_files, write_text, RESOL
 use rigger::code_facts::{FileFacts, ModuleDecl, Stamp};
 use rigger::code_store::CodeStore;
 use rigger::code_view::{
-    CodeView, Compared, DefRef, FileRef, Groupings, MentionRef, OpenCodeView, Settled, Tests,
-    ViewFilter,
+    CodeView, Compared, DefRef, FileRef, Groupings, MentionRef, OpenCodeView, Proofs, Settled,
+    Tests, ViewFilter,
 };
 use rigger::composed::{Composed, Honesty, Indexed};
 use rigger::contextgraph::{ContextGraph, Graph};
+use rigger_domain::resolve::ProofCall;
 use rigger_store::code::Mode;
 use std::borrow::Cow;
 use std::path::Path;
@@ -30,6 +31,9 @@ const EDITS: &[(&str, &str, &str)] = &[
         "mod util;\n#[cfg(test)]\nmod lib_tests;\n",
         "#[cfg(test)]\nmod util;\nmod lib_tests;\n",
     ),
+    // A module root moves: `mod twins;` reaches `src/twins.rs`, so its declarations place their
+    // modules as a child's do, under `src/twins/`, where they placed them as a crate root's.
+    ("src/lib.rs", "mod shapes;\n", "mod shapes;\nmod twins;\n"),
     // A duplicate id loses a twin, and a second product `helper` makes the nested module's call a
     // frontier where it had one product candidate.
     (
@@ -61,8 +65,8 @@ const EDITS: &[(&str, &str, &str)] = &[
 /// gains a candidate.
 const ADDED: (&str, &str) = ("src/added.rs", "pub fn vanish() {}\n");
 
-/// The file the worktree deletes: a module declaration's only target, so `right`'s `mod leaf;`
-/// reaches no file.
+/// The file the worktree deletes: the only target of `right`'s `mod leaf;` once the worktree's
+/// `mod twins;` reaches `src/twins.rs`, so that declaration reaches no file.
 const DELETED: &str = "src/twins/right/leaf.rs";
 
 /// How many files the worktree takes over the commit: the five it edits, the one it adds and
@@ -105,7 +109,8 @@ fn the_overlaid_worktree_answers_what_a_commit_of_its_content_answers() {
     for ((case, got), (_, want)) in overlaid.iter().zip(&committed) {
         assert_eq!(got, want, "{case}");
     }
-    // The premise: the changes moved the answer, a test-ness flip both ways among them.
+    // The premise: the changes moved the answer, a test-ness flip both ways and the module root
+    // move among them.
     let whole = |answers: &[(String, String)], tests: &str| {
         let case = format!("whole, tests {tests}");
         let (_, answer) = answers.iter().find(|(c, _)| *c == case).unwrap();
@@ -116,6 +121,11 @@ fn the_overlaid_worktree_answers_what_a_commit_of_its_content_answers() {
         ("\"src/lib_tests/more.rs::more_origin\"", false, true),
         ("\"src/added.rs::vanish\"", false, true),
         ("\"src/twins/right/leaf.rs::right_value\"", true, false),
+        (
+            "from: \"src/twins.rs::left::leaf\", to: \"src/twins/left/leaf.rs\"",
+            false,
+            true,
+        ),
     ] {
         let (b, c) = (whole(&before, "exclude"), whole(&committed, "exclude"));
         assert_eq!((b.contains(id), c.contains(id)), (was, is), "{id}");
@@ -130,11 +140,7 @@ fn answers(store: &CodeStore, worktree: &Path, compared: Compared) -> Vec<(Strin
     assert_eq!(head.compared, compared);
     let view = Ungrouped(&*head.view);
     let records = Indexed::default();
-    let honesty = || Honesty {
-        worktree: worktree.display().to_string(),
-        compared: head.compared,
-        behind: head.behind.clone(),
-    };
+    let honesty = || Honesty::of(&head);
     let mut answers = Vec::new();
     for (name, tests) in [
         ("exclude", Tests::Exclude),
@@ -145,7 +151,7 @@ fn answers(store: &CodeStore, worktree: &Path, compared: Compared) -> Vec<(Strin
         let whole = Composed::new(&records, &view, filter, honesty()).unwrap();
         let graph = whole.whole().unwrap();
         answers.push((format!("whole, tests {name}"), rendered(&graph)));
-        let near = Composed::near(&records, &view, filter, honesty()).unwrap();
+        let near = Composed::near(&records, &view, filter, honesty(), None).unwrap();
         let mut ids: Vec<String> = graph.nodes.iter().map(|n| n.id.clone()).collect();
         ids.sort();
         for id in ids {
@@ -175,8 +181,26 @@ static NO_GROUPINGS: Groupings = Groupings {
     concepts: Vec::new(),
 };
 
-/// A view answered without its groupings, every other read its own.
+/// A view answered without its groupings, and so without the code half its store settled with
+/// them joined on ([`Settled::half`]); every other read its own.
 struct Ungrouped<'v>(&'v dyn CodeView);
+
+impl Ungrouped<'_> {
+    /// The rows the view's store settled.
+    fn rows(&self) -> &dyn Settled {
+        self.0.settled().expect("the view offers settled rows")
+    }
+}
+
+/// The view's settled rows but for the code half, which is left to the default, none.
+impl Settled for Ungrouped<'_> {
+    fn test_files(&self) -> Vec<&str> {
+        self.rows().test_files()
+    }
+    fn proofs(&self, of: Proofs<'_>) -> Vec<ProofCall> {
+        self.rows().proofs(of)
+    }
+}
 
 impl CodeView for Ungrouped<'_> {
     fn stamp(&self) -> &Stamp {
@@ -207,6 +231,6 @@ impl CodeView for Ungrouped<'_> {
         self.0.def_leaves()
     }
     fn settled(&self) -> Option<&dyn Settled> {
-        self.0.settled()
+        self.0.settled().map(|_| self as &dyn Settled)
     }
 }

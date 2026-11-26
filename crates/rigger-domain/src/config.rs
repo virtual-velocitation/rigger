@@ -872,10 +872,10 @@ pub struct Defaults {
     /// block. Declared once here, inherited by every planner-proposed unit too.
     #[serde(default)]
     pub review: ReviewPanel,
-    /// The token/spawn circuit-breaker budget (§4.4, §8): the maximum number of
-    /// agent spawns a run may perform. 0 (the default) means unlimited.
+    /// A retired key nothing reads, kept so a workflow still carrying it parses and
+    /// `Config::validate` refuses it at any value, naming the line to delete.
     #[serde(default)]
-    pub budget: u32,
+    pub budget: Option<u32>,
     /// The remediation depth: how many attempts a failed unit gets before it
     /// escalates to a human (§4.4). This is the refinement-depth knob, NOT a
     /// review-rigor knob - it gives a subtle unit room to converge under the full
@@ -895,9 +895,8 @@ pub struct Defaults {
     /// The wave-width bound (spec 102): the maximum number of implement-fan-out stages the
     /// conductor admits in flight at once across a wave (`run_wave`). A stage the width
     /// refuses is neither failed nor terminal - it waits for a slot to free in this wave or a
-    /// later one. `0` (the default) means UNBOUNDED, so an existing consumer's behavior does
-    /// not change until it writes this key; `rigger init`/`setup` scaffold `2` with a comment
-    /// sizing it to the per-unit build-cache cost (spec 89, per-unit pipelining).
+    /// later one. `0` (the default) means unset: the width is then `build.max_concurrent`, the
+    /// build slot count, and unbounded only when that is `0` too.
     #[serde(default)]
     pub max_parallel_units: u32,
     /// The default per-spawn wall-clock bound in SECONDS (spec 10, unit 3): every agent
@@ -947,12 +946,10 @@ pub struct Defaults {
     /// (the default), no test author spawns, whatever agents the project defines.
     #[serde(default)]
     pub test_author: String,
-    /// The unit size cap in added lines: when above `0`, the planner's plan protocol and every
-    /// round of the DAG critique prompt state that a unit expected to add more than this many
-    /// lines is too large, and the critique's cause contract names a unit over the cap among
-    /// the defects a re-plan fixes. Absent or `0` (the default), neither prompt states a cap.
+    /// A retired key nothing reads, kept so a workflow still carrying it parses and
+    /// `Config::validate` refuses it at any value, naming the line to delete.
     #[serde(default)]
-    pub max_unit_added_lines: u32,
+    pub max_unit_added_lines: Option<u32>,
 }
 
 impl Defaults {
@@ -1232,7 +1229,7 @@ pub struct BuildConfig {
     pub env: BTreeMap<String, String>,
     /// The jobs count a declared variable's `{jobs}` placeholder resolves to. `0` (the
     /// default) means unset, matching this config's existing zero-as-unset convention (see
-    /// [`Defaults::budget`]/[`Defaults::max_retries`]/[`Defaults::speculation_width`]): a
+    /// [`Defaults::max_retries`]/[`Defaults::speculation_width`]): a
     /// variable using `{jobs}` is then exported nowhere, so a build's own default parallelism
     /// stays untouched. `build.max_concurrent` times `jobs` can be sized to the machine.
     #[serde(default)]
@@ -1242,7 +1239,7 @@ pub struct BuildConfig {
     /// the next one blocks for a free slot ([`crate::budget::BuildBudget`] is the
     /// resolver that reads this). Omitted resolves to 4 (a deliberately non-zero
     /// default distinct from this field's plain `u32::default()`); an EXPLICIT `0`
-    /// means unlimited (the same `budget: 0` convention `defaults.budget` uses) -
+    /// means unlimited -
     /// every build is admitted immediately and no slot directory is ever touched.
     #[serde(default = "default_max_concurrent")]
     pub max_concurrent: u32,
