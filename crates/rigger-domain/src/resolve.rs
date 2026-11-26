@@ -2984,9 +2984,6 @@ pub(crate) mod tests {
     /// (`Base.area` from `main`); and the test function `tests/open.rs::opens`, calling
     /// `FactsView::files` and `CodeView::files`.
     pub(crate) fn narrowing_fixture() -> FactsView {
-        let qualified_call = |name: &str, enclosing, line, test| {
-            qualified(MentionKind::Call, name, enclosing, line, test)
-        };
         let qualified_tag = |tag: &str, name: &str, line| {
             qualified(MentionKind::Tagged(tag.into()), name, Some(3), line, false)
         };
@@ -3044,10 +3041,10 @@ pub(crate) mod tests {
             ],
             vec![
                 tagged("impl", "Composed", Some(1), 3),
-                qualified_call("FactsView::new", Some(3), 7, false),
-                qualified_call("FactsView::stamp", Some(3), 8, false),
-                qualified_call("CodeView::files", Some(3), 9, false),
-                qualified_call("Composed::decode", Some(3), 10, false),
+                qualified(MentionKind::Call, "FactsView::new", Some(3), 7, false),
+                qualified(MentionKind::Call, "FactsView::stamp", Some(3), 8, false),
+                qualified(MentionKind::Call, "CodeView::files", Some(3), 9, false),
+                qualified(MentionKind::Call, "Composed::decode", Some(3), 10, false),
                 qualified_tag("variant", "Located::Many", 11),
                 qualified_tag("variant", "Located::One", 12),
                 qualified_tag("const", "Composed::MAX", 13),
@@ -3068,7 +3065,7 @@ pub(crate) mod tests {
             ],
             vec![
                 tagged("impl", "Base", Some(2), 5),
-                qualified_call("Base.area", Some(4), 11, false),
+                qualified(MentionKind::Call, "Base.area", Some(4), 11, false),
             ],
         );
         let open = code(
@@ -3077,8 +3074,8 @@ pub(crate) mod tests {
             Scope::Test,
             vec![def("opens", "function", 1, None, true)],
             vec![
-                qualified_call("FactsView::files", Some(0), 2, true),
-                qualified_call("CodeView::files", Some(0), 3, true),
+                test_call("FactsView::files", 0, 2),
+                test_call("CodeView::files", 0, 3),
             ],
         );
         FactsView::new(stamp(), vec![code_view, snapshot, composed, shapes, open])
@@ -3997,15 +3994,6 @@ pub(crate) mod tests {
     /// node's `candidates` attribute carries.
     #[test]
     fn several_narrowed_candidates_never_prefer_their_file() {
-        let qualified_call = |enclosing, line, test| {
-            qualified(
-                MentionKind::Call,
-                "CodeView.file",
-                Some(enclosing),
-                line,
-                test,
-            )
-        };
         let code_view = code(
             "src/code_view.rs",
             "rust",
@@ -4018,7 +4006,7 @@ pub(crate) mod tests {
                 def("FactsView::file", "method", 13, Some(3), false),
             ],
             vec![
-                qualified_call(1, 3, false),
+                qualified(MentionKind::Call, "CodeView.file", Some(1), 3, false),
                 tagged("field", "file", None, 5),
                 tagged("impl", "CodeView", Some(3), 12),
                 tagged("impl", "FactsView", Some(3), 12),
@@ -4062,7 +4050,7 @@ pub(crate) mod tests {
                 def("Fake::file", "method", 7, Some(2), true),
             ],
             vec![
-                qualified_call(0, 2, true),
+                test_call("CodeView.file", 0, 2),
                 tagged("impl", "CodeView", Some(2), 6),
                 tagged("impl", "Fake", Some(2), 6),
             ],
