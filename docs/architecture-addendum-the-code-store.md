@@ -299,7 +299,8 @@ A tags query's reference is named by its bare leaf, qualified by a path (`::`) o
 (`.`) when one is written: by the qualifier a `@qualifier.path` or
 `@qualifier.member` capture gives, else by the one its `@name` writes before the leaf. A `@name`
 written as a chain of identifiers splits at its last separator, its type arguments left out of
-the split (`Ns.IShape` is the leaf `IShape` qualified by the member `Ns`, `List<IShape>` the leaf
+the split and any comment inside it left out of the split and its qualifier both (`Ns.IShape`
+and `Ns./*x*/IShape` are the leaf `IShape` qualified by the member `Ns`, `List<IShape>` the leaf
 `List`), and one that is no such chain names no mention. A Rust call's `@name` is its leaf
 already, so its qualifier is read off the tree around it instead: the segment before the leaf when
 that begins uppercase, generics and turbofish stripped (`Memo::<K>::new` and `a::Memo::<K>::new`
