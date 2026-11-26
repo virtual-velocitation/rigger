@@ -526,10 +526,18 @@ fn ts_family_parts(constant_values: &'static str) -> [&'static str; 15] {
     ]
 }
 
-/// `parts` joined one per line into `cell` on first use - a tags query composed ONCE for the
+/// The query `compose` builds, into `cell` on first use - a tags query composed ONCE for the
 /// process lifetime, so a [`LanguageEntry`] can borrow it as `&'static str`.
+fn composed_once_by(
+    cell: &'static OnceLock<String>,
+    compose: impl FnOnce() -> String,
+) -> &'static str {
+    cell.get_or_init(compose).as_str()
+}
+
+/// `parts` joined one per line, composed ONCE into `cell` ([`composed_once_by`]).
 fn composed_once(cell: &'static OnceLock<String>, parts: &[&str]) -> &'static str {
-    cell.get_or_init(|| parts.join("\n")).as_str()
+    composed_once_by(cell, || parts.join("\n"))
 }
 
 /// Additional Go tags-query patterns (spec 116), appended to the upstream query, which tags a
@@ -799,7 +807,7 @@ pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
         "cs" => (
             Lang::CSharp,
             tree_sitter_c_sharp::LANGUAGE.into(),
-            CSHARP_TAGS.get_or_init(csharp_tags).as_str(),
+            composed_once_by(&CSHARP_TAGS, csharp_tags),
             CSHARP_CONSTRUCTORS,
             CSHARP_TYPE_ARGUMENTS,
             &CSHARP,
