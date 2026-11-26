@@ -6,7 +6,7 @@
 use std::fmt::Write as _;
 
 use rigger_domain::code_view::tests_hidden_line;
-use rigger_domain::contextgraph::capped;
+use rigger_domain::contextgraph::{capped, site_text};
 
 use super::graph::{Answered, Entity, ReferrerSite, Site, TermGraph};
 use super::prose::Ranked;
@@ -172,19 +172,19 @@ fn edge_line<T>(block: &mut String, label: &str, items: &[T], line: fn(&T) -> St
 
 /// A referrer's site line, and ` ?` after it when its mention gave the entity no single edge.
 fn referrer_line(referrer: &ReferrerSite) -> String {
-    let mark = if referrer.ambiguous { " ?" } else { "" };
-    format!("{}{mark}", site_line(&referrer.site))
+    listed_site(&referrer.site, referrer.ambiguous)
 }
 
 /// `file:line id (kind)`, the line left out when unknown and the file when there is none, and
 /// ` [test]` after a test site.
 fn site_line(site: &Site) -> String {
-    let mark = if site.test { " [test]" } else { "" };
-    match &site.file {
-        Some((file, 0)) => format!("{file} {} ({}){mark}", site.id, site.kind),
-        Some((file, line)) => format!("{file}:{line} {} ({}){mark}", site.id, site.kind),
-        None => format!("{} ({}){mark}", site.id, site.kind),
-    }
+    listed_site(site, false)
+}
+
+/// `site` as the domain lists a site ([`site_text`]), ` ?` marked when `ambiguous`.
+fn listed_site(site: &Site, ambiguous: bool) -> String {
+    let file = (site.file.as_ref()).map(|(file, line)| (file.as_str(), *line));
+    site_text(file, &site.id, &site.kind, site.test, ambiguous)
 }
 
 /// Each term's matching lines within its share of [`TEXT_TOTAL`].

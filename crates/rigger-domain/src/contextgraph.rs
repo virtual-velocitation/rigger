@@ -1678,18 +1678,38 @@ pub struct Referrer {
 }
 
 /// `referrer` as a `referenced by` entry of [`site_fields`] lists it, the line the lookup prints
-/// for it: `<file>:<line> <id> (<kind>)`, its file the one its site id names and the `:<line>`
-/// left out at line 0, then ` [test]` for a test referrer and ` ?` for an ambiguous one.
+/// for it ([`site_text`]), its file the one its site id names.
 fn referrer_text(referrer: &Referrer) -> String {
     let file = query::split_id(&referrer.site).0;
-    let at = match referrer.line {
-        0 => String::new(),
-        line => format!(":{line}"),
-    };
-    let test = if referrer.test { " [test]" } else { "" };
-    let ambiguous = if referrer.ambiguous { " ?" } else { "" };
     let (site, kind) = (&referrer.site, &referrer.kind);
-    format!("{file}{at} {site} ({kind}){test}{ambiguous}")
+    site_text(
+        Some((file, referrer.line)),
+        site,
+        kind,
+        referrer.test,
+        referrer.ambiguous,
+    )
+}
+
+/// A site as a surface lists it: `<file>:<line> <id> (<kind>)`, the `:<line>` left out at line 0
+/// and the `<file> ` when the site names no file, then ` [test]` for test code and ` ?` for a
+/// referrer whose mention gave the entity no single edge: the one spelling a `referenced by`
+/// entry ([`referrer_text`]) and the lookup's referrer and callee lines print a site by.
+pub fn site_text(
+    file: Option<(&str, u32)>,
+    id: &str,
+    kind: &str,
+    test: bool,
+    ambiguous: bool,
+) -> String {
+    let at = match file {
+        Some((file, 0)) => format!("{file} "),
+        Some((file, line)) => format!("{file}:{line} "),
+        None => String::new(),
+    };
+    let test = if test { " [test]" } else { "" };
+    let ambiguous = if ambiguous { " ?" } else { "" };
+    format!("{at}{id} ({kind}){test}{ambiguous}")
 }
 
 /// Whether a `rel` edge onto a node of kind `target_kind` declares a module (spec 117, MODULE
