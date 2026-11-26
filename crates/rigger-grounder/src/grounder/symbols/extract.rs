@@ -388,9 +388,9 @@ fn covering(a: std::ops::Range<usize>, b: std::ops::Range<usize>) -> std::ops::R
 }
 
 /// The text `source` holds over `gap` outside each `left_out` range inside it (in source order),
-/// trimmed, and the byte that trimmed text starts at: what separates two leaves of a name's chain
-/// ([`CompiledTags::split_leaf`]). `None` when nothing but whitespace is left, or a piece cannot
-/// be sliced out of `source`.
+/// trimmed, and the byte that trimmed text starts at: what separates two leaves of a name's chain,
+/// and the qualifier before its leaf ([`CompiledTags::split_leaf`]). `None` when nothing but
+/// whitespace is left, or a piece cannot be sliced out of `source`.
 fn kept_text(
     source: &str,
     gap: std::ops::Range<usize>,
@@ -469,10 +469,11 @@ impl CompiledTags {
     /// THE LEAF SPLIT (spec 117, CAPTURES): the byte range of the leaf a reference's `@name` node
     /// names, and the qualifier its text writes before that leaf. A name with no named children is
     /// its own leaf, unqualified. One with named children is split only when it is an identifier
-    /// chain: its named leaves, each node of a [`CompiledTags::type_arguments`] kind left out with
-    /// all it holds, run from the name's start, and the text between each pair, type-argument
-    /// text left out, is `::` or `.` once trimmed. The last is the leaf, and the name's text
-    /// before that leaf's separator, trimmed, its qualifier: a path for `::`, a member access for
+    /// chain: its named leaves, each node of a [`CompiledTags::type_arguments`] kind and each
+    /// comment left out with all it holds, run from the name's start, and the text between each
+    /// pair, type-argument and comment text left out, is `::` or `.` once trimmed. The last is the
+    /// leaf, and the name's text before that leaf's separator, comment text left out and trimmed,
+    /// its qualifier: a path for `::`, a member access for
     /// `.` (`Ns.IShape` gives `IShape` qualified by the member `Ns`, `List<IShape>` gives `List`
     /// unqualified). Any other shape is `None`, so it names no reference (`new arr[0]()`,
     /// `new a[0].b()`, `new (Box)()`).
@@ -485,14 +486,15 @@ impl CompiledTags {
             return Some((name.byte_range(), None));
         }
         let mut leaves = Vec::new();
-        let mut type_arguments = Vec::new();
-        self.chain_leaves(name, &mut leaves, &mut type_arguments);
+        let mut left_out = Vec::new();
+        let mut comments = Vec::new();
+        self.chain_leaves(name, &mut leaves, &mut left_out, &mut comments);
         if leaves.first()?.start != name.start_byte() {
             return None;
         }
         let mut written = None;
         for pair in leaves.windows(2) {
-            let (separator, at) = kept_text(source, pair[0].end..pair[1].start, &type_arguments)?;
+            let (separator, at) = kept_text(source, pair[0].end..pair[1].start, &left_out)?;
             let path = match separator.as_str() {
                 PATH_SEPARATOR => true,
                 MEMBER_SEPARATOR => false,
@@ -502,7 +504,7 @@ impl CompiledTags {
         }
         let qualifier = match written {
             Some((at, path)) => Some(Qualifier {
-                name: source.get(name.start_byte()..at)?.trim_end().to_string(),
+                name: kept_text(source, name.start_byte()..at, &comments)?.0,
                 path,
             }),
             None => None,
@@ -511,23 +513,27 @@ impl CompiledTags {
     }
 
     /// The byte ranges of `node`'s named leaf descendants, in source order, into `leaves`, and of
-    /// each descendant of a [`CompiledTags::type_arguments`] kind, whose own descendants are left
-    /// out, into `type_arguments`: the pieces [`CompiledTags::split_leaf`] reads a name's chain
-    /// from.
+    /// each descendant of a [`CompiledTags::type_arguments`] kind and each extra (a comment),
+    /// whose own descendants are left out, into `left_out`, each extra into `comments` as well:
+    /// the pieces [`CompiledTags::split_leaf`] reads a name's chain from.
     fn chain_leaves(
         &self,
         node: tree_sitter::Node,
         leaves: &mut Vec<std::ops::Range<usize>>,
-        type_arguments: &mut Vec<std::ops::Range<usize>>,
+        left_out: &mut Vec<std::ops::Range<usize>>,
+        comments: &mut Vec<std::ops::Range<usize>>,
     ) {
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
-            if self.type_arguments.contains(&child.kind()) {
-                type_arguments.push(child.byte_range());
+            if child.is_extra() {
+                comments.push(child.byte_range());
+                left_out.push(child.byte_range());
+            } else if self.type_arguments.contains(&child.kind()) {
+                left_out.push(child.byte_range());
             } else if child.named_child_count() == 0 {
                 leaves.push(child.byte_range());
             } else {
-                self.chain_leaves(child, leaves, type_arguments);
+                self.chain_leaves(child, leaves, left_out, comments);
             }
         }
     }

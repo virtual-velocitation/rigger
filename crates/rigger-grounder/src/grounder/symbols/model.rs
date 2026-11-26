@@ -265,25 +265,25 @@ macro_rules! rust_tags_generation {
 
 macro_rules! csharp_tags_generation {
     () => {
-        "csharp-tags-v5"
+        "csharp-tags-v6"
     };
 }
 
 macro_rules! ts_tags_generation {
     () => {
-        "typescript-tags-v6"
+        "typescript-tags-v7"
     };
 }
 
 macro_rules! tsx_tags_generation {
     () => {
-        "tsx-tags-v6"
+        "tsx-tags-v7"
     };
 }
 
 macro_rules! js_tags_generation {
     () => {
-        "javascript-tags-v6"
+        "javascript-tags-v7"
     };
 }
 
