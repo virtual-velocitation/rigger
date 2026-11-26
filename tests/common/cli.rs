@@ -1810,9 +1810,6 @@ pub fn head_of(root: &Path) -> String {
     super::fixtures::git_out(root, &["rev-parse", "HEAD"])
 }
 
-/// What `rigger graph build` leaves a project, read as the binary's readers read it: the record
-/// half its `.rigger/graph.db` holds, composed with the view of the head the build advanced the
-/// code store to.
 /// The code store of the repository `root` lies in, discovered there.
 #[cfg(feature = "symbols")]
 pub fn repository_code_store(root: &Path) -> rigger::code_store::CodeStore {
@@ -1820,6 +1817,9 @@ pub fn repository_code_store(root: &Path) -> rigger::code_store::CodeStore {
     rigger::code_store::CodeStore::in_repository(checkout.expect("a repository"))
 }
 
+/// What `rigger graph build` leaves a project, read as the binary's readers read it: the record
+/// half its `.rigger/graph.db` holds, composed with the view of the head the build advanced the
+/// code store to.
 #[cfg(feature = "symbols")]
 pub struct BuiltGraph {
     pub records: Projector,
