@@ -1720,9 +1720,11 @@ class Box {
 }
 class Lid : Box { }
 class Tray { object made = new Box(); }
-class Bin : Ns.Shelf<Box> { }
+class Bin : /* c */ Ns.Shelf<Box> { }
+// p
 /// A cover.
 class Cover { void Fit(Box b) { b.Size = Box.Calc(Box.Cap); } }
+class Sort { bool Out(object x) { return x is not Box; } }
 ",
         ),
         (
@@ -1979,7 +1981,7 @@ def raw():
             // Rust
             ("rs", "rust-tags-v10", "71684eab40d0f0bd"),
             // C#
-            ("cs", "csharp-tags-v5", "ff1a724ddef62a08"),
+            ("cs", "csharp-tags-v5", "a9539c91e710330e"),
             // TypeScript
             ("ts", "typescript-tags-v6", "46fdbe808db7ebdc"),
             // TSX

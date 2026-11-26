@@ -2170,7 +2170,7 @@ pub(crate) mod tests {
             // Rust
             ("rs", "rust-tags-v10", "cab0b85c6b9758df"),
             // C#
-            ("cs", "csharp-tags-v5", "1686734362d08137"),
+            ("cs", "csharp-tags-v5", "219829679e958fab"),
             // TypeScript
             ("ts", "typescript-tags-v6", "59a7286ef00e8791"),
             // TSX
