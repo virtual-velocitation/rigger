@@ -1268,8 +1268,8 @@ fn impl_blocks(impls: &[tree_sitter::Node], source: &[u8]) -> Vec<ImplBlock> {
 
 /// The nodes the structural reads of one parsed tree start from, gathered in ONE WALK of it, each
 /// list in source order and holding only nodes within the byte ranges the tree is read over
-/// ([`kept`]): every `use_declaration` and every `impl_item` ([`rust_references`],
-/// [`impl_blocks`]), every [`GATED_NON_DEFINITIONS`] node ([`test_regions`]), and, for Rust, every
+/// ([`kept`]): every `use_declaration` and every `impl_item` ([`std_imports`] and
+/// [`use_aliases`], [`impl_blocks`]), every [`GATED_NON_DEFINITIONS`] node ([`test_regions`]), and, for Rust, every
 /// node [`rust_references`] and [`function_values`] read, a macro invocation among them
 /// ([`reparse_invocations`]) - each one outside an [`OPAQUE_KINDS`] subtree, a `use_declaration`
 /// read whole by its leaves and never descended.
