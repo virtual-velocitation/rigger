@@ -5550,8 +5550,8 @@ impl Local for Vec<u8> {
     /// qualified as a call is - a scoped path with a lowercase leaf outside a call
     /// (`.map(Store::open)`), and a bare identifier passed as a call's argument
     /// (`.map(entity_block)`) that starts lowercase, that no exclusion holds and that no binding
-    /// in scope binds. A parameter, a `let` after its own value, an `if let`, a `while let`, a let
-    /// chain, a match arm (in its guard too, the guard's own names binding nothing), a `for` and a
+    /// in scope binds. A parameter, a `let`, an `if let`, a `while let` and each let of a let chain
+    /// after its own value, a match arm (in its guard too, the guard's own names binding nothing), a `for` and a
     /// closure parameter bind, through every pattern a binding writes; a call's head stages once,
     /// and in a token tree the scope is the invocation's.
     #[test]
@@ -5658,6 +5658,29 @@ fn k(v: u8) {
                 "\
 1 def Function k to 5
 3 ref call w k",
+            ),
+            (
+                "an if let and a while let bind after their own value, a let chain's let after its \
+                 own and never in an earlier let's",
+                "\
+fn u() {
+    if let Some(x) = g(x) {}
+    while let Some(y) = g(y) {}
+    if let Some(a) = g(b) && let Some(b) = h(a) {
+        w(a, b);
+    }
+}
+",
+                "\
+1 def Function u to 7
+2 ref call g u
+2 ref call x u
+3 ref call g u
+3 ref call y u
+4 ref call b u
+4 ref call g u
+4 ref call h u
+5 ref call w u",
             ),
             (
                 "a match arm's pattern binds in its guard, the guard's own names binding nothing",
