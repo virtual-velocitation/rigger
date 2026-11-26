@@ -33559,8 +33559,9 @@ stage "implement" adjudicator "adj" failed
         // The operator layer on `cfg.instructions`, here one file named as no built-in, is
         // composed into EVERY spawned agent's system prompt - the implementer and all three
         // review tiers - after the persona and every built-in entry, none replaced or switched
-        // off: the law, the working discipline and the communication discipline. An agent with
-        // no persona still carries the built-in engineering principles.
+        // off: the law, the working discipline, the communication discipline and the complexity
+        // considerations. An agent with no persona still carries the built-in engineering
+        // principles.
         let mut cfg = Config {
             instructions: vec![Instruction {
                 name: "10-house".into(),

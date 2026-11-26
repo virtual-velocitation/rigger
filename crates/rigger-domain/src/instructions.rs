@@ -40,6 +40,9 @@ pub struct Instruction {
 /// a note, and fanning mechanical work out to the `lookup` and `verify` helpers.
 /// The third is the communication discipline: each decision and finding recorded the moment it
 /// is made, peers checked between actions, a peer's decision superseded explicitly.
+/// The fourth is the complexity considerations: the three steps a unit's complexity takes, the
+/// five considerations the planner weighs to judge one, never a size, and the one-sentence
+/// reason naming the consideration that decided it, read by planner and reviewer alike.
 /// A harness-wide rule lives here once,
 /// never copied into persona files; a persona carries only the project's anchors for it.
 pub const BUILTIN: &[(&str, &str)] = &[
@@ -55,6 +58,7 @@ pub const BUILTIN: &[(&str, &str)] = &[
         "communication",
         include_str!("instructions/communication.md"),
     ),
+    ("complexity", include_str!("instructions/complexity.md")),
 ];
 
 /// What the operator layer made of one built-in entry.

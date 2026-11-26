@@ -42,10 +42,10 @@ pub mod hold_probe;
 /// predicate the live run and the standalone `rigger graph build` both seed from.
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod ingest;
-/// Instruction injection: the built-in engineering law, working discipline and communication
-/// discipline, each unless a same-named operator file replaces or switches it off, and every
-/// other `.rigger/instructions/*.md` file, layered into every spawned agent's system prompt; a
-/// same-named file is never layered itself.
+/// Instruction injection: the built-in engineering law, working discipline, communication
+/// discipline and complexity considerations, each unless a same-named operator file replaces or
+/// switches it off, and every other `.rigger/instructions/*.md` file, layered into every spawned
+/// agent's system prompt; a same-named file is never layered itself.
 pub mod instructions;
 pub mod ledger;
 /// The combined lookup interface: the `Lookup` trait one call answers graph, text and prose through.
