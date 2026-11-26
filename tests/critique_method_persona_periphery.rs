@@ -36,9 +36,10 @@ use common::cli::{
 };
 use common::fixtures::{
     assert_holds_its_critique_method, composed_system_prompt, critique_method_by_persona,
-    critique_reject, dag_critique_prompt, markdown_section, plan_protocol_text, policy_counts,
-    read_text, served_task, stand_in_launches, DAG_DISJOINT_OVERLAP, DAG_PRIOR_REJECT_HEADER,
-    DAG_UNASSESSED, RECORD_EACH_LAUNCH, WHEN_YOU_CRITIQUE_HEADING, WIDGET_CRITERION, WIDGET_UNIT,
+    critique_reject, dag_critique_prompt, dag_re_review_prompt, markdown_section,
+    plan_protocol_text, policy_counts, read_text, served_task, stand_in_launches,
+    DAG_DISJOINT_OVERLAP, DAG_UNASSESSED, RECORD_EACH_LAUNCH, WHEN_YOU_CRITIQUE_HEADING,
+    WIDGET_CRITERION, WIDGET_UNIT,
 };
 use common::repo::repo_text;
 use rigger::driver::claude_code::framed;
@@ -185,10 +186,7 @@ fn expected_tasks(root: &Path, reject: &str) -> [(&'static str, String); 4] {
         ],
         DAG_DISJOINT_OVERLAP,
     );
-    let second_round = format!(
-        "{DAG_PRIOR_REJECT_HEADER}{reject}\n\nThe planner has since revised the DAG; re-review it \
-         below.\n\n{first_round}"
-    );
+    let second_round = dag_re_review_prompt(reject, &first_round);
     [
         (
             "adversary.md",

@@ -134,6 +134,16 @@ pub fn dag_critique_prompt(units: &[[&str; 5]], overlap: &str) -> String {
     )
 }
 
+/// The whole DAG critique prompt of a re-plan round after the reject line `reject`: the
+/// [`DAG_PRIOR_REJECT_HEADER`], the reject, the line saying the planner has revised the DAG, then
+/// `prompt`, the round's [`dag_critique_prompt`].
+pub fn dag_re_review_prompt(reject: &str, prompt: &str) -> String {
+    format!(
+        "{DAG_PRIOR_REJECT_HEADER}{reject}\n\nThe planner has since revised the DAG; re-review it \
+         below.\n\n{prompt}"
+    )
+}
+
 /// The halt a plan-critique spec-defect stop reports, naming the run's spec as `spec` spells it
 /// and the stopping reject's upheld finding ids as `upheld` lists them: the one expected text the
 /// stop's tests read (the conductor's formatter pin keeps its own literals).

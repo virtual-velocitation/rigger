@@ -270,6 +270,73 @@ pub fn emit_unit_proposed(unit: &serde_json::Value) -> String {
     )
 }
 
+/// A plan stage producing the DAG, the plan-critique gate over it, and the fan-out implement
+/// template the gate releases, which covers each criterion of a run begun on a spec and none of a
+/// run with no criteria. `max_retries: 3` leaves the gate a re-plan after its second reject.
+const CRITIQUED_FAN_OUT: &str = "defaults:\n  grounder: nop\n  max_retries: 3\n\
+                                 stages:\n  plan:\n    agent: planner\n    produces: dag\n  \
+                                 plan-critique:\n    needs: [plan]\n    adversary: adversary\n    \
+                                 adjudicator: judge\n  implement:\n    needs: [plan-critique]\n    \
+                                 agent: worker\n    strategy: fan-out\n";
+
+/// A repo-less project scaffolded with [`CRITIQUED_FAN_OUT`] and its four agents, `planner`,
+/// `worker`, `adversary` and `judge`, which share one prompt.
+pub fn critique_project() -> tempfile::TempDir {
+    let dir = temp_repoless_project();
+    let ids = ["planner", "worker", "adversary", "judge"];
+    let definitions = ids.map(|id| {
+        format!("---\nid: {id}\nmodel: sonnet\ntools: [Read]\nisolation: none\n---\nDo the work.\n")
+    });
+    let agents: Vec<(&str, &str)> = ids
+        .into_iter()
+        .zip(definitions.iter().map(String::as_str))
+        .collect();
+    write_scaffold(dir.path(), &agents, CRITIQUED_FAN_OUT);
+    dir
+}
+
+/// The arm answering every spawn of [`critique_project`]'s agents, each launch on record
+/// ([`RECORD_EACH_LAUNCH`](super::fixtures::RECORD_EACH_LAUNCH)): the plan's planner records
+/// `proposals[0]` and re-plan `k` records `proposals[k]` ([`emit_unit_proposed`]), each round's
+/// adversary reviews, round `k`'s adjudicator answers `verdicts[k]`, and the widget's implementer
+/// reports it built. Any other spawn, a re-plan past the last proposal first, fails, which ends the
+/// run there.
+pub fn critique_arm_proposing(proposals: &[serde_json::Value], verdicts: &[&str]) -> String {
+    let planners: String = proposals
+        .iter()
+        .enumerate()
+        .map(|(k, unit)| {
+            let spawn = match k {
+                0 => "plan/implementer#0".to_string(),
+                k => format!("plan/replan#{k}"),
+            };
+            format!(
+                "      {spawn})\n{propose}    echo \"proposed the DAG\" ;;\n",
+                propose = emit_unit_proposed(unit)
+            )
+        })
+        .collect();
+    let adjudicators: String = verdicts
+        .iter()
+        .enumerate()
+        .map(|(k, verdict)| {
+            format!("      plan-critique/adjudicator#{k}) printf '%s' '{verdict}' ;;\n")
+        })
+        .collect();
+    format!(
+        r#"  *"Do the work."*)
+{record}    case "$RIGGER_SPAWN" in
+{planners}      plan-critique/adversary#*) echo "reviewed the DAG" ;;
+{adjudicators}      {widget}/*) echo "built the widget" ;;
+      *) exit 1 ;;
+    esac
+    ;;
+"#,
+        record = super::fixtures::RECORD_EACH_LAUNCH,
+        widget = super::fixtures::WIDGET_UNIT,
+    )
+}
+
 /// Run `rigger <args...>` in `cwd`, asserting it exits 0 (naming its stderr when it does not),
 /// and return its stdout.
 pub fn run_rigger_ok(cwd: &Path, args: &[&str]) -> String {

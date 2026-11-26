@@ -30,13 +30,13 @@ use crate::common;
 
 use common::cli::Refusal::Unexhausted;
 use common::cli::{
-    emit_unit_proposed, read_run_events, record_clean_critique, refused_new_run, run_on_arms,
-    run_payloads, temp_repoless_project, widget_unit, with_run_store, write_scaffold,
+    critique_arm_proposing, critique_project, read_run_events, record_clean_critique,
+    refused_new_run, run_on_arms, run_payloads, widget_unit, with_run_store,
 };
 use common::fixtures::{
     critique_reject, dag_critique_verdict_paragraph, keyed_index, keyed_payload, served_task,
-    spec_defect_halt_text, stop_records, the_stop_records, RECORD_EACH_LAUNCH, STOP_ESCALATED_KEY,
-    STOP_LESSON_KEY, STOP_SPEC_DEFECT_KEY, WIDGET_CRITERION,
+    spec_defect_halt_text, stop_records, the_stop_records, STOP_ESCALATED_KEY, STOP_LESSON_KEY,
+    STOP_SPEC_DEFECT_KEY, WIDGET_CRITERION,
 };
 use rigger::conductor::STREAM;
 use rigger::eventstore::{Event, ExpectedRevision};
@@ -71,31 +71,6 @@ fn spec_ambiguity_first() -> String {
     critique_reject("spec-ambiguity", &["adv-1"])
 }
 
-/// A plan stage producing the DAG, the plan-critique gate over it, and the fan-out implement
-/// template the gate releases, which covers each criterion of a run begun on a spec (the relaunch)
-/// and none of a run with no criteria. `max_retries: 3` leaves the gate a re-plan after its second
-/// reject, so a stop - not the remediation bound - is what ends the round that follows it.
-const WORKFLOW: &str = "defaults:\n  grounder: nop\n  max_retries: 3\n\
-                        stages:\n  plan:\n    agent: planner\n    produces: dag\n  \
-                        plan-critique:\n    needs: [plan]\n    adversary: adversary\n    \
-                        adjudicator: judge\n  implement:\n    needs: [plan-critique]\n    \
-                        agent: worker\n    strategy: fan-out\n";
-
-/// A repo-less project scaffolded with [`WORKFLOW`] and its four agents.
-fn critique_project() -> tempfile::TempDir {
-    let dir = temp_repoless_project();
-    let ids = ["planner", "worker", "adversary", "judge"];
-    let definitions = ids.map(|id| {
-        format!("---\nid: {id}\nmodel: sonnet\ntools: [Read]\nisolation: none\n---\nDo the work.\n")
-    });
-    let agents: Vec<(&str, &str)> = ids
-        .into_iter()
-        .zip(definitions.iter().map(String::as_str))
-        .collect();
-    write_scaffold(dir.path(), &agents, WORKFLOW);
-    dir
-}
-
 /// Mint one run per spec in `specs`, in order, each on `criteria`: the next run adopts the last.
 fn launch(root: &Path, specs: &[&str], criteria: &[String]) {
     with_run_store(root, |store| {
@@ -105,35 +80,15 @@ fn launch(root: &Path, specs: &[&str], criteria: &[String]) {
     });
 }
 
-/// The arm answering every spawn of [`critique_project`]'s agents, which share one prompt, each
-/// launch on record ([`RECORD_EACH_LAUNCH`]): the plan's planner and each re-plan up to
-/// `re_plans` propose the widget unit, each round's adversary reviews, round `k`'s adjudicator
-/// answers `verdicts[k]`, and the widget's implementer reports it built. A re-plan past
-/// `re_plans` fails, which ends the run there.
+/// The arm answering every spawn of [`critique_project`]'s agents ([`critique_arm_proposing`]):
+/// the plan's planner and each re-plan up to `re_plans` propose the widget unit, and round `k`'s
+/// adjudicator answers `verdicts[k]`. A re-plan past `re_plans` fails, which ends the run there.
+/// The gate's `max_retries: 3` leaves it a re-plan after its second reject, so a stop - not the
+/// remediation bound - is what ends the round that follows it.
 fn critique_arm(verdicts: &[&str], re_plans: u32) -> String {
-    let planners = std::iter::once("plan/implementer#0".to_string())
-        .chain((1..=re_plans).map(|k| format!("plan/replan#{k}")))
-        .collect::<Vec<_>>()
-        .join("|");
-    let adjudicators: String = verdicts
-        .iter()
-        .enumerate()
-        .map(|(k, verdict)| {
-            format!("      plan-critique/adjudicator#{k}) printf '%s' '{verdict}' ;;\n")
-        })
-        .collect();
-    format!(
-        r#"  *"Do the work."*)
-{RECORD_EACH_LAUNCH}    case "$RIGGER_SPAWN" in
-      {planners})
-{propose}    echo "proposed the DAG" ;;
-      plan-critique/adversary#*) echo "reviewed the DAG" ;;
-{adjudicators}      u-widget/*) echo "built the widget" ;;
-      *) exit 1 ;;
-    esac
-    ;;
-"#,
-        propose = emit_unit_proposed(&widget_unit("worker")),
+    critique_arm_proposing(
+        &vec![widget_unit("worker"); re_plans as usize + 1],
+        verdicts,
     )
 }
 
