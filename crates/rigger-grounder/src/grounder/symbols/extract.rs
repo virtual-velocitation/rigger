@@ -289,6 +289,19 @@ fn record_def(
     None
 }
 
+/// Stage the reference `staged` at byte `pos`, into `ref_positions` and `refs` at one index: the
+/// one writer of the pair, so the caller attribution and test regions that key each reference
+/// on its position read the reference at the same index.
+fn stage_ref(
+    ref_positions: &mut Vec<usize>,
+    refs: &mut Vec<SymRef>,
+    pos: usize,
+    staged: SymRef,
+) {
+    ref_positions.push(pos);
+    refs.push(staged);
+}
+
 /// A grammar's `tags` query compiled against the grammar: what [`extract`] runs over a source.
 /// Compiling is the costly step and matching the per-file one, so the registry compiles each of
 /// its grammar and query pairs once per process ([`LanguageEntry::tags`]).
@@ -819,15 +832,19 @@ pub fn extract(source: &str, lang: Lang, tags: &CompiledTags) -> Result<FileSymb
                         }
                         _ => tag.qualifier,
                     };
-                    ref_positions.push(tag.range.start);
-                    refs.push(SymRef {
-                        name: name.to_string(),
-                        line,
-                        enclosing: None,
-                        is_test: false,
-                        ref_kind: ref_kind.map(str::to_string),
-                        qualifier,
-                    });
+                    stage_ref(
+                        &mut ref_positions,
+                        &mut refs,
+                        tag.range.start,
+                        SymRef {
+                            name: name.to_string(),
+                            line,
+                            enclosing: None,
+                            is_test: false,
+                            ref_kind: ref_kind.map(str::to_string),
+                            qualifier,
+                        },
+                    );
                 }
             }
         }
@@ -840,13 +857,17 @@ pub fn extract(source: &str, lang: Lang, tags: &CompiledTags) -> Result<FileSymb
             else {
                 continue;
             };
-            ref_positions.push(leaf.start_byte());
-            refs.push(SymRef {
-                name: name.to_string(),
-                line: leaf.start_position().row as u32 + 1,
-                qualifier,
-                ..SymRef::default()
-            });
+            stage_ref(
+                &mut ref_positions,
+                &mut refs,
+                leaf.start_byte(),
+                SymRef {
+                    name: name.to_string(),
+                    line: leaf.start_position().row as u32 + 1,
+                    qualifier,
+                    ..SymRef::default()
+                },
+            );
         }
         def_reads.resize(def_ranges.len(), at_read);
     }
@@ -877,14 +898,18 @@ pub fn extract(source: &str, lang: Lang, tags: &CompiledTags) -> Result<FileSymb
                 if let Some(impl_range) = tagged.impl_from {
                     impl_rows.push((refs.len(), impl_range));
                 }
-                ref_positions.push(tagged.pos);
-                refs.push(SymRef {
-                    name: tagged.name,
-                    line: text.line(tagged.pos),
-                    ref_kind: Some(tagged.kind.to_string()),
-                    qualifier: tagged.qualifier,
-                    ..SymRef::default()
-                });
+                stage_ref(
+                    &mut ref_positions,
+                    &mut refs,
+                    tagged.pos,
+                    SymRef {
+                        name: tagged.name,
+                        line: text.line(tagged.pos),
+                        ref_kind: Some(tagged.kind.to_string()),
+                        qualifier: tagged.qualifier,
+                        ..SymRef::default()
+                    },
+                );
             }
         }
     }
