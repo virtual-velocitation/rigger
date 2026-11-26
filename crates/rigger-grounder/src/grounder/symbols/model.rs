@@ -259,7 +259,7 @@ impl FileSymbols {
 
 macro_rules! rust_tags_generation {
     () => {
-        "rust-tags-v10"
+        "rust-tags-v11"
     };
 }
 

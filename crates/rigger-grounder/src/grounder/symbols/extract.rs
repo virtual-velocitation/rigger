@@ -2137,9 +2137,9 @@ fn bound(name: &str, node: tree_sitter::Node, source: &[u8], scope: &Scope) -> b
 
 /// The names the bindings in scope at `node` bind: THE BINDING WALK ([`bound_names`] over
 /// [`RUST_PATTERN_BINDINGS`]) of the patterns of each construct enclosing `node` - a function's
-/// or closure's parameters, a match arm's pattern but its guard, a `for` pattern, each `let` of
-/// an `if`'s or `while`'s condition, a let chain's among them, and each `let` of a block that
-/// ends before `node` starts.
+/// or closure's parameters, a match arm's pattern but its guard, a `for` pattern, and each `let`
+/// that ends before `node` starts of an `if`'s or `while`'s condition, a let chain's among them,
+/// and of a block.
 fn bindings_at<'t>(node: tree_sitter::Node<'t>, source: &[u8]) -> Vec<String> {
     let named = |of: Option<tree_sitter::Node<'t>>| {
         of.map(|of| {
@@ -2169,7 +2169,9 @@ fn bindings_at<'t>(node: tree_sitter::Node<'t>, source: &[u8]) -> Vec<String> {
                     condition
                         .into_iter()
                         .chain(named(condition))
-                        .filter(|c| c.kind() == "let_condition")
+                        .filter(|c| {
+                            c.kind() == "let_condition" && c.end_byte() <= node.start_byte()
+                        })
                         .filter_map(|c| c.child_by_field_name("pattern")),
                 );
             }
