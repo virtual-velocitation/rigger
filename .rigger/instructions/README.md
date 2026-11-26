@@ -7,7 +7,6 @@ in the order they are injected, each named by the file that overrides it:
 - `engineering-principles.md`
 - `working-discipline.md`
 - `communication.md`
-- `complexity.md`
 
 A file in this directory named exactly as a built-in (case-sensitive, nothing trimmed) replaces
 that built-in: its body is injected in the built-in's place. A same-named file whose body is

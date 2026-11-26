@@ -328,8 +328,6 @@ pub fn inherited_shape(template: &Stage) -> Stage {
         criterion_id: _,
         episode: _,
         unmatched_fanout_proposal: _,
-        complexity: _,
-        complexity_reason: _,
     } = template.clone();
     Stage {
         agent,
@@ -890,8 +888,6 @@ mod tests {
             criterion_id,
             episode,
             unmatched_fanout_proposal,
-            complexity,
-            complexity_reason,
         } = stage;
         vec![
             ("name", format!("{name:?}")),
@@ -917,8 +913,6 @@ mod tests {
                 "unmatched_fanout_proposal",
                 format!("{unmatched_fanout_proposal:?}"),
             ),
-            ("complexity", format!("{complexity:?}")),
-            ("complexity_reason", format!("{complexity_reason:?}")),
         ]
     }
 
@@ -953,8 +947,6 @@ mod tests {
         "criterion_id",
         "episode",
         "unmatched_fanout_proposal",
-        "complexity",
-        "complexity_reason",
     ];
 
     /// A unit's inherited shape carries each [`INHERITED`] field of a template that sets every
@@ -986,8 +978,6 @@ mod tests {
             criterion_id: "c1-0000000000000000".into(),
             episode: "plan#1".into(),
             unmatched_fanout_proposal: true,
-            complexity: Some(crate::config::Complexity::Hard),
-            complexity_reason: "the template's own step".into(),
         };
         let shape = inherited_shape(&template);
         let fields = stage_fields(&template)

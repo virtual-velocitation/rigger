@@ -32,10 +32,6 @@ extern crate self as rigger;
 #[path = "../../../tests/common/fixtures/build_env.rs"]
 mod build_env_fixtures;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
-#[allow(dead_code)]
-#[path = "../../../tests/common/fixtures/capability.rs"]
-mod capability_fixtures;
-#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/config.rs"]
 mod config_fixtures;
@@ -52,7 +48,6 @@ mod extractors_fixtures;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 mod test_support {
     pub use crate::build_env_fixtures::*;
-    pub use crate::capability_fixtures::*;
     pub use crate::config_fixtures::*;
     pub use crate::extractors_fixtures::*;
 }

@@ -5,7 +5,6 @@
 //! appends (spec 112, criterion 5).
 
 use rigger::conductor::{META_REPLAY_KEY, TYPE_SPEC_DEFECT};
-use rigger::config::Complexity;
 use rigger::contextgraph::TYPE_LESSON_LEARNED;
 use rigger::eventstore::Event;
 use rigger::ledger::TYPE_UNIT_ESCALATED;
@@ -16,11 +15,6 @@ pub const WIDGET_UNIT: &str = "u-widget";
 /// The criterion [`WIDGET_UNIT`] serves, which the plan-critique fixtures plan against.
 pub const WIDGET_CRITERION: &str = "the widget renderer is implemented";
 
-/// A widget spec's text as a run is launched on it: a Design sentence and its one criterion,
-/// [`WIDGET_CRITERION`], which the planner's unit covers.
-pub const WIDGET_SPEC: &str = "# Widget\n\n## Design\n\nThe renderer draws widgets.\n\n\
-                               ## Done when\n\n- [ ] the widget renderer is implemented\n";
-
 /// The planning policy, in order: the sentences telling the planner how to plan, which the
 /// planner persona and its scaffold seed state and the plan protocol never does.
 pub const PLANNING_POLICY: [&str; 6] = [
@@ -29,8 +23,7 @@ pub const PLANNING_POLICY: [&str; 6] = [
     "If you discover a NECESSARY sub-unit or an ordering dependency the baseline missed, propose \
      it.",
     "NEVER propose a unit that maps to no acceptance criterion - that is scope creep.",
-    "Propose every unit, one kept unchanged included, with its step and reason, the moment you \
-     decide it.",
+    "Propose each refinement the moment you decide it.",
     "Do not write code.",
     "Only omit the id when you truly intend a new sub-unit.",
 ];
@@ -41,16 +34,13 @@ pub fn policy_counts(text: &str) -> [usize; 6] {
 }
 
 /// The plan protocol that closes a planner's task, as the planner is served it: the framing and
-/// contract sentences, `implementer` as the agent of the `UnitProposed` shape, its `complexity`
-/// words the [`Complexity`] steps' names, and `criteria` as the criteria block, with none of the
-/// [`PLANNING_POLICY`].
+/// contract sentences, `implementer` as the agent of the `UnitProposed` shape and `criteria` as the
+/// criteria block, with none of the [`PLANNING_POLICY`].
 pub fn plan_protocol_text(implementer: &str, criteria: &str) -> String {
-    let steps = Complexity::ALL.map(Complexity::name).join("|");
     format!(
         "\n\nYou are the planner. The conductor has ALREADY created one baseline implement \
-         unit per acceptance criterion below - the spec is decomposed by construction. Keep \
-         that baseline's decomposition, refine it where it must change, and propose every unit \
-         with its step and reason. Each part of a split \
+         unit per acceptance criterion below - the spec is decomposed by construction. Your \
+         job is to REFINE that baseline, not to re-decompose it. Each part of a split \
          echoes the split criterion's id and ends its `criterion` text with an OWNS sentence \
          naming its part (the conductor keeps that sentence after the criterion's exact text as \
          that unit's contract).\n\
@@ -65,20 +55,16 @@ pub fn plan_protocol_text(implementer: &str, criteria: &str) -> String {
          what makes your unit run as an EXTRA unit on top of the baseline (duplicated work). \
          Still copy the criterion text into `criterion` (verbatim is safest). Several units \
          echoing the SAME id (a real split) all run and replace the one baseline.\n\
-         Propose one UnitProposed per criterion, one you keep unchanged included, each under \
-         your own id (never a baseline's id) and echoing that criterion's id; each part of a \
-         split and each new sub-unit is a UnitProposed of its own. Give each unit the step its \
-         task needs in `complexity` and one sentence saying why in `complexity_reason`. Call \
-         the rigger_emit tool with type \"UnitProposed\" and data:\n\
+         Propose each refinement by calling the rigger_emit tool with type \"UnitProposed\" \
+         and data:\n\
          {{\"id\":\"<short-id>\",\"agent\":\"{implementer}\",\"criterion\":\"<the spec criterion \
          it serves>\",\"criterion_id\":\"<the id shown in [brackets] next to that \
-         criterion>\",\"needs\":[\"<unit ids it depends on>\"],\"complexity\":\"{steps}\",\
-         \"complexity_reason\":\"<one sentence>\"}}\n\
+         criterion>\",\"needs\":[\"<unit ids it depends on>\"]}}\n\
          A unit whose `criterion_id` is none of the ids below still runs, but as a \
          genuinely-new sub-unit that the conductor flags as unmatched. Every unit you propose \
-         - a unit kept unchanged, a refinement, a split, or a new sub-unit - automatically runs \
-         the fan-out template's own gates; you never need to name them.\n\n\
-         The acceptance criteria to propose against (echo the [id] shown next to each \
+         - a refinement, a split, or a new sub-unit - automatically runs the fan-out \
+         template's own gates; you never need to name them.\n\n\
+         The acceptance criteria to refine against (echo the [id] shown next to each \
          criterion into that unit's `criterion_id`, and copy the text into `criterion`):\n\
          {criteria}\n"
     )
@@ -108,58 +94,14 @@ pub const DAG_DISJOINT_OVERLAP: &str = "\nBlast-radius overlap (informational): 
 /// The line a re-plan round's DAG critique prompt opens with, above the reject it quotes.
 pub const DAG_PRIOR_REJECT_HEADER: &str = "A prior plan-critique REJECTED this decomposition:\n";
 
-/// The complexity a DAG critique row shows for a stage the planner gave no step.
-pub const DAG_UNASSESSED: &str = "unassessed";
-
-/// The blast radius a DAG critique row lists for a unit of a project with no grounded source.
-pub const DAG_NONE_GROUNDED: &str = "(none grounded)";
-
-/// The sentence a re-plan's task asks the planner to revise its DAG with, after the reject it
-/// quotes: every unit again, each with its step and reason.
-pub const REPLAN_REVISE: &str =
-    "Revise the unit DAG to resolve it, then re-emit every unit with its step and reason. ";
-
-/// The complexity a DAG critique row shows for a stage at `step` for `reason`: the step's name
-/// and the reason quoted, escaped as its `Debug` form prints it.
-pub fn dag_complexity(step: Complexity, reason: &str) -> String {
-    format!("{} ({reason:?})", step.name())
-}
-
-/// The `complexity` and `complexity_reason` fields of a proposal at `step` for `reason`.
-pub fn pair_of(step: Complexity, reason: &str) -> serde_json::Value {
-    serde_json::json!({"complexity": step.name(), "complexity_reason": reason})
-}
-
-/// What a refused proposal carries when its step is the word `word`, none of the steps.
-pub fn unknown_step(word: &str) -> String {
-    let steps: Vec<&str> = Complexity::ALL.iter().map(|step| step.name()).collect();
-    format!("the step {word:?}, which is none of {}", steps.join(", "))
-}
-
-/// The `DecisionMade` the conductor records when the proposal of `unit` at log `position` carries
-/// `what` in place of a step and a reason.
-pub fn unassessed_complexity_record(unit: &str, position: u64, what: &str) -> serde_json::Value {
-    serde_json::json!({
-        "id": format!("unassessed-complexity:{unit}#{position}"),
-        "summary": format!(
-            "unassessed-complexity: proposed unit {unit} carries {what}, so its step and reason \
-             are not taken"
-        ),
-        "governs": [],
-    })
-}
-
 /// The whole DAG critique prompt of a round no reject precedes: its opener, one line per `[id,
-/// criterion, needs, complexity, blast radius]` of `units` (the complexity [`dag_complexity`] or
-/// [`DAG_UNASSESSED`]), the `overlap` text and the [`dag_critique_verdict_paragraph`].
-pub fn dag_critique_prompt(units: &[[&str; 5]], overlap: &str) -> String {
+/// criterion, needs, blast radius]` of `units`, the `overlap` text and the
+/// [`dag_critique_verdict_paragraph`].
+pub fn dag_critique_prompt(units: &[[&str; 4]], overlap: &str) -> String {
     let list: String = units
         .iter()
-        .map(|[id, criterion, needs, complexity, radius]| {
-            format!(
-                "- `{id}`: criterion={criterion:?}; needs=[{needs}]; complexity={complexity}; \
-                 blast radius=[{radius}]\n"
-            )
+        .map(|[id, criterion, needs, radius]| {
+            format!("- `{id}`: criterion={criterion:?}; needs=[{needs}]; blast radius=[{radius}]\n")
         })
         .collect();
     format!(
@@ -168,16 +110,6 @@ pub fn dag_critique_prompt(units: &[[&str; 5]], overlap: &str) -> String {
          decomposition rules in your persona: the CROSS-UNIT rules that per-unit review cannot \
          see.\n\nProposed units:\n{list}{overlap}\n{}\n",
         dag_critique_verdict_paragraph()
-    )
-}
-
-/// The whole DAG critique prompt of a re-plan round after the reject line `reject`: the
-/// [`DAG_PRIOR_REJECT_HEADER`], the reject, the line saying the planner has revised the DAG, then
-/// `prompt`, the round's [`dag_critique_prompt`].
-pub fn dag_re_review_prompt(reject: &str, prompt: &str) -> String {
-    format!(
-        "{DAG_PRIOR_REJECT_HEADER}{reject}\n\nThe planner has since revised the DAG; re-review it \
-         below.\n\n{prompt}"
     )
 }
 

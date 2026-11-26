@@ -139,7 +139,6 @@ const ALLOW_LIST: &[Allowed] = &[
             "review stage {:?} escalated after {attempts} attempts; {why}",
             "plan-critique {gate_name:?} escalated after {attempts} attem",
             "unmatched-proposal: proposed unit {} maps to no baseline cri",
-            "unassessed-complexity: proposed unit {} carries {what}, so i",
         ],
     ),
     (
