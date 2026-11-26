@@ -2144,9 +2144,10 @@ fn bound(name: &str, node: tree_sitter::Node, source: &[u8], scope: &Scope) -> b
 
 /// The names the bindings in scope at `node` bind: THE BINDING WALK ([`bound_names`] over
 /// [`RUST_PATTERN_BINDINGS`]) of the patterns of each construct enclosing `node` - a function's
-/// or closure's parameters, a match arm's pattern but its guard, a `for` pattern, and each `let`
-/// that ends before `node` starts of an `if`'s or `while`'s condition, a let chain's among them,
-/// and of a block.
+/// or closure's parameters, a match arm's pattern but its guard, a `for` pattern, each `let` of
+/// an `if`'s or `while`'s condition, a let chain's among them, that ends before `node` starts
+/// when `node` is outside the `if`'s else (an else if's condition included), and each `let` of a
+/// block that ends before `node` starts.
 fn bindings_at<'t>(node: tree_sitter::Node<'t>, source: &[u8]) -> Vec<String> {
     let named = |of: Option<tree_sitter::Node<'t>>| {
         of.map(|of| {
@@ -2172,12 +2173,16 @@ fn bindings_at<'t>(node: tree_sitter::Node<'t>, source: &[u8]) -> Vec<String> {
             "for_expression" => patterns.extend(field("pattern")),
             "if_expression" | "while_expression" => {
                 let condition = field("condition");
+                // A let binds from its own end to the `if`'s else, or to the construct's end.
+                let scope_end =
+                    field("alternative").map_or(ancestor.end_byte(), |e| e.start_byte());
                 patterns.extend(
                     condition
                         .into_iter()
                         .chain(named(condition))
                         .filter(|c| {
-                            c.kind() == "let_condition" && c.end_byte() <= node.start_byte()
+                            c.kind() == "let_condition"
+                                && (c.end_byte()..scope_end).contains(&node.start_byte())
                         })
                         .filter_map(|c| c.child_by_field_name("pattern")),
                 );
